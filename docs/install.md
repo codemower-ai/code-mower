@@ -483,5 +483,5 @@ returning to them, so they are stated here rather than only in the reference:
   supported platform and every other platform refuses.
 - **Unselected integrations stay quiet.** Ordinary no-campaign adoption asks for
   no campaign-auth owner action. Optional surfaces -- Coworker, Jira Cloud,
-  Graphify, cloud sharing -- are opt-in and add nothing to a default
+  Graphify, Slack, cloud sharing -- are opt-in and add nothing to a default
   Claude + Codex install until you select them.

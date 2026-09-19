@@ -25,7 +25,7 @@ remain unchanged.
 
 | Boundary | Required evidence | Status in this source record |
 | --- | --- | --- |
-| Source | One Codex writer; #1007, #1024, #1025, #1031 and #1037 included; final packaged docs included; identity/readiness, package guards, privacy, lint, full tests, independent current-head review, normal CI and authoritative gate | Record actual head and check results on the final release PR |
+| Source | One Codex writer; #1007, #1024, #1025, #1031, #1037 and release-critical #1043 included, together with the final reviewed closeout source and packaged docs; identity/readiness, package guards, privacy, lint, full tests, independent current-head review, normal CI and authoritative gate | Record actual head and check results on the final release PR |
 | Candidate | Build once from a clean merge-SHA checkout; twine and both inventories pass; retain artifacts and digests | Requires merged release PR; pre-merge builds are rehearsals only |
 | Default install | Installed-wheel provenance; only base dependencies; init preview without Slack; no Slack network, login or service | Disposable rehearsal script; not live administration |
 | Slack opt-in | Installed setup creates mode-0600 hosted manifest and refuses overwrite; default and all-green offline doctor deny readiness | Disposable rehearsal script; no private probe is supplied |
@@ -34,7 +34,7 @@ remain unchanged.
 | Disable/removal | Disabled offline observation denies; local manifest removed; package uninstall preserves synthetic state | Offline only; live disable/uninstall belongs to #918 |
 | Rollback | Disposable package restores exact digest-verified 1.4.2 and preserves synthetic state | Does not authorize downgrading live v2 claims or schema |
 | Private administration | Install/bind/readiness, rotation, disable/uninstall and retained state observed against this candidate | #918, requires owner-controlled private interfaces |
-| Two canaries | Exactly one completion and one confirmed cancellation, writer/reviewer exit observed, independent review/gate and uncertainty preserved | #920, only after explicit numeric authorization; not run by the prep PR |
+| Two accepted canary outcomes | One accepted completion and one accepted confirmed cancellation, writer/reviewer exit observed, independent review/gate and uncertainty preserved; every failed, retired, replacement or recovery attempt and reservation remains count-preserved in the evidence | #920, only after explicit numeric authorization; the prep PR does not run them and no retry may be silent |
 | Publish/reinstall | Same source SHA and same bytes after #918/#920 pass, owner decision, manual publication, verified non-publishing release-event run, exact GitHub Release assets, independent canonical PyPI reinstall and temporary variable cleanup | Record observed results on #923 and the GitHub Release; not run by the prep PR |
 
 An offline synthetic green observation always exits nonzero and reports

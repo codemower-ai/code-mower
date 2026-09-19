@@ -1514,7 +1514,8 @@ def _candidate_runbook_checks(repo_path: Path) -> tuple[list[str], list[str]]:
         "--require-candidate", "candidate.json", "rehearsal.json",
         '-f candidate_run_id="$CANDIDATE_RUN_ID"',
         'test "$(git rev-list -n 1 v1.5.0)" = "$RELEASE_SHA"',
-        "one completion and one confirmed", "aggregate campaign ACU",
+        "accepted completion", "accepted confirmed-cancellation",
+        "aggregate campaign ACU", "Count and disclose every reservation",
         "does not rebuild", "Never downgrade live v2 claims",
         "independent exact-head audit", "authoritative gate",
     )
@@ -2070,9 +2071,46 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         },
     ]
     if candidate_workflow_used:
+        # v1.5 promotes the immutable candidate directly to production. TestPyPI
+        # remains an owner-selected diagnostic path, so retain its executable
+        # commands for that case but mark them optional rather than presenting
+        # them as release-critical next actions.
+        for action in next_actions:
+            if action["id"] in {
+                "publish-testpypi-candidate",
+                "testpypi-source-exclusive-qualification",
+            }:
+                action["optional"] = True
+                action["title"] = "Optional: " + action["title"]
         for action in next_actions:
             if "gh workflow run release.yml" in action["command"]:
                 action["command"] += ' -f candidate_run_id="$CANDIDATE_RUN_ID"'
+            if action["id"] == "create-github-release":
+                action["required_env"] = [
+                    "CANDIDATE_DIR",
+                    "CANDIDATE_RUN_ID",
+                    "GITHUB_RELEASE_NOTES",
+                ]
+                action["command"] = (
+                    'test -n "$CANDIDATE_DIR" && test -n "$CANDIDATE_RUN_ID" && '
+                    'test -n "$GITHUB_RELEASE_NOTES" && '
+                    'gh variable set CODE_MOWER_TESTPYPI_PUBLISH --repo codemower-ai/code-mower --body false && '
+                    'gh variable set CODE_MOWER_PYPI_PUBLISH --repo codemower-ai/code-mower --body false && '
+                    'gh variable set CODE_MOWER_CANDIDATE_RUN_ID --repo codemower-ai/code-mower '
+                    '--body "$CANDIDATE_RUN_ID" && '
+                    'test "$(gh variable get CODE_MOWER_TESTPYPI_PUBLISH --repo codemower-ai/code-mower '
+                    '--json value --jq .value)" = false && '
+                    'test "$(gh variable get CODE_MOWER_PYPI_PUBLISH --repo codemower-ai/code-mower '
+                    '--json value --jq .value)" = false && '
+                    'test "$(gh variable get CODE_MOWER_CANDIDATE_RUN_ID --repo codemower-ai/code-mower '
+                    '--json value --jq .value)" = "$CANDIDATE_RUN_ID" && '
+                    '! gh release view v1.5.0 --repo codemower-ai/code-mower >/dev/null 2>&1 && '
+                    'gh release create v1.5.0 '
+                    '"$CANDIDATE_DIR/code_mower-1.5.0-py3-none-any.whl" '
+                    '"$CANDIDATE_DIR/code_mower-1.5.0.tar.gz" '
+                    '--repo codemower-ai/code-mower --verify-tag --latest '
+                    '--title "Code Mower v1.5.0" --notes-file "$GITHUB_RELEASE_NOTES"'
+                )
         next_actions.insert(0, {
             "id": "immutable-candidate-first",
             "title": "After merge: build once, then #918 and explicitly authorized #920 before tagging/publication",

@@ -109,15 +109,18 @@ and complete private disable/uninstall/state-preservation checks. Do not upload
 private snapshots, bindings, logs, graphs or adoption evidence. Stop if the
 installed package identity differs. Offline snapshots never prove live readiness.
 
-## 4. Explicitly authorize and run only two canaries (#920)
+## 4. Explicitly authorize and obtain two accepted canary outcomes (#920)
 
 After #918 passes, obtain the recorded numeric task and aggregate campaign ACU
 caps, task count/expiry, runtime and review spend/round limits, clarification/fix
-allowances and zero recovery creates. Run one completion and one confirmed
-cancellation only. Observe actual builder/reviewer exit, independent exact-head
-review and gate evidence. Preserve unsettled/unknown outcomes and full original
+allowances, bounded replacement policy and recovery-create limits. Obtain one
+accepted completion and one accepted confirmed-cancellation outcome. Observe
+actual builder/reviewer exit, independent exact-head review and gate evidence.
+Count and disclose every reservation, failed or retired attempt, replacement and
+recovery create; never rewrite the history as only the two accepted outcomes or
+silently retry. Preserve unsettled/unknown outcomes and full original
 reservations. No elapsed time, credits or prior release authorization substitutes
-for this decision. A failure blocks publication.
+for this decision. An unresolved failure blocks publication.
 
 ## 5. Owner decision, unchanged tag and publication (#923)
 

@@ -23,10 +23,10 @@ The v1.4.2 release did not claim the bounded hosted Devin canary tracked by
 [#951](https://github.com/codemower-ai/code-mower/issues/951); that result is
 not claimed by its immutable qualification record.
 
-Documentation on `main` follows the source on `main`. After v1.5.0 is published,
-read its immutable
-[`v1.5.0` guide](https://github.com/codemower-ai/code-mower/blob/v1.5.0/docs/try-in-10-minutes.md);
-before then, the pages on `main` describe the reviewed source target.
+Documentation on `main` follows the source on `main`. For an installed release,
+read its immutable versioned guide, such as the
+[`v1.5.0` guide](https://github.com/codemower-ai/code-mower/blob/v1.5.0/docs/try-in-10-minutes.md),
+and confirm the tag and package exist before using pinned install commands.
 
 ## What Code Mower Adds
 
@@ -305,8 +305,9 @@ and boundaries are recorded in
 
 ## Optional Repository Context Graph
 
-Graphify shipped in v1.4.1 as an optional local repository-graph provider and
-remains available in v1.5.0. It is separately installed into an operator-owned
+Graphify's optional bounded provider foundation landed in v1.4.0; its complete
+qualified integration, scorecard and query behavior shipped in v1.4.1 and
+remain available in v1.5.0. It is separately installed into an operator-owned
 environment, explicitly activated, and outside the base dependency set: a
 default Claude + Codex install adds no Graphify dependency, no indexer, no
 background service, and no watcher.

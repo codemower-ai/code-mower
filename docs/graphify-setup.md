@@ -1,7 +1,8 @@
 # Optional Graphify setup
 
-Graphify shipped in v1.4.1 and is available in v1.5.0 as
-an **optional** local repository-graph provider. It is separately installed into
+Graphify's bounded provider foundation landed in v1.4.0; its complete qualified
+integration, scorecard and query behavior shipped in v1.4.1 and are available
+in v1.5.0. It is an **optional** local repository-graph provider, separately installed into
 an operator-owned environment, explicitly activated, and outside the base
 dependency set: a default Claude + Codex installation adds no Graphify
 dependency, indexing step, hook or background service.

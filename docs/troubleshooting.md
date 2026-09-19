@@ -4,6 +4,10 @@ Code Mower setup checks should prove that the configured tools can run the
 same kind of work the reviewer lanes will ask them to do. A CLI status command
 is useful, but it is not enough for merge-gating lanes.
 
+For Slack OAuth, policy binding, private-channel mapping, disable/uninstall and
+hosted lifecycle problems, use the dedicated
+[Slack setup and troubleshooting guide](slack-setup.md#troubleshooting-upgrade-and-removal).
+
 ## Claude Code Reports Logged In But Audits Fail
 
 `claude auth status` can report `loggedIn: true` while real non-interactive

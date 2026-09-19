@@ -21,6 +21,7 @@ SCHEMA = "code_mower.auditPublication.v1"
 WORKFLOW = ".github/workflows/local-audit-publication.yml"
 WORKFLOW_NAME = "Code Mower Local Audit Publication"
 EVENT = "code-mower-local-audit"
+LABEL_EVENT = "code-mower-local-audit-published"
 SOURCE_WORKFLOW = ".github/workflows/local-cli-audit.yml"
 MAX_BYTES = 2048
 MAX_EVENT_BYTES = 128 * 1024
@@ -698,13 +699,34 @@ def submit_value(value, *, io, timeout=900, clock=time.monotonic, sleep=time.sle
     raise Refused("publication timed out; inspect the workflow run before retrying")
 
 
-def prepare_label_event(event, env, io):
-    """Adapt a completed publication to the existing comment labeler, read-only."""
+def prepare_label_event(event, env, io, *, sleep=time.sleep):
+    """Adapt a verified publication notification to the comment labeler.
+
+    The publication workflow uses ``repository_dispatch`` for this notification
+    because GitHub suppresses ``workflow_run`` chains after three levels.  The
+    notification carries only a run id; the fetched terminal workflow, receipt,
+    comment and current PR/head remain the authority.
+    """
     repository = io.request("")
-    candidate = event.get("workflow_run", {})
-    require(positive(candidate.get("id")), "missing publication run")
-    run = load_run(io, candidate["id"])
-    verify_run(run, repository, run_id=candidate["id"], terminal=True)
+    payload = event.get("client_payload")
+    require(
+        event.get("action") == LABEL_EVENT
+        and isinstance(payload, dict)
+        and set(payload) == {"publication_run_id"}
+        and positive(payload.get("publication_run_id")),
+        "missing publication run",
+    )
+    run_id = payload["publication_run_id"]
+    run = None
+    for attempt in range(10):
+        run = load_run(io, run_id)
+        verify_run(run, repository, run_id=run_id)
+        if run.get("status") == "completed":
+            break
+        if attempt < 9:
+            sleep(1)
+    assert run is not None
+    verify_run(run, repository, run_id=run_id, terminal=True)
     proof = receipts(run)
     require(len(proof) == 1, "publication receipt missing or ambiguous")
     number = int(RECEIPT.fullmatch(proof[0]["name"])[1])
@@ -800,7 +822,10 @@ def main():
                     f"pr_number={value['pr_number']}\ncomment_id={posted['id']}\ndigest={digest(canonical(value))}\n"
                 )
         elif sys.argv[1:] == ["prepare-label-event"]:
-            require(env.get("GITHUB_EVENT_NAME") == "workflow_run", "wrong reconciliation event")
+            require(
+                env.get("GITHUB_EVENT_NAME") == "repository_dispatch",
+                "wrong reconciliation event",
+            )
             prepared = prepare_label_event(event, env, io)
             if prepared is not None:
                 path = Path(env["RUNNER_TEMP"]) / "local-audit-publication-event.json"
