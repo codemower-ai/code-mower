@@ -509,6 +509,8 @@ args = sys.argv[1:]
 assert args[0] == 'exec' and args[-1] == '-'
 assert args[args.index('--sandbox') + 1] == 'read-only'
 assert '--ignore-user-config' in args and '--ephemeral' in args
+assert 'cli_auth_credentials_store="keyring"' in args
+assert args[args.index('--enable') + 1] == 'secret_auth_storage'
 assert 'shell_tool' in args and 'apps' in args and 'plugins' in args
 payload = json.loads(sys.stdin.read().split('\\n', 1)[1])
 r = payload['request']
@@ -533,6 +535,27 @@ Path(args[args.index('--output-last-message') + 1]).write_text(json.dumps(reply)
         self.assertEqual(self.result(claim)["status"]["state"], "complete")
         self.assertEqual(len(self.reviews.requests), 1)
         self.assertEqual(list((self.root / "runtime").glob("decision-*")), [])
+
+    def test_explicit_file_credential_store_survives_ignored_user_config(self):
+        code = '''import sys
+args = sys.argv[1:]
+assert '--ignore-user-config' in args
+assert 'cli_auth_credentials_store="file"' in args
+assert 'secret_auth_storage' not in args
+raise SystemExit(1)
+'''
+        runtime = self.runtime(code)
+        runtime.credential_store = "file"
+        with self.assertRaisesRegex(SupervisorError, "supervisor_unavailable"):
+            runtime.decide(self.task, {}, timeout=1)
+
+    def test_unknown_credential_store_is_refused(self):
+        executable = self.root / "codex"
+        executable.write_text("#!/bin/sh\nexit 1\n")
+        executable.chmod(0o700)
+        with self.assertRaisesRegex(SupervisorError, "supervisor_unavailable"):
+            CodexRuntime(executable=executable, private_root=self.root / "runtime",
+                         model="synthetic", credential_store="auto")
 
     def test_timeout_bad_response_and_process_error_fail_closed_and_clean_up(self):
         for code in ("import time; time.sleep(5)", "print('private output')", "raise SystemExit(1)"):
