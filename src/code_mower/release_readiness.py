@@ -25,7 +25,7 @@ RELEASE_DOC_PATHS = (
     "docs/pypi-release.md",
     "docs/public-release-checklist.md",
     "docs/release-qualification.md",
-    "docs/v150-release-runbook.md",
+    "docs/v151-release-runbook.md",
 )
 REQUIRED_PUBLIC_PACKAGE_SPEC_DOC_PATHS = (
     "README.md",
@@ -1492,18 +1492,18 @@ def _job_text(job: Any) -> str:
 
 
 def _candidate_runbook_checks(repo_path: Path) -> tuple[list[str], list[str]]:
-    """The v1.5 sequence qualifies the merge-SHA artifacts before tagging.
+    """The v1.5.1 sequence qualifies the merge-SHA artifacts before tagging.
 
     The v1.4 post-publication campaign runbook stays historical. Checking its
     ordering against a new version would require tagging before qualification.
     These are static documentation checks, not private acceptance evidence.
     """
-    text = _read_text_if_exists(repo_path / "docs/v150-release-runbook.md")
+    text = _read_text_if_exists(repo_path / "docs/v151-release-runbook.md")
     order = (
         "## 1. Review and merge", "## 2. Build and retain",
-        "gh workflow run release-candidate.yml", "## 3. Private acceptance",
-        "## 4. Explicitly authorize", "## 5. Owner decision",
-        'git tag -a v1.5.0 "$RELEASE_SHA"',
+        "gh workflow run release-candidate.yml", "## 3. Qualify the exact candidate",
+        "## 4. Observe the bounded hosted Board canary", "## 5. Owner decision",
+        'git tag -a v1.5.1 "$RELEASE_SHA"',
         "-f publish_testpypi=false -f publish_pypi=false",
         "-f publish_testpypi=false -f publish_pypi=true",
         "## 6. Independent canonical reinstall",
@@ -1513,10 +1513,13 @@ def _candidate_runbook_checks(repo_path: Path) -> tuple[list[str], list[str]]:
         "--json mergeCommit --jq '.mergeCommit.oid'",
         "--require-candidate", "candidate.json", "rehearsal.json",
         '-f candidate_run_id="$CANDIDATE_RUN_ID"',
-        'test "$(git rev-list -n 1 v1.5.0)" = "$RELEASE_SHA"',
-        "accepted completion", "accepted confirmed-cancellation",
-        "aggregate campaign ACU", "Count and disclose every reservation",
-        "does not rebuild", "Never downgrade live v2 claims",
+        'test "$(git rev-list -n 1 v1.5.1)" = "$RELEASE_SHA"',
+        "fresh install without uv or pipx", "upgrade from v1.5.0",
+        "remote observer", "safe init", "Graphify", "basic Slack lifecycle",
+        "single-lane", "multi-lane", "aggregate campaign ACU",
+        "provider exit", "authorized usage", "settled usage",
+        "metadata-only", "fresh dashboard", "does not rebuild",
+        "Slack telemetry remains deferred to v1.6.0",
         "independent exact-head audit", "authoritative gate",
     )
     return _unordered_markers(text, order), [item for item in assertions if item not in text]
@@ -1600,7 +1603,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     )
     if candidate_workflow_used:
         missing_runbook_markers, missing_runbook_assertions = _candidate_runbook_checks(repo_path)
-        runbook_markers = ("docs/v150-release-runbook.md: candidate, private acceptance, canaries, tag, publish",)
+        runbook_markers = ("docs/v151-release-runbook.md: candidate, private acceptance, canaries, tag, publish",)
         runbook_assertions = ("merge SHA and retained artifact binding; explicit owner gates",)
         # Legacy checks above describe the preserved v1.4 publication procedure.
         # The new procedure has its own ordered gates and artifact assertions.
@@ -2118,7 +2121,7 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             "title": "After merge: build once, then #918 and explicitly authorized #920 before tagging/publication",
             "command": 'gh workflow run release-candidate.yml --repo codemower-ai/code-mower --ref main '
                        '-f expected_sha="$RELEASE_SHA" -f release_pr="$RELEASE_PR"',
-            "url": "https://github.com/codemower-ai/code-mower/blob/main/docs/v150-release-runbook.md",
+            "url": "https://github.com/codemower-ai/code-mower/blob/main/docs/v151-release-runbook.md",
         })
     incomplete_dispatch_actions = _incomplete_dispatch_actions(workflow, next_actions)
     incomplete_documented_dispatches = _incomplete_documented_dispatches(workflow, docs)

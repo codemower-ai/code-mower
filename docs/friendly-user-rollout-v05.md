@@ -1,7 +1,7 @@
 # Friendly-User Rollout Plan
 
 Source target: v1.5.0 supervised-pilot baseline. Release invitations and pinned
-index installs target `code-mower==1.5.0` only after that version is visible on
+index installs target `code-mower==1.5.1` only after that version is visible on
 the selected package index.
 
 This is the operating plan for the first 5-10 friendly users before Code Mower
@@ -33,14 +33,14 @@ out in the invite:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.0
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.1
 ```
 
-This source defines Code Mower `v1.5.0`, with package spec
-`code-mower==1.5.0`. Confirm the release tag on GitHub Releases and the package
+This source defines Code Mower `v1.5.1`, with package spec
+`code-mower==1.5.1`. Confirm the release tag on GitHub Releases and the package
 version on the selected index before using an index install command; source
 version and publication state are separate facts. After publication, see the
-[v1.5.0 release](https://github.com/codemower-ai/code-mower/releases/tag/v1.5.0).
+[v1.5.1 release](https://github.com/codemower-ai/code-mower/releases/tag/v1.5.1).
 
 ## Invite Criteria
 

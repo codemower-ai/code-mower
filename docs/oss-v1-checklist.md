@@ -47,7 +47,7 @@ history opens the repository. They should be able to confirm:
 ## Current v1.0 Baseline
 
 The historical public-release baseline below is the published `v1.4.2`.
-For v1.5.0 follow [the immutable candidate-first runbook](v150-release-runbook.md);
+For v1.5.1 follow [the immutable candidate-first runbook](v151-release-runbook.md);
 these publication and dogfood steps record the previous release procedure.
 Before widening that release, record:
 

@@ -27,16 +27,16 @@ Upgrade the installer that owns the active command before generating or
 comparing setup. Running `setup-drift` under 1.4.2 only compares the repository
 with 1.4.2's packaged files.
 
-Confirm `code-mower==1.5.0` is visible on the selected package index before
+Confirm `code-mower==1.5.1` is visible on the selected package index before
 running either upgrade block. Prepublication qualification uses the retained
-candidate wheel from the [v1.5.0 release runbook](v150-release-runbook.md).
+candidate wheel from the [v1.5.1 release runbook](v151-release-runbook.md).
 
 For an existing pipx install:
 
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.5.0
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.5.1
 hash -r
 command -v code-mower
 code-mower --version
@@ -46,14 +46,14 @@ For an existing uv tool install:
 
 ```bash
 uv python install 3.12
-uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.5.0
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.5.1
 hash -r
 command -v code-mower
 code-mower --version
 ```
 
 Run only the block for the installer that should keep owning the command. The
-final line must print `code-mower 1.5.0`, and `command -v` must still identify
+final line must print `code-mower 1.5.1`, and `command -v` must still identify
 that installer. If it does not, resolve the competing pipx/uv/checkout path
 before changing repository files. This is the tool upgrade; the reviewed
 repository setup upgrade follows below.

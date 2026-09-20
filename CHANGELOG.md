@@ -7,6 +7,12 @@ later entries are regular releases.
 
 ## Unreleased
 
+No additional changes recorded.
+
+## 1.5.1 — release
+
+Cross-provider installation, audit provenance, safe initialization, remote-observer diagnostics, and Board/status clarity. See [release notes](docs/v151-release-notes.md) and the [qualification contract](docs/v151-qualification.md).
+
 - Local audit publication now binds each reviewer seal to the exact Actions
   job, matrix lane, run, and first attempt that produced it. Independent Codex
   and Claude lanes in one run no longer make publication ambiguous, while a

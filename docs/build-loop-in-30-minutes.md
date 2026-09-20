@@ -57,14 +57,14 @@ If path A has not been completed in this repository, do this reviewer-gate
 checkpoint first. If you already have a merged setup PR with Codex and Claude
 audit evidence, skip to section 2.
 
-Confirm `code-mower==1.5.0` is visible on the selected package index before
+Confirm `code-mower==1.5.1` is visible on the selected package index before
 running this install block. Prepublication qualification uses the retained
-candidate wheel from the [v1.5.0 release runbook](v150-release-runbook.md).
+candidate wheel from the [v1.5.1 release runbook](v151-release-runbook.md).
 
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.0
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.1
 gh auth status >/dev/null 2>&1 && echo "gh auth ok" || { echo "gh auth NOT ready"; false; }
 code-mower init --easy
 code-mower init --easy --apply --output-dir .code-mower.generated

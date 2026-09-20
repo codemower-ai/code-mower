@@ -63,7 +63,7 @@ jobs:
         env:
           SOURCE_SHA: ${{ inputs.expected_sha }}
         run: |
-          python scripts/rehearse_v150.py --dist "$RUNNER_TEMP/candidate" \
+          python scripts/rehearse_v151.py --dist "$RUNNER_TEMP/candidate" \
             --source-sha "$SOURCE_SHA" --work-dir "$RUNNER_TEMP/rehearsal"
           cp "$RUNNER_TEMP/rehearsal/rehearsal.json" "$RUNNER_TEMP/candidate/rehearsal.json"
 

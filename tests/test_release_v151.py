@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("release_candidate", ROOT / "scripts/release_candidate.py")
 candidate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(candidate)
-spec = importlib.util.spec_from_file_location("rehearse_v150", ROOT / "scripts/rehearse_v150.py")
+spec = importlib.util.spec_from_file_location("rehearse_v151", ROOT / "scripts/rehearse_v151.py")
 rehearsal = importlib.util.module_from_spec(spec)
 with patch.dict(sys.modules, {"release_candidate": candidate}):
     spec.loader.exec_module(rehearsal)
@@ -35,19 +35,19 @@ class ArtifactTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.dist = Path(self.temp.name)
         with zipfile.ZipFile(self.dist / candidate.NAMES[0], "w") as archive:
-            archive.writestr("code_mower-1.5.0.dist-info/METADATA",
-                             "Name: code-mower\nVersion: 1.5.0\nRequires-Dist: PyYAML>=6.0\nRequires-Dist: packaging>=23.2\n")
+            archive.writestr("code_mower-1.5.1.dist-info/METADATA",
+                             "Name: code-mower\nVersion: 1.5.1\nRequires-Dist: PyYAML>=6.0\nRequires-Dist: packaging>=23.2\n")
             for module in candidate.MODULES:
                 archive.writestr("code_mower/" + module, b"synthetic")
             for doc in candidate.DOCS:
-                archive.writestr("code_mower-1.5.0.data/data/share/code-mower/docs/" + doc, b"synthetic")
+                archive.writestr("code_mower-1.5.1.data/data/share/code-mower/docs/" + doc, b"synthetic")
         with tarfile.open(self.dist / candidate.NAMES[1], "w:gz") as archive:
             for path in (["src/code_mower/" + m for m in candidate.MODULES] +
                          ["docs/" + d for d in candidate.DOCS]):
-                info = tarfile.TarInfo("code_mower-1.5.0/" + path)
+                info = tarfile.TarInfo("code_mower-1.5.1/" + path)
                 info.size = 9
                 archive.addfile(info, io.BytesIO(b"synthetic"))
-        self.manifest = {"schema": candidate.SCHEMA, "version": "1.5.0", "source_sha": SHA,
+        self.manifest = {"schema": candidate.SCHEMA, "version": "1.5.1", "source_sha": SHA,
                          "kind": "candidate", "release_pr": 42,
                          "artifacts": {name: candidate.digest(self.dist / name) for name in candidate.NAMES},
                          "inventory": candidate.inspect(self.dist)}
@@ -93,7 +93,7 @@ class ArtifactTests(unittest.TestCase):
         wheel = self.dist / candidate.NAMES[0]
         with zipfile.ZipFile(wheel) as archive:
             files = {name: archive.read(name) for name in archive.namelist()}
-        files["code_mower-1.5.0.dist-info/METADATA"] += (
+        files["code_mower-1.5.1.dist-info/METADATA"] += (
             b'Requires-Dist: slack-sdk; python_version >= "3.12" or extra == "coworker"\n'
         )
         with zipfile.ZipFile(wheel, "w") as archive:
@@ -116,7 +116,7 @@ class RehearsalEvidenceTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.dist = Path(self.temp.name)
-        # A future version uses the manifest's wheel identity, not a v1.5.0 key.
+        # A future version uses the manifest's wheel identity, not a v1.5.1 key.
         self.wheel = "code_mower-1.5.1-py3-none-any.whl"
         self.manifest = {"source_sha": SHA, "artifacts": {self.wheel: "b" * 64}}
         self.evidence = {"schema": candidate.REHEARSAL_SCHEMA, "status": "pass",
@@ -170,23 +170,23 @@ class CanaryCandidateEquivalenceTests(unittest.TestCase):
             self.final, self.final_sha, 101,
             changes={
                 "code_mower/audit_publication.py": b"final audit publication",
-                "code_mower-1.5.0.data/data/share/code-mower/docs/v150-qualification.md":
+                "code_mower-1.5.1.data/data/share/code-mower/docs/v151-qualification.md":
                     b"final qualification",
-                "code_mower-1.5.0.dist-info/METADATA": self._metadata(b"final description"),
-                "code_mower-1.5.0.dist-info/RECORD": b"final record",
+                "code_mower-1.5.1.dist-info/METADATA": self._metadata(b"final description"),
+                "code_mower-1.5.1.dist-info/RECORD": b"final record",
             },
         )
 
     @staticmethod
     def _metadata(description=b"prior description"):
-        return (b"Name: code-mower\nVersion: 1.5.0\nSummary: stable\n"
+        return (b"Name: code-mower\nVersion: 1.5.1\nSummary: stable\n"
                 b"Requires-Dist: PyYAML>=6.0\nRequires-Dist: packaging>=23.2\n\n" + description)
 
     def _wheel_files(self):
         files = {
-            "code_mower-1.5.0.dist-info/METADATA": self._metadata(),
-            "code_mower-1.5.0.dist-info/RECORD": b"prior record",
-            "code_mower-1.5.0.dist-info/entry_points.txt":
+            "code_mower-1.5.1.dist-info/METADATA": self._metadata(),
+            "code_mower-1.5.1.dist-info/RECORD": b"prior record",
+            "code_mower-1.5.1.dist-info/entry_points.txt":
                 b"[console_scripts]\ncode-mower=code_mower.cli:main\n",
             "code_mower/audit_publication.py": b"prior audit publication",
             "code_mower/release_readiness.py": b"prior release readiness",
@@ -196,7 +196,7 @@ class CanaryCandidateEquivalenceTests(unittest.TestCase):
         }
         files.update({"code_mower/" + module: b"stable required module"
                       for module in candidate.MODULES})
-        files.update({"code_mower-1.5.0.data/data/share/code-mower/docs/" + doc:
+        files.update({"code_mower-1.5.1.data/data/share/code-mower/docs/" + doc:
                       b"stable documentation" for doc in candidate.DOCS})
         return files
 
@@ -210,7 +210,7 @@ class CanaryCandidateEquivalenceTests(unittest.TestCase):
         with tarfile.open(path / candidate.NAMES[1], "w:gz") as archive:
             for member in (["src/code_mower/" + name for name in candidate.MODULES] +
                            ["docs/" + name for name in candidate.DOCS]):
-                info = tarfile.TarInfo("code_mower-1.5.0/" + member)
+                info = tarfile.TarInfo("code_mower-1.5.1/" + member)
                 info.size = len(b"synthetic")
                 archive.addfile(info, io.BytesIO(b"synthetic"))
         manifest = {
@@ -242,9 +242,9 @@ class CanaryCandidateEquivalenceTests(unittest.TestCase):
         self.assertTrue(result["required_canary_members_unchanged"])
         self.assertEqual(result["changed_wheel_members"], sorted({
             "code_mower/audit_publication.py",
-            "code_mower-1.5.0.data/data/share/code-mower/docs/v150-qualification.md",
-            "code_mower-1.5.0.dist-info/METADATA",
-            "code_mower-1.5.0.dist-info/RECORD",
+            "code_mower-1.5.1.data/data/share/code-mower/docs/v151-qualification.md",
+            "code_mower-1.5.1.dist-info/METADATA",
+            "code_mower-1.5.1.dist-info/RECORD",
         }))
         self.assertEqual(set(result["changed_wheel_member_sha256"]),
                          set(result["changed_wheel_members"]))
@@ -270,8 +270,8 @@ class CanaryCandidateEquivalenceTests(unittest.TestCase):
         final = self.root / "bad-metadata"
         metadata = self._metadata(b"final description").replace(b"Summary: stable", b"Summary: changed")
         self._write_candidate(final, self.final_sha, 101, changes={
-            "code_mower-1.5.0.dist-info/METADATA": metadata,
-            "code_mower-1.5.0.dist-info/RECORD": b"final record",
+            "code_mower-1.5.1.dist-info/METADATA": metadata,
+            "code_mower-1.5.1.dist-info/RECORD": b"final record",
         })
         with patch.object(candidate, "run", return_value=""), \
                 self.assertRaisesRegex(ValueError, "metadata headers"):
@@ -330,7 +330,7 @@ class WorkflowBindingTests(unittest.TestCase):
                 run[field] = value
 
     def test_publication_requires_verified_artifacts_and_named_rehearsal_before_copy(self):
-        self.assertNotIn("code_mower-1.5.0-py3-none-any.whl", self.publish)
+        self.assertNotIn("code_mower-1.5.1-py3-none-any.whl", self.publish)
         self.assertNotIn("python -m build", self.publish)
         verification = self.publish.index("python scripts/release_candidate.py verify")
         self.assertIn("--require-candidate", self.publish[verification:])
@@ -344,7 +344,7 @@ class WorkflowBindingTests(unittest.TestCase):
         self.assertEqual(job["steps"][0]["with"]["ref"], "${{ env.SOURCE_SHA }}")
         commands = "\n".join(step.get("run", "") for step in job["steps"])
         self.assertIn("python scripts/release_candidate.py build", commands)
-        self.assertIn('python scripts/rehearse_v150.py --dist "$RUNNER_TEMP/rehearsal-dist"', commands)
+        self.assertIn('python scripts/rehearse_v151.py --dist "$RUNNER_TEMP/rehearsal-dist"', commands)
         self.assertNotIn("--release-pr", commands)
         self.assertIn("release_rehearsal", jobs["package"]["needs"])
         self.assertIn('test "${{ needs.release_rehearsal.result }}" = "success"', jobs["package"]["steps"][0]["run"])
@@ -375,34 +375,35 @@ class OfflineGuardTests(unittest.TestCase):
 
 class ReleaseContractTests(unittest.TestCase):
     def test_identity_and_readiness(self):
-        self.assertEqual(__version__, "1.5.0")
+        self.assertEqual(__version__, "1.5.1")
         self.assertEqual(release_readiness.render_release_readiness(ROOT)["status"], "pass")
 
-    def test_removing_private_acceptance_or_moving_tag_first_blocks(self):
-        text = (ROOT / "docs/v150-release-runbook.md").read_text()
-        for bad in (text.replace("## 3. Private acceptance", "## Removed acceptance"),
-                    text.replace('git tag -a v1.5.0 "$RELEASE_SHA"', "tag removed"),
+    def test_removing_exact_candidate_qualification_or_moving_tag_first_blocks(self):
+        text = (ROOT / "docs/v151-release-runbook.md").read_text()
+        for bad in (text.replace("## 3. Qualify the exact candidate", "## Removed qualification"),
+                    text.replace('git tag -a v1.5.1 "$RELEASE_SHA"', "tag removed"),
                     text.replace("aggregate campaign ACU", "unspecified budget")):
             with self.subTest(text=bad[:10]), patch.object(release_readiness, "_read_text_if_exists", return_value=bad):
                 order, assertions = release_readiness._candidate_runbook_checks(ROOT)
                 self.assertTrue(order or assertions)
 
-    def test_bounded_canary_carry_forward_is_closed_and_machine_verified(self):
-        runbook = (ROOT / "docs/v150-release-runbook.md").read_text()
-        qualification = (ROOT / "docs/v150-qualification.md").read_text()
+    def test_patch_release_contract_keeps_scope_and_observations_explicit(self):
+        runbook = (ROOT / "docs/v151-release-runbook.md").read_text()
+        qualification = (ROOT / "docs/v151-qualification.md").read_text()
         for marker in (
-            "compare-canary-surface",
-            "same wheel-member inventory",
-            "Unknown, added or dynamically loaded wheel members fail closed",
-            "An owner comment alone cannot waive this comparison",
-            "exact final candidate",
-            "private no-provider installation and administration lifecycle",
+            "fresh install without uv or pipx",
+            "upgrade from v1.5.0",
+            "remote observer",
+            "safe init",
+            "basic Slack lifecycle",
+            "Slack telemetry remains deferred to v1.6.0",
+            "metadata-only",
+            "fresh dashboard",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, runbook)
-        self.assertIn("code_mower.canary_candidate_equivalence.v1", qualification)
-        self.assertIn("any operational member difference requires newly authorized canaries",
-                      qualification)
+        self.assertIn("one bounded hosted Board canary", qualification)
+        self.assertIn("authorized usage and settled usage are separate facts", qualification)
 
     def test_later_versions_do_not_revert_to_building_at_publication(self):
         with patch.object(release_readiness, "_python_package_version", return_value="1.5.1"):
@@ -415,7 +416,7 @@ class ReleaseContractTests(unittest.TestCase):
         ordered = checks["post-merge-release-runbook-ordered"]["detail"]
         asserted = checks["post-merge-release-runbook-asserted"]["detail"]
         self.assertEqual(ordered["release_tag"], "v1.5.1")
-        self.assertIn("docs/v150-release-runbook.md", ordered["required_commands"][0])
+        self.assertIn("docs/v151-release-runbook.md", ordered["required_commands"][0])
         self.assertNotIn("gh release create v1.5.1", ordered["required_commands"])
         self.assertEqual(asserted["required_assertions"],
                          ["merge SHA and retained artifact binding; explicit owner gates"])
@@ -429,9 +430,9 @@ class ReleaseContractTests(unittest.TestCase):
 
     def test_later_versions_still_reject_missing_candidate_runbook_gates(self):
         original = release_readiness._read_text_if_exists
-        runbook_path = ROOT / "docs/v150-release-runbook.md"
+        runbook_path = ROOT / "docs/v151-release-runbook.md"
         for marker, check_id, detail in (
-            ("## 3. Private acceptance", "post-merge-release-runbook-ordered", "missing_or_out_of_order"),
+            ("## 3. Qualify the exact candidate", "post-merge-release-runbook-ordered", "missing_or_out_of_order"),
             ("aggregate campaign ACU", "post-merge-release-runbook-asserted", "missing_assertions"),
         ):
             def read(path, marker=marker):
