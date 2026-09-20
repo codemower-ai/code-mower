@@ -165,7 +165,7 @@ metadata only while its original head and freshness checks still hold.
 
 Only canonical metadata leaves the machine: schema, numeric repository ID, PR
 number, reviewer lane, PASS/BLOCKED, full start/end head SHAs, artifact creation
-time, and the originating audit run ID/attempt. The repository name, comment prose, findings, code, prompts, transcript,
+time, and the originating audit run, attempt, and job IDs. The repository name, comment prose, findings, code, prompts, transcript,
 paths and provider output stay local. The SHA-256 digest covers those exact
 canonical metadata bytes. The publisher accepts only equal full start/end SHAs,
 an open PR at that SHA, and artifacts no more than 24 hours old. UNKNOWN, STALE,
@@ -185,12 +185,15 @@ attempt is refused. Keep receipts and reservations for at least the 24-hour
 artifact lifetime. The global publication concurrency group serializes claims;
 GitHub may cancel an older queued dispatch, which requires inspecting its result.
 
-The source job stages the metadata, independently validates it, and completes a
+The source job stages the metadata with its exact GitHub Actions job ID,
+independently validates it, and completes a
 `Code Mower reviewer seal <digest>` step before dispatch. The publisher verifies
-that immutable Actions step record in the matching `audit (claude|codex)` job,
+that immutable Actions step record in that exact `audit (claude|codex)` job,
 source run ID/attempt, trusted `local-cli-audit.yml` `repository_dispatch` event,
 same repository and default branch. The sealed digest binds the PR, lane and
-full start/end head. The small `local-audit-request.yml` trigger requests the
+full start/end head plus the source job identity. Another audit lane in the
+same matrix run cannot satisfy or make ambiguous that binding; a duplicate
+seal within the requested lane is refused. The small `local-audit-request.yml` trigger requests the
 review; the source workflow validates the request against the live PR before
 starting a provider. Both source and publisher use `repository_dispatch`, which
 always executes default-branch code: a builder cannot counterfeit a source job

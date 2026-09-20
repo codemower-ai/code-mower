@@ -46,6 +46,7 @@ def artifact(lane="claude", verdict="PASS", **changes):
             created_at=NOW,
             source_run_id=700,
             source_run_attempt=1,
+            source_job_id=701,
         )
         | changes
     )
@@ -98,6 +99,7 @@ def environment():
         GITHUB_SHA=SOURCE,
         GITHUB_RUN_ID="800",
         GITHUB_RUN_ATTEMPT="1",
+        RUNNER_NAME="code-mower-audit-mac",
     )
 
 
@@ -126,8 +128,12 @@ def source_for(value):
         pull_requests=[dict(number=42, base=dict(ref="main", repo=REPOSITORY))],
         jobs=[
             dict(
+                id=value["source_job_id"],
                 run_id=value["source_run_id"],
+                run_attempt=value["source_run_attempt"],
                 name=f"audit ({value['lane']})",
+                runner_name="code-mower-audit-mac",
+                status="in_progress",
                 steps=[dict(name=pub.seal_name(value), status="completed", conclusion="success")],
             )
         ],
@@ -493,7 +499,9 @@ class ContractTests(unittest.TestCase):
             lambda s: s.update(head_repository={"id": 999}),
             lambda s: s.update(event="pull_request_target"),
             lambda s: s["jobs"][0].update(name="audit (codex)"),
+            lambda s: s["jobs"][0].update(id=702),
             lambda s: s["jobs"][0].update(run_id=701),
+            lambda s: s["jobs"][0].update(run_attempt=2),
             lambda s: s["jobs"][0].update(steps=[]),
             lambda s: s["jobs"][0]["steps"][0].update(name="Code Mower reviewer seal " + "0" * 64),
             lambda s: s["jobs"][0]["steps"][0].update(status="in_progress"),
@@ -510,6 +518,75 @@ class ContractTests(unittest.TestCase):
         api = MemoryGitHub(artifact(verdict="BLOCKED"))
         with self.assertRaises(pub.Refused):
             pub.publish(event_for(artifact(verdict="PASS")), environment(), api, now=NOW)
+        self.assertEqual(api.writes, [])
+
+    def test_two_lanes_bind_only_their_exact_source_jobs(self):
+        claude = artifact(source_job_id=701)
+        codex = artifact("codex", source_job_id=702)
+        jobs = source_for(claude)["jobs"] + source_for(codex)["jobs"]
+        for value in (claude, codex):
+            api = MemoryGitHub(value)
+            api.source["jobs"] = deepcopy(jobs)
+            pub.publish(event_for(value), environment(), api, now=NOW)
+            self.assertEqual([method for method, _, _ in api.writes], ["POST", "PATCH"])
+
+    def test_source_job_resolution_requires_one_running_lane_on_this_runner(self):
+        value = artifact()
+        api = MemoryGitHub(value)
+        self.assertEqual(
+            pub.current_source_job(
+                api,
+                run_id=value["source_run_id"],
+                run_attempt=value["source_run_attempt"],
+                lane=value["lane"],
+                runner_name="code-mower-audit-mac",
+            )["id"],
+            value["source_job_id"],
+        )
+        other_lane = source_for(artifact("codex", source_job_id=702))["jobs"][0]
+        api.source["jobs"].append(other_lane)
+        self.assertEqual(
+            pub.current_source_job(
+                api,
+                run_id=value["source_run_id"],
+                run_attempt=value["source_run_attempt"],
+                lane=value["lane"],
+                runner_name="code-mower-audit-mac",
+            )["id"],
+            value["source_job_id"],
+        )
+        for change in (
+            {"status": "completed"},
+            {"runner_name": "other-runner"},
+            {"run_attempt": 2},
+            {"duplicate": True},
+        ):
+            failed = MemoryGitHub(value)
+            if change.get("duplicate"):
+                failed.source["jobs"].append(failed.source["jobs"][0] | {"id": 703})
+            else:
+                failed.source["jobs"][0].update(change)
+            with self.assertRaises(pub.Refused):
+                pub.current_source_job(
+                    failed,
+                    run_id=value["source_run_id"],
+                    run_attempt=value["source_run_attempt"],
+                    lane=value["lane"],
+                    runner_name="code-mower-audit-mac",
+                )
+
+    def test_other_lane_cannot_substitute_for_bound_source_job(self):
+        value = artifact()
+        api = MemoryGitHub(value)
+        api.source["jobs"][0]["steps"] = []
+        forged = deepcopy(api.source["jobs"][0])
+        forged.update(id=702, name="audit (codex)")
+        forged["steps"] = [
+            dict(name=pub.seal_name(value), status="completed", conclusion="success")
+        ]
+        api.source["jobs"].append(forged)
+        with self.assertRaises(pub.Refused):
+            pub.publish(event_for(value), environment(), api, now=NOW)
         self.assertEqual(api.writes, [])
 
     def test_canonical_exact_schema_digest_and_field_types(self):
@@ -537,6 +614,8 @@ class ContractTests(unittest.TestCase):
             dict(created_at=True),
             dict(source_run_id=True),
             dict(source_run_id=0),
+            dict(source_job_id=True),
+            dict(source_job_id=0),
             dict(source_run_attempt=2),
             dict(source_run_attempt=True),
             dict(source="private source"),
@@ -927,6 +1006,7 @@ exit 0
         local = self.local()
         local.pop("source_run_id")
         local.pop("source_run_attempt")
+        local.pop("source_job_id")
         api = MemoryGitHub(artifact(created_at=int(time.time())))
         with tempfile.TemporaryDirectory() as tmp:
             path, staged = Path(tmp) / "local.json", Path(tmp) / "metadata.json"
@@ -935,6 +1015,7 @@ exit 0
                 GITHUB_EVENT_NAME="repository_dispatch",
                 GITHUB_RUN_ID="700",
                 GITHUB_RUN_ATTEMPT="1",
+                RUNNER_NAME="code-mower-audit-mac",
                 PR_HEAD_SHA=HEAD,
                 GITHUB_WORKFLOW_REF=f"{REPO}/{pub.SOURCE_WORKFLOW}@refs/heads/main",
                 CODE_MOWER_LOCAL_AUDIT_LANE="claude",
@@ -943,6 +1024,7 @@ exit 0
             pub.stage(path, token="fixture", lane="claude", env=env, io=api)
             value = pub.validate(staged.read_text(), pub.digest(staged.read_text()))
             self.assertEqual(value["source_run_id"], 700)
+            self.assertEqual(value["source_job_id"], 701)
             self.assertNotIn("PRIVATE_SOURCE", staged.read_text())
             self.assertEqual(api.writes, [])
             api.source = source_for(value)
@@ -988,6 +1070,7 @@ exit 0
                 posted_comment_url=None,
                 source_run_id=700,
                 source_run_attempt=1,
+                source_job_id=701,
             )
             | changes
         )

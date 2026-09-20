@@ -7,6 +7,11 @@ later entries are regular releases.
 
 ## Unreleased
 
+- Local audit publication now binds each reviewer seal to the exact Actions
+  job, matrix lane, run, and first attempt that produced it. Independent Codex
+  and Claude lanes in one run no longer make publication ambiguous, while a
+  missing, duplicate, wrong-job, or wrong-attempt seal still fails closed
+  (#1032).
 - Hosted-agent installation guidance now includes a Python-based uv bootstrap
   that does not pipe a remote script into a shell. Remote-only orchestrators
   get an explicit packaged-starter doctor command, doctor JSON is identified as
