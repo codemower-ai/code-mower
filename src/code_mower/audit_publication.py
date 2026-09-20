@@ -41,6 +41,7 @@ FIELDS = frozenset(
         "created_at",
         "source_run_id",
         "source_run_attempt",
+        "source_job_id",
     }
 )
 MARKER = "<!-- CODE_MOWER_AUDIT_PUBLICATION: "
@@ -104,6 +105,7 @@ REFUSAL_CODES = {
     "reservation lacks publishing run": "RESERVATION_LACKS_PUBLISHING_RUN",
     "run lookup mismatch": "RUN_LOOKUP_MISMATCH",
     "source reviewer seal missing or ambiguous": "SOURCE_REVIEWER_SEAL_MISSING_OR_AMBIGUOUS",
+    "source reviewer job missing or ambiguous": "SOURCE_REVIEWER_JOB_MISSING_OR_AMBIGUOUS",
     "unexpected publishing identity": "UNEXPECTED_PUBLISHING_IDENTITY",
     "unsupported publication command": "UNSUPPORTED_PUBLICATION_COMMAND",
     "unsupported publication schema": "UNSUPPORTED_PUBLICATION_SCHEMA",
@@ -187,6 +189,7 @@ def validate(text, expected_digest, *, now=None):
     require(positive(value["repository_id"]) and positive(value["pr_number"]), "invalid target")
     require(
         positive(value["source_run_id"])
+        and positive(value["source_job_id"])
         and value["source_run_attempt"] == 1
         and type(value["source_run_attempt"]) is int,
         "invalid source run/attempt",
@@ -235,21 +238,49 @@ def verify_source(io, value, repository):
         and source.get("head_repository", {}).get("id") == repository["id"],
         "untrusted source audit run",
     )
-    jobs = io.pages(f"/actions/runs/{source['id']}/attempts/1/jobs", "jobs")
-    matching = [
+    jobs = io.pages(
+        f"/actions/runs/{source['id']}/attempts/{value['source_run_attempt']}/jobs", "jobs"
+    )
+    lane_jobs = [
         job
         for job in jobs
         if job.get("run_id") == source["id"]
+        and job.get("run_attempt") == value["source_run_attempt"]
         and job.get("name") == f"audit ({value['lane']})"
-        and any(
+    ]
+    bound = [job for job in lane_jobs if job.get("id") == value["source_job_id"]]
+    sealed = [
+        job
+        for job in lane_jobs
+        if any(
             step.get("name") == seal_name(value)
             and step.get("status") == "completed"
             and step.get("conclusion") == "success"
             for step in job.get("steps", [])
         )
     ]
-    require(len(matching) == 1, "source reviewer seal missing or ambiguous")
+    require(
+        len(bound) == 1 and len(sealed) == 1 and sealed[0].get("id") == value["source_job_id"],
+        "source reviewer seal missing or ambiguous",
+    )
     return source
+
+
+def current_source_job(io, *, run_id, run_attempt, lane, runner_name):
+    """Resolve this running matrix job before its artifact is sealed."""
+    jobs = io.pages(f"/actions/runs/{run_id}/attempts/{run_attempt}/jobs", "jobs")
+    matching = [
+        job
+        for job in jobs
+        if positive(job.get("id"))
+        and job.get("run_id") == run_id
+        and job.get("run_attempt") == run_attempt
+        and job.get("name") == f"audit ({lane})"
+        and job.get("runner_name") == runner_name
+        and job.get("status") == "in_progress"
+    ]
+    require(len(matching) == 1, "source reviewer job missing or ambiguous")
+    return matching[0]
 
 
 def receipts(run):
@@ -571,6 +602,7 @@ def project_local(artifact, repository, *, lane, now):
         "created_at": created_at,
         "source_run_id": artifact.get("source_run_id"),
         "source_run_attempt": artifact.get("source_run_attempt"),
+        "source_job_id": artifact.get("source_job_id"),
     }
     text = canonical(value)
     validate(text, digest(text), now=now)
@@ -622,7 +654,20 @@ def stage(path, *, token, lane, env=None, io=None):
         and env.get("PR_HEAD_SHA") == artifact.get("head_sha_start"),
         "untrusted staging environment",
     )
-    artifact.update(source_run_id=int(env["GITHUB_RUN_ID"]), source_run_attempt=1)
+    run_id = int(env["GITHUB_RUN_ID"])
+    run_attempt = int(env["GITHUB_RUN_ATTEMPT"])
+    source_job = current_source_job(
+        io,
+        run_id=run_id,
+        run_attempt=run_attempt,
+        lane=lane,
+        runner_name=env.get("RUNNER_NAME"),
+    )
+    artifact.update(
+        source_run_id=run_id,
+        source_run_attempt=run_attempt,
+        source_job_id=source_job["id"],
+    )
     value = project_local(artifact, repository, lane=lane, now=int(time.time()))
     current_pr(io, value)
     Path(path).write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
