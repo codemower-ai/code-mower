@@ -248,6 +248,10 @@ printf '%s\n' "$OPENAI_API_KEY" | codex login --with-api-key
 code-mower doctor --adoption --campaign
 ```
 
+Run the first doctor command before `codex login`: it writes the selected
+file-mode configuration into the isolated home. Authenticating first can place
+the credential in the wrong store for the later campaign process.
+
 Keep `CODE_MOWER_CODEX_CAMPAIGN_AUTH_MODE=file` in every runner or service
 environment that starts the campaign. The first doctor call prepares the
 restricted home and reports the credential missing; the login creates the

@@ -79,7 +79,10 @@ From Claude, only `--host claude` changes. The same convention works for
 Devin is qualified only for bounded builder work and informational review;
 `--host devin` and a Devin orchestrator handoff are rejected before acquiring a
 lease or saving a brief. Selecting Devin as a participant does not grant
-orchestration authority. The agent supplies its own
+orchestration authority. The same role check applies to `--dry-run` and
+`--no-lease`: those modes remove mutation and lease acquisition, but they do
+not let an ineligible host claim the orchestrator role. Use a qualified host to
+render the read-only brief. The agent supplies its own
 identity; the user does not have to choose the orchestrator every time.
 Wrappers can set `CODE_MOWER_HOST` instead. A plain shell with no host context
 requires an explicit host rather than guessing from installed CLIs.

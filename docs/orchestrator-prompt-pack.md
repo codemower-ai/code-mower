@@ -74,12 +74,15 @@ Run the posture-appropriate doctor:
 - local reviewer/builder machine: code-mower doctor --adoption --repo OWNER/REPO --json
 - hosted builder or observer: code-mower doctor --adoption --hosted-builders --repo OWNER/REPO --json
 - orchestrator-only host: code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO --json
+- remote-only host with no checkout config: code-mower doctor --easy --orchestrator-only --repo OWNER/REPO --json
 - supervised pilot readiness: code-mower doctor --supervised-pilot --repo OWNER/REPO --json
 
 Read the posture-scoped summary first by rerunning the same posture with
 --concise instead of --json: every check still runs, and the summary leads with
 active failures and owner actions. Keep the --json output as the complete
-machine-readable evidence, and use --advanced for the full text list.
+machine-readable local evidence, and use --advanced for the full text list.
+Doctor JSON can contain local config, executable, and workflow paths; review or
+redact it before attaching or uploading it.
 
 Provider selection and a working CLI do not qualify an orchestrator. Devin is
 currently limited to bounded builder work and informational review; use a
@@ -94,8 +97,11 @@ SESSION_ID using the saved ID. A later shell must pass that ID explicitly.
 If work intentionally continues, renew only your live lease with code-mower
 session lease renew --session-id SESSION_ID. Use session show --current to
 find the matching saved brief from this checkout.
-Do not force-release another session as routine cleanup. A read-only adoption
-check can use session start --dry-run or --no-lease.
+Do not force-release another session as routine cleanup. An eligible host can
+use session start --dry-run or --no-lease for a read-only adoption check. Host
+role admission still runs before either mode; an ineligible host reports the
+diagnostic and hands orchestration to a qualified host rather than rendering a
+brief under an unqualified identity.
 
 Then run code-mower lanes status --repo OWNER/REPO and, when useful, start or
 check the local Board with code-mower board serve --repo OWNER/REPO.
