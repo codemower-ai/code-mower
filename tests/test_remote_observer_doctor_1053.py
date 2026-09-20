@@ -117,7 +117,7 @@ class RemoteObserverDoctorTests(TestCase):
             tempfile.TemporaryDirectory() as tmp,
             _cwd(Path(tmp)),
             mock.patch(
-                "code_mower.doctor_checks.runner.shutil.which",
+                "code_mower.doctor_checks.github.shutil.which",
                 return_value="/private/observer/bin/gh",
             ),
             mock.patch(

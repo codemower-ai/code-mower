@@ -156,6 +156,8 @@ _DOCTOR_COMPAT_EXPORTS = (
 def main(argv: Sequence[str] | None = None) -> int:
     # Slack has a deliberately separate output boundary: generic doctor output
     # includes repository paths and provider details unsuitable for this surface.
+    # Preserve the original argv once: later defaults must distinguish an
+    # omitted flag from an explicit false-by-default argparse value.
     raw_args = list(sys.argv[1:] if argv is None else argv)
     if "--slack" in raw_args:
         from code_mower import slack_setup
