@@ -373,7 +373,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.adoption = True
     if args.adoption:
         args.preflight = True
+    cloud_explicit = "--cloud" in raw_args
+    runtime_probe_explicit = "--probe-runtime" in raw_args
     _apply_first_run_defaults(args)
+    if args.adoption_posture == "orchestrator-only":
+        # The adoption preset predates observer postures and expands to local
+        # runtime plus optional Cloud checks.  Those are useful on a reviewer
+        # host, but an orchestrator only needs the repository-facing checks it
+        # selected.  Preserve deliberate additions to the command line.
+        if not cloud_explicit:
+            args.cloud = False
+        if not runtime_probe_explicit:
+            args.probe_runtime = False
     if args.easy and args.profile is None:
         args.profile = "recommended"
     explicit_config = args.config is not None

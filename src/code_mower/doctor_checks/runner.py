@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
+import subprocess
 from typing import Any, Mapping
 
 from code_mower import config as code_mower_config
@@ -53,7 +54,13 @@ def _global_runtime_checks(
     *,
     probe_runtime: bool,
     http_timeout: int,
+    observer_plan: bool = False,
 ) -> tuple[DoctorCheck, ...]:
+    if observer_plan:
+        # An observer is already running Code Mower successfully. Product test
+        # tools, reviewer conveniences, and self-hosted runner state are not
+        # prerequisites for repository observation.
+        return ()
     return (
         check_python_runtime(),
         check_pytest(),
@@ -82,11 +89,15 @@ def _run_plan_check(
     probe_runtime: bool,
     actions_cost_sample: int,
     adoption_posture: str,
+    observer_plan: bool = False,
 ) -> DoctorCheck:
+    plan_name = (
+        "packaged-starter remote-observer plan" if observer_plan else "doctor run plan"
+    )
     return DoctorCheck(
         name="doctor.plan",
         status=STATUS_PASS,
-        message="doctor run plan: " + ", ".join(stage.id for stage in plan),
+        message=plan_name + ": " + ", ".join(stage.id for stage in plan),
         detail={
             "stages": [
                 {
@@ -99,6 +110,9 @@ def _run_plan_check(
             "probe_runtime": probe_runtime,
             "actions_cost_sample": actions_cost_sample,
             "adoption_posture": adoption_posture,
+            "plan": (
+                "packaged_starter_remote_observer" if observer_plan else "standard"
+            ),
         },
     )
 
@@ -130,6 +144,7 @@ def run_doctor(
     context_online: bool = False,
     context_state_dir: Path | None = None,
     board_startup_grace: Any = None,
+    checkout_present: bool | None = None,
 ) -> DoctorReport:
     config, templates, checks = load_inputs(config_path, provider_templates_path)
     # Devin is an explicit addition to the Claude + Codex default, so its stage
@@ -143,15 +158,6 @@ def run_doctor(
     devin_ambiguous = devin_transport is None and bool(
         devin_selection_ambiguity(config, lanes=devin_lanes, profile=profile)
     )
-    plan = build_doctor_run_plan(
-        github=github,
-        cloud=cloud,
-        runner=runner,
-        adoption=adoption or bool(repo_slug),
-        devin=devin or bool(devin_transport) or devin_ambiguous,
-        supervised_pilot=supervised_pilot,
-    )
-    enabled_stages = {stage.id for stage in plan}
     if isinstance(config, Mapping) and config.get('context') is not None:
         from ..context_readiness import inspect_connection
         readiness = inspect_connection(config['context'], state_dir=context_state_dir,
@@ -161,6 +167,42 @@ def run_doctor(
         checks.append(DoctorCheck('context.readiness', context_status, readiness['message'],
             detail=readiness, remediation=readiness['next_action']))
     using_packaged_example = config_path.name == "code-mower.example.yml"
+    packaged_observer_plan = (
+        adoption
+        and adoption_posture == "orchestrator-only"
+        and using_packaged_example
+        and config_source in {"", "packaged_starter", "source_tree_starter"}
+    )
+    if checkout_present is None:
+        try:
+            checkout_probe = subprocess.run(
+                ["git", "-C", str(Path.cwd()), "rev-parse", "--is-inside-work-tree"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            checkout_present = False
+        else:
+            checkout_present = (
+                checkout_probe.returncode == 0
+                and checkout_probe.stdout.strip().lower() == "true"
+            )
+    plan = build_doctor_run_plan(
+        github=github,
+        cloud=cloud,
+        runner=runner,
+        adoption=adoption or bool(repo_slug),
+        devin=devin or bool(devin_transport) or devin_ambiguous,
+        supervised_pilot=supervised_pilot,
+    )
+    if packaged_observer_plan:
+        quiet_stages = {"runtime"}
+        if not checkout_present:
+            quiet_stages.add("providers")
+        plan = tuple(stage for stage in plan if stage.id not in quiet_stages)
+    enabled_stages = {stage.id for stage in plan}
     # `doctor --easy` can inspect the packaged example before a repo has written
     # code-mower.yml. In that mode the example should teach the user about stale
     # guards without failing because product workflow files are not installed
@@ -207,6 +249,8 @@ def run_doctor(
             repo_root=Path.cwd() if using_packaged_example else config_path.parent,
             trusted_author_variables=trusted_author_variables,
             trusted_author_variable_errors=trusted_author_variable_errors,
+            observer_plan=packaged_observer_plan,
+            checkout_present=checkout_present,
         )
     )
     if config is not None and repo_slug:
@@ -217,6 +261,7 @@ def run_doctor(
             probe_runtime=probe_runtime,
             actions_cost_sample=actions_cost_sample,
             adoption_posture=adoption_posture,
+            observer_plan=packaged_observer_plan,
         )
     )
     if config is None or templates is None:
@@ -267,6 +312,7 @@ def run_doctor(
         _global_runtime_checks(
             probe_runtime=probe_runtime,
             http_timeout=http_timeout,
+            observer_plan=packaged_observer_plan,
         )
     )
 
@@ -306,6 +352,11 @@ def run_doctor(
                 adoption_posture=adoption_posture,
                 probe_runtime=probe_runtime,
                 http_timeout=http_timeout,
+                check_checkout_files=(
+                    not packaged_observer_plan or bool(checkout_present)
+                ),
+                quiet_local_skips=packaged_observer_plan,
+                shareable=packaged_observer_plan,
             )
         )
     if "devin-readiness" in enabled_stages:
@@ -334,7 +385,7 @@ def run_doctor(
         )
     )
 
-    if adoption:
+    if adoption and (not packaged_observer_plan or campaign):
         from code_mower import release_campaigns
 
         checks.extend(
@@ -356,7 +407,7 @@ def run_doctor(
             )
         )
 
-    if adoption:
+    if adoption and not packaged_observer_plan:
         checks.extend(
             check_jira_tracker_readiness(
                 config=config,
@@ -377,6 +428,7 @@ def run_doctor(
                 adoption=adoption,
                 adoption_posture=adoption_posture,
                 pilot_mode=pilot_mode,
+                shareable=packaged_observer_plan,
             )
         )
 
@@ -409,8 +461,12 @@ def run_doctor(
         )
 
     return DoctorReport(
-        config_path=str(config_path),
-        provider_templates_path=str(provider_templates_path),
+        config_path=("packaged-starter" if packaged_observer_plan else str(config_path)),
+        provider_templates_path=(
+            "packaged-provider-catalog"
+            if packaged_observer_plan
+            else str(provider_templates_path)
+        ),
         profile=profile,
         checks=tuple(checks),
     )

@@ -22,6 +22,7 @@ def check_review_hygiene(
     effective_lane: Mapping[str, Any] | None = None,
     repo_root: Path | None = None,
     missing_workflow_is_warning: bool = False,
+    shareable: bool = False,
 ) -> DoctorCheck:
     """Verify that merge-authority lanes have stale terminal-label protection."""
 
@@ -126,24 +127,27 @@ def check_review_hygiene(
             "root, commit the generated clear-stale workflow, then rerun "
             "doctor before relying on this lane as merge authority."
         )
+        missing_detail = {
+            **detail,
+            "workflow_exists": False,
+            "missing_workflow_is_warning": missing_workflow_is_warning,
+        }
+        if not shareable:
+            missing_detail["workflow_path"] = str(workflow_path)
         return DoctorCheck(
             name="provider.review_hygiene",
             status=status,
             lane=lane_id,
             message=message,
-            detail={
-                **detail,
-                "workflow_exists": False,
-                "workflow_path": str(workflow_path),
-                "missing_workflow_is_warning": missing_workflow_is_warning,
-            },
+            detail=missing_detail,
             remediation=remediation,
         )
     detail = {
         **detail,
         "workflow_exists": True,
-        "workflow_path": str(workflow_path),
     }
+    if not shareable:
+        detail["workflow_path"] = str(workflow_path)
 
     return DoctorCheck(
         name="provider.review_hygiene",

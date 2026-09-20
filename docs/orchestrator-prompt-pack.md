@@ -74,15 +74,25 @@ Run the posture-appropriate doctor:
 - local reviewer/builder machine: code-mower doctor --adoption --repo OWNER/REPO --json
 - hosted builder or observer: code-mower doctor --adoption --hosted-builders --repo OWNER/REPO --json
 - orchestrator-only host: code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO --json
-- remote-only host with no checkout config: code-mower doctor --easy --orchestrator-only --repo OWNER/REPO --json
+- remote-only host with no checkout config: code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO --json
 - supervised pilot readiness: code-mower doctor --supervised-pilot --repo OWNER/REPO --json
 
 Read the posture-scoped summary first by rerunning the same posture with
 --concise instead of --json: every check still runs, and the summary leads with
 active failures and owner actions. Keep the --json output as the complete
 machine-readable local evidence, and use --advanced for the full text list.
-Doctor JSON can contain local config, executable, and workflow paths; review or
-redact it before attaching or uploading it.
+When the orchestrator-only command has no repository config, doctor labels the
+result as a `packaged_starter_remote_observer` plan. It omits local wrapper,
+provider-login, campaign, optional Cloud, and product-test checks unless they
+were selected explicitly. With no checkout, it also omits workflow-presence
+checks. Repository Actions secret and variable presence still comes from the
+target repository through `gh`; that is separate from `GITHUB_TOKEN` or local
+checkout-path requirements used by direct local-audit wrappers.
+
+That packaged-starter remote-observer JSON uses stable package labels and does
+not include local config, executable, checkout, or workflow paths. Other doctor
+JSON can contain local paths; review or redact it before attaching or uploading
+it.
 
 Provider selection and a working CLI do not qualify an orchestrator. Devin is
 currently limited to bounded builder work and informational review; use a

@@ -210,17 +210,23 @@ def check_lane_runtime(
     http_timeout: int,
     adoption_posture: str = "reviewer-gate",
     missing_workflow_is_warning: bool = False,
+    check_checkout_files: bool = True,
+    quiet_local_skips: bool = False,
+    shareable: bool = False,
 ) -> list[DoctorCheck]:
     hygiene_source = source_lane if source_lane is not None else lane
-    checks = [
-        check_review_hygiene(
-            lane_id,
-            hygiene_source,
-            effective_lane=lane,
-            repo_root=repo_root,
-            missing_workflow_is_warning=missing_workflow_is_warning,
+    checks = []
+    if check_checkout_files:
+        checks.append(
+            check_review_hygiene(
+                lane_id,
+                hygiene_source,
+                effective_lane=lane,
+                repo_root=repo_root,
+                missing_workflow_is_warning=missing_workflow_is_warning,
+                shareable=shareable,
+            )
         )
-    ]
     try:
         transport = lane_transport(lane_id, hygiene_source)
     except code_mower_config.ConfigError as exc:
@@ -247,13 +253,14 @@ def check_lane_runtime(
         checks.extend(check_required_env(lane_id, lane))
     if driver == "local_cli":
         if skip_local_cli_runtime:
-            checks.extend(
-                _skip_local_cli_checks(
-                    lane_id,
-                    lane,
-                    adoption_posture=adoption_posture,
+            if not quiet_local_skips:
+                checks.extend(
+                    _skip_local_cli_checks(
+                        lane_id,
+                        lane,
+                        adoption_posture=adoption_posture,
+                    )
                 )
-            )
             return checks
         checks.extend(
             check_local_audit_wrapper_setup(

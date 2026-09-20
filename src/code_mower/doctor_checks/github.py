@@ -39,6 +39,7 @@ def check_github_setup(
     adoption: bool = False,
     adoption_posture: str = "reviewer-gate",
     pilot_mode: str = "manual",
+    shareable: bool = False,
 ) -> list[DoctorCheck]:
     checks: list[DoctorCheck] = []
     gh_path = shutil.which("gh")
@@ -61,7 +62,11 @@ def check_github_setup(
             name="github.cli",
             status=STATUS_PASS,
             message="gh found for GitHub setup checks",
-            detail={"gh_path": gh_path},
+            detail=(
+                {"command": "gh", "available": True}
+                if shareable
+                else {"gh_path": gh_path}
+            ),
         )
     )
 

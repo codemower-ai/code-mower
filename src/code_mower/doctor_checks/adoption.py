@@ -229,6 +229,8 @@ def check_adoption_setup(
     repo_root: Path | None = None,
     trusted_author_variables: Mapping[str, str] | None = None,
     trusted_author_variable_errors: Mapping[str, Any] | None = None,
+    observer_plan: bool = False,
+    checkout_present: bool = True,
 ) -> tuple[DoctorCheck, ...]:
     """Return first-run adoption posture checks."""
 
@@ -300,18 +302,40 @@ def check_adoption_setup(
         else []
     )
     detail = {
-        "config_path": str(config_path),
+        "config_path": "packaged-starter" if observer_plan else str(config_path),
         "config_source": source,
-        "config_source_state": source_state,
-        "configured_repositories": repositories,
+        "config_source_state": "observer_plan" if observer_plan else source_state,
+        "configured_repositories": [] if observer_plan else repositories,
         "effective_repository": repo_slug,
         "repository_config_present": not using_packaged_example,
         "generated_setup_detected": bool(generated_marker_types),
         "generated_setup_marker_types": generated_marker_types,
     }
-    if next_steps:
+    if observer_plan:
+        detail.update(
+            {
+                "plan": "packaged_starter_remote_observer",
+                "adoption_posture": "orchestrator-only",
+                "checkout_present": checkout_present,
+                "checkout_checks": "enabled" if checkout_present else "not_applicable",
+                "local_wrapper_checks": "not_selected",
+            }
+        )
+    if next_steps and not observer_plan:
         detail["next_steps"] = next_steps
-    if using_packaged_example:
+    if observer_plan:
+        checks.append(
+            DoctorCheck(
+                name="doctor.adoption.config_source",
+                status=STATUS_PASS,
+                message=(
+                    "using packaged-starter remote-observer plan; a local "
+                    "repository config is not required"
+                ),
+                detail=detail,
+            )
+        )
+    elif using_packaged_example:
         checks.append(
             DoctorCheck(
                 name="doctor.adoption.config_source",

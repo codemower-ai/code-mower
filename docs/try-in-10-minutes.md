@@ -156,6 +156,15 @@ Warnings are setup guidance. They are only fatal when you pass `--strict`. In
 JSON mode, check the top-level `run_plan` field first. It tells you whether the
 preflight included GitHub and optional cloud checks before you inspect
 individual provider warnings.
+
+For a remote observer that has no checkout or `code-mower.yml`, use
+`code-mower doctor --adoption --orchestrator-only --repo "$REPO" --json`.
+That posture uses a labeled packaged-starter observer plan and reports the
+target repository's metadata, Actions settings, secrets, and variables without
+requiring local reviewer tools or publishing local filesystem paths. Add
+`--cloud`, `--campaign`, or another optional selector only when that capability
+is deliberately part of the observation.
+
 Use `--hosted-builders` or `--orchestrator-only` when this machine observes or
 coordinates lanes without running Codex/Claude local audit wrappers; those
 postures skip local-wrapper probes and keep missing local wrapper env vars out
