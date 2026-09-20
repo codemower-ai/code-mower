@@ -202,3 +202,31 @@ class RemoteObserverDoctorTests(TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(captured["cloud"])
         self.assertTrue(captured["probe_runtime"])
+
+        captured.clear()
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout = Path(tmp)
+            (checkout / "code-mower.yml").write_text("version: 1\n", encoding="utf-8")
+            with (
+                _cwd(checkout),
+                mock.patch.object(
+                    doctor_cli, "run_doctor", side_effect=fake_run_doctor
+                ),
+                mock.patch.object(
+                    doctor_cli, "board_startup_grace", return_value=None
+                ),
+                redirect_stdout(StringIO()),
+            ):
+                code = doctor_cli.main(
+                    [
+                        "--adoption",
+                        "--orchestrator-only",
+                        "--repo",
+                        "owner/repo",
+                        "--json",
+                    ]
+                )
+
+        self.assertEqual(code, 0)
+        self.assertTrue(captured["cloud"])
+        self.assertTrue(captured["probe_runtime"])

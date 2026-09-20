@@ -375,8 +375,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.preflight = True
     cloud_explicit = "--cloud" in raw_args
     runtime_probe_explicit = "--probe-runtime" in raw_args
+    explicit_config = args.config is not None
     _apply_first_run_defaults(args)
-    if args.adoption_posture == "orchestrator-only":
+    configless_starter_requested = args.packaged_starter or (
+        not explicit_config and not Path("code-mower.yml").is_file()
+    )
+    if (
+        args.adoption_posture == "orchestrator-only"
+        and configless_starter_requested
+    ):
         # The adoption preset predates observer postures and expands to local
         # runtime plus optional Cloud checks.  Those are useful on a reviewer
         # host, but an orchestrator only needs the repository-facing checks it
@@ -387,7 +394,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.probe_runtime = False
     if args.easy and args.profile is None:
         args.profile = "recommended"
-    explicit_config = args.config is not None
     if args.config is None:
         args.config = "code-mower.yml"
     if args.packaged_starter and explicit_config:
