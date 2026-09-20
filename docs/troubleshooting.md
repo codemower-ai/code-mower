@@ -177,6 +177,21 @@ doctor verifies them from the current checkout. With a real repository
 `code-mower.yml`, missing configured clear-stale workflows are failures because
 the gate would otherwise be able to trust stale review evidence.
 
+An orchestrator-only observer without a checkout can use:
+
+```bash
+code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO --json
+```
+
+Doctor uses the packaged-starter remote-observer plan in that case. Checkout
+workflow paths, direct local-audit wrapper credentials and repo-path mappings,
+unselected campaign providers, optional Cloud upload, and product-side pytest
+are out of scope and stay out of the report. Repository Actions secret and
+variable presence remains in scope because doctor reads metadata for the
+explicit `OWNER/REPO`. If repository metadata is inaccessible, fix the one
+`github.repo.metadata` remediation first: verify that `gh auth` can read the
+target, including private-repository access when needed.
+
 ## Python Is Too Old
 
 Use the checked-in developer wrapper instead of bare `python3`:

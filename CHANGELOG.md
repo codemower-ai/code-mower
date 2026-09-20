@@ -16,6 +16,12 @@ later entries are regular releases.
   previews and staged applies. Applying packaged starter defaults beside an
   existing config requires `--packaged-starter`, remediation prints exact
   preview/apply commands, and generated lane-config paths are unique (#1054).
+- `doctor --adoption --orchestrator-only --repo OWNER/REPO` now works without a
+  checkout config through a labeled packaged-starter observer plan. It keeps
+  unselected local wrappers, providers, campaigns, Cloud upload, and pytest
+  checks quiet; omits checkout workflow checks when no checkout exists; keeps
+  repository Actions secret checks distinct; and removes local paths from this
+  share-oriented report (#1053).
 - Hosted-agent installation guidance now includes a Python-based uv bootstrap
   that does not pipe a remote script into a shell. Remote-only orchestrators
   get an explicit packaged-starter doctor command, doctor JSON is identified as
