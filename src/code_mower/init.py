@@ -2790,15 +2790,21 @@ def render_init_plan(
                 warnings.append(f"{lane_id}: generated file {path} collides with another lane")
             else:
                 generated_paths.add(path)
-                generated_files.append(
-                    {
-                        "path": path,
-                        "source": "lane-config-template",
-                        "copy_from": f"src/code_mower/lane_configs/{trailer_module}.py",
-                        "package_copy_from": f"lane_configs/{trailer_module}.py",
-                        "package_copy_first": True,
-                    }
-                )
+                entry = {"path": path, "source": "lane-config-template"}
+                # Claude and Codex used to be emitted twice: once here as a
+                # placeholder and once through PRODUCT_SUPPORT_FILES as the
+                # real package helper. Keep the fix deliberately scoped to
+                # those two duplicate entries; other lane templates retain
+                # their established placeholder behavior.
+                if trailer_module in {"claude", "codex"}:
+                    entry.update(
+                        {
+                            "copy_from": f"src/code_mower/lane_configs/{trailer_module}.py",
+                            "package_copy_from": f"lane_configs/{trailer_module}.py",
+                            "package_copy_first": True,
+                        }
+                    )
+                generated_files.append(entry)
         smoke_tests.extend(_lane_smoke_tests(lane_id, lane, package_mode=package_mode))
         warnings.extend(_lane_warnings(lane_id, lane, package_mode=package_mode))
 

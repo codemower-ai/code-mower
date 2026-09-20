@@ -201,6 +201,37 @@ class GeneratedPathUniquenessTests(unittest.TestCase):
         }
         self.assertEqual(lane_placeholders, set())
 
+    def test_research_lane_configs_keep_placeholder_behavior(self) -> None:
+        config = code_mower_config.load_config(STARTER)
+        plan = code_mower_init.render_init_plan(
+            config,
+            profile_id="cli_research",
+            config_path=str(STARTER),
+            package_mode=True,
+            source_kind="packaged_starter",
+        )
+
+        lane_entries = [
+            entry
+            for entry in plan.data["generated_files"]
+            if entry["path"].startswith("tools/lane_configs/")
+            and entry["path"] != "tools/lane_configs/__init__.py"
+        ]
+        self.assertTrue(lane_entries)
+        self.assertTrue(all("copy_from" not in entry for entry in lane_entries))
+        self.assertTrue(all("package_copy_from" not in entry for entry in lane_entries))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "generated"
+            result = code_mower_init.apply_init_plan(plan, output_dir)
+
+        placeholders = {
+            Path(path).relative_to(output_dir).as_posix()
+            for path in result["placeholder_files"]
+            if "tools/lane_configs/" in path
+        }
+        self.assertEqual(placeholders, {entry["path"] for entry in lane_entries})
+
 
 if __name__ == "__main__":
     unittest.main()
