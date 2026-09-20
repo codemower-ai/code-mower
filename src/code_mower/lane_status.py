@@ -422,8 +422,18 @@ def _remote(
     from . import config as policy_config
     budget = 64  # Global history requests, including terminal probes; every listed PR stays visible.
     for pr, raw_pr in zip(prs, (item for item in raw_prs if isinstance(item, Mapping)), strict=True):
+        if lineage_config is None:
+            pr["lineage"] = {
+                "status": "optional",
+                "reason": "lineage_policy_not_configured",
+                "current_writer": None,
+                "contributors": [],
+                "admitted_reviewers": [],
+                "next_action": "pass --config code-mower.yml to evaluate lineage",
+            }
+            continue
         try:
-            if lineage_config is None or (lineage_config and policy_config.validate_config(lineage_config)):
+            if policy_config.validate_config(lineage_config):
                 raise ContractError("Trusted validated status policy required")
             identity = lineage_identity(lineage_config)
             authority = lineage_authorities(lineage_config)
@@ -452,10 +462,22 @@ def _remote(
                 str(lane.get("author_lane") or lane.get("trailer_lane") or lane.get("provider") or key)
                 for key, lane in lanes.items() if isinstance(lane, Mapping)
                 and admit(decision, str(lane.get("author_lane") or lane.get("trailer_lane") or lane.get("provider") or key))})
+        except LaneStatusUnavailable:
+            pr["lineage"] = {
+                "status": "unavailable",
+                "reason": "lineage_unreadable",
+                "current_writer": None,
+                "contributors": [],
+                "admitted_reviewers": [],
+                "next_action": "restore readable lineage metadata and rerun status",
+            }
         except (ValueError, KeyError, TypeError, RuntimeError):
             pr["lineage"] = {"status": "unknown", "reason": "lineage_unreadable",
                              "current_writer": None, "contributors": [], "admitted_reviewers": []}
-        if pr["lineage"]["status"] != "ready":
+        if pr["lineage"]["status"] == "unavailable":
+            pr["next_action"] = str(pr["lineage"]["next_action"])
+            pr["next_detail"] = "lineage unavailable: " + pr["lineage"]["reason"]
+        elif pr["lineage"]["status"] != "ready":
             pr["next_action"] = "owner action required"
             pr["next_detail"] = "lineage " + pr["lineage"]["status"] + ": " + pr["lineage"]["reason"]
 
@@ -982,6 +1004,7 @@ def _global_next(report: Mapping[str, Any]) -> tuple[str, str]:
             else "remote unavailable; fix GitHub access"
         ), ""
     for action in (
+        "restore readable lineage metadata and rerun status",
         "owner action required",
         "fix BLOCKED audit",
         "fix failing check",
@@ -1080,6 +1103,15 @@ def render_text(report: Mapping[str, Any]) -> str:
             lines.append(f"- #{pr['number']} {pr['title']} [{pr['merge_state']}{stale}] {pr['branch']} by {pr['author']} updated {pr['updated_at']}")
             lines.append(f"  labels: {_label_text(pr['labels'])}")
             lines.append(f"  checks: {_check_text(pr['checks'])}")
+            lineage = pr.get("lineage") if isinstance(pr.get("lineage"), Mapping) else {}
+            if lineage:
+                lines.append(
+                    f"  lineage: {lineage.get('status') or 'unavailable'} "
+                    f"({lineage.get('reason') or 'reason unavailable'})"
+                )
+                lineage_next = lineage.get("next_action") or lineage.get("owner_action")
+                if lineage_next:
+                    lines.append(f"  lineage next: {lineage_next}")
             lines.append(f"  next: {pr['next_action']}")
             if pr.get("next_detail"):
                 lines.append(f"  detail: {pr['next_detail']}")
@@ -1201,6 +1233,7 @@ def main(
         stale_minutes=args.stale_minutes,
         show_local_paths=args.show_local_paths,
         tracker_config=tracker_config,
+        lineage_config=tracker_config,
         jira_reader=jira_reader,
     )
     output = json.dumps(report, indent=2, sort_keys=True) + "\n" if args.json else render_text(report)

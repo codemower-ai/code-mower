@@ -2078,6 +2078,49 @@ def _status(**overrides: object) -> dict[str, object]:
 class BoardPresentationTruthTests(TestCase):
     """Issue #947: the Board may not claim more than the payload records."""
 
+    def test_primary_ui_names_serving_version_and_empty_workflows(self) -> None:
+        nodes = _render_board_dom(
+            _status(
+                board={
+                    "version": {
+                        "serving_version": "1.5.1",
+                        "installed_version": "1.5.1",
+                        "restart_recommended": False,
+                    }
+                }
+            )
+        )
+
+        self.assertEqual(nodes["version"], "Serving version: 1.5.1")
+        self.assertEqual(nodes["runs"], '<div class="muted">none</div>')
+
+    def test_pr_row_explains_optional_lineage_and_next_step(self) -> None:
+        pr = _pr(
+            15,
+            lineage={
+                "status": "optional",
+                "reason": "lineage_policy_not_configured",
+                "next_action": "pass --config code-mower.yml to evaluate lineage",
+            },
+        )
+        nodes = _render_board_dom(
+            _status(
+                remote={
+                    "available": True,
+                    "errors": [],
+                    "pull_requests": [pr],
+                    "workflow_runs": [],
+                    "gate_health": {"status": "pass", "alerts": []},
+                }
+            )
+        )
+
+        self.assertIn("lineage: <b>optional</b> (lineage_policy_not_configured)", nodes["prs"])
+        self.assertIn(
+            "lineage next: pass --config code-mower.yml to evaluate lineage",
+            nodes["prs"],
+        )
+
     def test_absent_measurements_render_as_not_recorded_not_zero(self) -> None:
         # Number(null), Number("") and Number(false) are all a finite 0, so a
         # naive Number.isFinite check turns "never measured" into "measured
