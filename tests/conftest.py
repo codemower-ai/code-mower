@@ -80,6 +80,9 @@ def _isolate_audit_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     )
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    # Git subprocesses must fail instead of waiting for an interactive
+    # credential prompt that a test runner cannot answer.
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
 
     real_create_connection = socket.create_connection
 

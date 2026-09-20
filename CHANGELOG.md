@@ -12,6 +12,10 @@ later entries are regular releases.
   get an explicit packaged-starter doctor command, doctor JSON is identified as
   local path-bearing evidence, and session guidance states that role admission
   still applies to `--dry-run` and `--no-lease` (#1050).
+- Local pytest runs now execute release-workflow shell snippets with the same
+  Python interpreter that launched the suite and disable interactive Git
+  credential prompts, keeping heterogeneous developer hosts deterministic
+  (#1050).
 
 ## 1.5.0 — release
 

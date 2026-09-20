@@ -285,10 +285,21 @@ class ReleaseIdentityWorkflowTests(unittest.TestCase):
         return re.sub(r"\$\{\{\s*(.*?)\s*\}\}", value, text)
 
     def run_step(self, step, context):
+        # Running a venv's pytest entry point directly does not activate that
+        # venv or put its bin directory on PATH. Workflow snippets intentionally
+        # call plain `python` after actions/setup-python, so mirror that contract
+        # with the interpreter running this test instead of an ambient system
+        # Python that may be older than Code Mower supports.
+        test_runtime_path = os.pathsep.join(
+            value
+            for value in (str(Path(sys.executable).parent), os.environ.get("PATH", ""))
+            if value
+        )
         return subprocess.run(
             ["bash", "-c", step["run"]], cwd=self.repo, text=True, capture_output=True,
             env={**os.environ, "GITHUB_OUTPUT": str(self.output),
                  "GITHUB_SHA": context["github"]["sha"],
+                 "PATH": test_runtime_path,
                  **{key: self.render(value, context) for key, value in step.get("env", {}).items()}},
             timeout=30,
         )
