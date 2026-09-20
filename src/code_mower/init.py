@@ -193,8 +193,6 @@ PRODUCT_SUPPORT_FILES = (
     ("tools/audit_publication.py", "audit_publication.py", "product-support-helper", "0644"),
     ("tools/trailer_comment_labeler.py", "trailer_comment_labeler.py", "product-support-helper", "0644"),
     ("tools/lane_configs/__init__.py", "lane_configs/__init__.py", "product-support-helper", "0644"),
-    ("tools/lane_configs/claude.py", "lane_configs/claude.py", "product-support-helper", "0644"),
-    ("tools/lane_configs/codex.py", "lane_configs/codex.py", "product-support-helper", "0644"),
     (
         "tools/builder_lineage.py",
         "builder_lineage.py",
@@ -2531,9 +2529,32 @@ def setup_drift_next_step(*, profile_id: str) -> str:
     return (
         "root code-mower.yml exists but the packaged starter config was selected; "
         f"rerun with `code-mower init code-mower.yml --profile {quoted_profile} --dry-run` "
-        "to use the explicit repository config, or compare with "
+        "to preview the repository config, then stage the upgrade with "
+        f"`code-mower init code-mower.yml --profile {quoted_profile} --apply "
+        f"--output-dir {DEFAULT_APPLY_OUTPUT_DIR}`; compare with "
         "`code-mower migration setup-drift --repo-path .` "
         "(see docs/upgrade-existing-repo.md)"
+    )
+
+
+def implicit_starter_apply_error(*, profile_id: str, output_dir: str) -> str:
+    """Explain how to stage either safe config source after refusing ambiguity."""
+
+    quoted_profile = shlex.quote(profile_id)
+    quoted_output_dir = shlex.quote(output_dir)
+    repository_command = (
+        f"code-mower init {ADOPTION_CONFIG_PATH} --profile {quoted_profile} --apply "
+        f"--output-dir {quoted_output_dir}"
+    )
+    starter_command = (
+        f"code-mower init --packaged-starter --profile {quoted_profile} --apply "
+        f"--output-dir {quoted_output_dir}"
+    )
+    return (
+        f"root {ADOPTION_CONFIG_PATH} exists; refusing to apply the packaged starter "
+        "without an explicit selection. Preserve the repository configuration with "
+        f"`{repository_command}`, or explicitly select the packaged starter with "
+        f"`{starter_command}`"
     )
 
 
@@ -2773,6 +2794,9 @@ def render_init_plan(
                     {
                         "path": path,
                         "source": "lane-config-template",
+                        "copy_from": f"src/code_mower/lane_configs/{trailer_module}.py",
+                        "package_copy_from": f"lane_configs/{trailer_module}.py",
+                        "package_copy_first": True,
                     }
                 )
         smoke_tests.extend(_lane_smoke_tests(lane_id, lane, package_mode=package_mode))
@@ -3507,8 +3531,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     explicit_config = args.config is not None
+    has_root_config = root_adoption_config_present()
     if args.config is None:
-        args.config = PACKAGED_STARTER_CONFIG_NAME
+        # Easy mode is also the upgrade entrypoint people remember. Preserve an
+        # existing repository's selected policy instead of silently switching
+        # the generated tree back to starter defaults.
+        args.config = (
+            ADOPTION_CONFIG_PATH
+            if args.easy and has_root_config and not args.packaged_starter
+            else PACKAGED_STARTER_CONFIG_NAME
+        )
 
     if args.easy:
         args.profile = "recommended"
@@ -3557,6 +3589,15 @@ def main(argv: list[str] | None = None) -> int:
             # basename matches the starter; only a resolved packaged fallback
             # counts as the packaged starter.
             packaged_fallback = config_source != Path(args.config)
+        if args.apply and packaged_fallback and has_root_config and not args.packaged_starter:
+            print(
+                "error: "
+                + implicit_starter_apply_error(
+                    profile_id=args.profile, output_dir=args.output_dir
+                ),
+                file=sys.stderr,
+            )
+            return 1
         rendered_config_path = (
             str(config_source) if packaged_fallback else args.config
         )

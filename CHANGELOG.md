@@ -12,6 +12,10 @@ later entries are regular releases.
   and Claude lanes in one run no longer make publication ambiguous, while a
   missing, duplicate, wrong-job, or wrong-attempt seal still fails closed
   (#1032).
+- `code-mower init --easy` now preserves an existing root `code-mower.yml` for
+  previews and staged applies. Applying packaged starter defaults beside an
+  existing config requires `--packaged-starter`, remediation prints exact
+  preview/apply commands, and generated lane-config paths are unique (#1054).
 - Hosted-agent installation guidance now includes a Python-based uv bootstrap
   that does not pipe a remote script into a shell. Remote-only orchestrators
   get an explicit packaged-starter doctor command, doctor JSON is identified as
