@@ -1,4 +1,4 @@
-"""Build once, inspect, and verify an exact-source v1.5.0 artifact pair.
+"""Build once, inspect, and verify an exact-source v1.5.1 artifact pair.
 
 This script never tags, publishes, contacts Slack or invokes a provider. The
 candidate workflow supplies the merged PR identity; local builds are rehearsals.
@@ -17,7 +17,7 @@ import sys
 import tarfile
 import zipfile
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 SCHEMA = "code_mower.release_candidate.v1"
 NAMES = (f"code_mower-{VERSION}-py3-none-any.whl", f"code_mower-{VERSION}.tar.gz")
 MODULES = (
@@ -26,9 +26,9 @@ MODULES = (
     "slack_setup.py", "slack_readiness.py", "supervisor_contract_v2.py",
     "templates/slack/hosted-app-manifest.json",
 )
-DOCS = ("v150-release-notes.md", "v150-qualification.md", "v150-release-runbook.md",
+DOCS = ("v151-release-notes.md", "v151-qualification.md", "v151-release-runbook.md",
         "slack-setup.md", "graphify-setup.md")
-REHEARSAL_SCHEMA = "code_mower.v150_rehearsal.v1"
+REHEARSAL_SCHEMA = "code_mower.v151_rehearsal.v1"
 CANARY_EQUIVALENCE_SCHEMA = "code_mower.canary_candidate_equivalence.v1"
 GRAPHIFY_CHECKS = (
     "graphify_doc_ref_excluded_reader_available",
@@ -57,9 +57,9 @@ CANARY_EQUIVALENCE_ALLOWED_WHEEL_CHANGES = frozenset({
     "code_mower/templates/workflows/local-audit-publication.yml.j2",
     "code_mower/templates/workflows/trailer-comment-labeler.yml.j2",
     f"code_mower-{VERSION}.data/data/share/code-mower/docs/graphify-setup.md",
-    f"code_mower-{VERSION}.data/data/share/code-mower/docs/v150-qualification.md",
-    f"code_mower-{VERSION}.data/data/share/code-mower/docs/v150-release-notes.md",
-    f"code_mower-{VERSION}.data/data/share/code-mower/docs/v150-release-runbook.md",
+    f"code_mower-{VERSION}.data/data/share/code-mower/docs/v151-qualification.md",
+    f"code_mower-{VERSION}.data/data/share/code-mower/docs/v151-release-notes.md",
+    f"code_mower-{VERSION}.data/data/share/code-mower/docs/v151-release-runbook.md",
     f"code_mower-{VERSION}.dist-info/METADATA",
     f"code_mower-{VERSION}.dist-info/RECORD",
 })

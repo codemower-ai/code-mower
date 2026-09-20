@@ -11,6 +11,9 @@ guidance; use [Install And Bootstrap](install.md) instead.
 
 ## Current Release Line
 
+- [v1.5.1 release notes](v151-release-notes.md)
+- [v1.5.1 qualification contract](v151-qualification.md)
+- [v1.5.1 candidate and publication runbook](v151-release-runbook.md)
 - [v1.5.0 release notes](v150-release-notes.md) (publication evidence belongs on the GitHub Release)
 - [v1.5.0 qualification contract](v150-qualification.md) (observed evidence belongs on #923 and the GitHub Release)
 - [v1.5.0 candidate and publication runbook](v150-release-runbook.md)

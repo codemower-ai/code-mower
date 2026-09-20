@@ -30,7 +30,7 @@ agent hosting a session is the default orchestrator.
 
 The lease, shared Jira brief, and explicit Cursor qualification have been
 available since `code-mower==1.4.0` and are present in
-`code-mower==1.5.0`; see [Participants And Sessions](sessions.md) for
+`code-mower==1.5.1`; see [Participants And Sessions](sessions.md) for
 the operating contract.
 
 ## Provider Classes

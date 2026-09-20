@@ -9,12 +9,12 @@ Code Mower is supervised-pilot, bring-your-own-agent-loop software.
 It is not a drop-in unattended merge gate. Humans still own credentials,
 repository policy, reviewer promotion, and exceptional decisions.
 
-This source defines Code Mower `v1.5.0`, with package spec
-`code-mower==1.5.0`. Confirm the release tag on GitHub Releases and the package
+This source defines Code Mower `v1.5.1`, with package spec
+`code-mower==1.5.1`. Confirm the release tag on GitHub Releases and the package
 version on the selected index before using an index install command; source
 version and publication state are separate facts. See the
-[v1.5.0 release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-release-notes.md)
-and [qualification contract](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-qualification.md).
+[v1.5.1 release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v151-release-notes.md)
+and [qualification contract](https://github.com/codemower-ai/code-mower/blob/main/docs/v151-qualification.md).
 After publication, the GitHub Release and linked release issue carry the
 observed source SHA, artifact digests, canary outcomes, publication run and
 reinstall evidence.
@@ -25,7 +25,7 @@ not claimed by its immutable qualification record.
 
 Documentation on `main` follows the source on `main`. For an installed release,
 read its immutable versioned guide, such as the
-[`v1.5.0` guide](https://github.com/codemower-ai/code-mower/blob/v1.5.0/docs/try-in-10-minutes.md),
+[`v1.5.1` guide](https://github.com/codemower-ai/code-mower/blob/v1.5.1/docs/try-in-10-minutes.md),
 and confirm the tag and package exist before using pinned install commands.
 
 ## What Code Mower Adds
@@ -54,13 +54,13 @@ one stable `pipx` installation:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.0
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.1
 command -v code-mower
 code-mower --version
 ```
 
 `command -v code-mower` should print the path you expect and `code-mower
---version` should print `code-mower 1.5.0` before you point Code Mower at a
+--version` should print `code-mower 1.5.1` before you point Code Mower at a
 repository. If you do not have pipx, install it from the
 [official pipx installation guide](https://pipx.pypa.io/stable/installation/).
 
@@ -285,7 +285,7 @@ for both workflows, supported behavior, and the trust boundary.
 
 ## Current Capabilities And Limits
 
-| Area | v1.5.0 posture |
+| Area | v1.5.1 posture |
 | --- | --- |
 | Default builders and reviewers | Claude Code + Codex |
 | Session hosts | Codex, Claude Code, and Cursor qualified; other identities recognized but require explicit handoff/provider transport |
@@ -299,7 +299,7 @@ for both workflows, supported behavior, and the trust boundary.
 
 GitLab, Bitbucket, broad unattended rollout, uncalibrated merge gates, Devin
 peer-orchestrator/reviewer parity, a hosted work-order CLI, a required Graphify
-dependency, Slack telemetry/Board links, and rich Slack UX are outside v1.5.0. The current priorities
+dependency, Slack telemetry/Board links, and rich Slack UX are outside v1.5.1. The current priorities
 and boundaries are recorded in
 [Current State And Roadmap](https://github.com/codemower-ai/code-mower/blob/main/docs/current-state-and-roadmap.md).
 
@@ -400,9 +400,9 @@ does not need rebuilding. See
 - [Cloud Data Contract](https://github.com/codemower-ai/code-mower/blob/main/docs/cloud-data-contract.md)
 - [Release Qualification](https://github.com/codemower-ai/code-mower/blob/main/docs/release-qualification.md)
 - [Public Release Checklist](https://github.com/codemower-ai/code-mower/blob/main/docs/public-release-checklist.md)
-- [v1.5.0 Release Notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-release-notes.md)
+- [v1.5.1 Release Notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v151-release-notes.md)
 - [v1.4.2 Release Notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v142-release-notes.md)
-- [v1.5.0 Qualification Contract](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-qualification.md)
+- [v1.5.1 Qualification Contract](https://github.com/codemower-ai/code-mower/blob/main/docs/v151-qualification.md)
 - [v1.4.2 Qualification Record](https://github.com/codemower-ai/code-mower/blob/main/docs/v142-qualification.md)
 - [Release History And Archived Plans](https://github.com/codemower-ai/code-mower/blob/main/docs/release-history.md)
 - [Changelog](https://github.com/codemower-ai/code-mower/blob/main/CHANGELOG.md)

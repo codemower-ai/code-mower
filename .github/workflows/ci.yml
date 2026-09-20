@@ -111,7 +111,7 @@ jobs:
             --source-sha "$SOURCE_SHA" --dist "$RUNNER_TEMP/rehearsal-dist"
       - name: Rehearse the exact installed wheel offline
         run: |
-          python scripts/rehearse_v150.py --dist "$RUNNER_TEMP/rehearsal-dist" \
+          python scripts/rehearse_v151.py --dist "$RUNNER_TEMP/rehearsal-dist" \
             --source-sha "$SOURCE_SHA" --work-dir "$RUNNER_TEMP/rehearsal"
       - name: Upload sanitized pre-merge evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

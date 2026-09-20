@@ -1,7 +1,7 @@
 # Early Adopter Invite Runbook
 
 Source target: v1.5.0 supervised-pilot baseline. Release invitations and pinned
-index installs target `code-mower==1.5.0` only after that version is visible on
+index installs target `code-mower==1.5.1` only after that version is visible on
 the selected package index.
 
 Use this runbook for the first 5-10 friendly users before widening Code Mower
@@ -41,8 +41,8 @@ Want to try Code Mower for 10 minutes?
 It is an OSS local-first tool for setting up AI peer-programmer/reviewer lanes
 on your real codebase, with optional privacy-first cloud reporting.
 
-After v1.5.0 is published, start here:
-https://github.com/codemower-ai/code-mower/blob/v1.5.0/docs/try-in-10-minutes.md
+After v1.5.1 is published, start here:
+https://github.com/codemower-ai/code-mower/blob/v1.5.1/docs/try-in-10-minutes.md
 
 Cloud sharing is optional. The default bundle excludes source code, raw diffs,
 model transcripts, raw stdout/stderr, auth output, and secrets.
@@ -57,7 +57,7 @@ Before inviting a user:
    ```bash
    python3.12 --version
    export CODE_MOWER_PYTHON="$(command -v python3.12)"
-   pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.0
+   pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.1
    code-mower --version
    ```
 

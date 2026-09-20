@@ -22,12 +22,12 @@ dry-run-first.
 
 ## Current Source And Published Baseline
 
-This source defines Code Mower `v1.5.0`, with package spec
-`code-mower==1.5.0`. Confirm the release tag on GitHub Releases and the package
+This source defines Code Mower `v1.5.1`, with package spec
+`code-mower==1.5.1`. Confirm the release tag on GitHub Releases and the package
 version on the selected index before using an index install command; source
 version and publication state are separate facts. See the
-[v1.5.0 release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-release-notes.md)
-and [qualification contract](https://github.com/codemower-ai/code-mower/blob/main/docs/v150-qualification.md).
+[v1.5.1 release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v151-release-notes.md)
+and [qualification contract](https://github.com/codemower-ai/code-mower/blob/main/docs/v151-qualification.md).
 After publication, the GitHub Release and linked release issue carry the
 observed source SHA, artifact digests, canary outcomes, publication run and
 reinstall evidence.
@@ -310,7 +310,7 @@ administration/readiness; #920 consumes the immutable candidate to obtain one
 accepted completion and one accepted confirmed cancellation under an explicit
 numeric cap while preserving every attempt and reservation; #923 records the
 tag, publication and independent reinstall evidence.
-Slack telemetry/Board/cloud links and rich UX remain v1.5.1. Slack consumes the
+Slack telemetry/Board/cloud links and rich UX remain v1.6.0. Slack consumes the
 durable lifecycle instead of scraping terminal or Board output and carries no
 raw private context or private reviewer findings.
 

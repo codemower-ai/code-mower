@@ -214,7 +214,7 @@ def rehearse(dist, sha, work):
     py = fresh / "bin/python"
     pip(py, "install", "--no-cache-dir", "--index-url", "https://pypi.org/simple/", wheel)
     pip(py, "check")
-    assert cli(py, "--version").strip() == "code-mower 1.5.0"
+    assert cli(py, "--version").strip() == "code-mower 1.5.1"
     installed(py, """
 import importlib.util
 import code_mower
@@ -308,7 +308,7 @@ Path(sys.argv[1]).write_text(json.dumps(value))
     pip(py, "install", "--no-cache-dir", "--index-url", "https://pypi.org/simple/", old_wheel)
     assert cli(py, "--version").strip() == "code-mower 1.4.2"
     pip(py, "install", "--no-index", "--no-deps", "--upgrade", wheel)
-    assert cli(py, "--version").strip() == "code-mower 1.5.0"
+    assert cli(py, "--version").strip() == "code-mower 1.5.1"
     assert before == state_hashes()
     checks.append("upgrade_1_4_2_to_exact_wheel_preserves_synthetic_state")
     pip(py, "install", "--no-index", "--no-deps", "--force-reinstall", old_wheel)

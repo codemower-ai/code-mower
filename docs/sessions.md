@@ -6,7 +6,7 @@ your conversation is the default orchestrator when its role is eligible.
 
 The participant picker, host-led session brief, single-orchestrator lease,
 shared Jira tracker brief, controller host telemetry, and explicit Cursor
-qualification documented below are included in `code-mower==1.5.0`.
+qualification documented below are included in `code-mower==1.5.1`.
 Install that pin when following release documentation, or use a
 contributor checkout when testing later source changes. Role-specific admission
 and startup lease commands described here are included in the same release;

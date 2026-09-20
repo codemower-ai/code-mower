@@ -85,8 +85,8 @@ class PublishedIdentityTests(unittest.TestCase):
 
     def test_shared_baseline_sentence_matches_the_published_version(self):
         sentence = versioning.public_baseline_sentence(__version__)
-        self.assertIn("`v1.5.0`", sentence)
-        self.assertIn("`code-mower==1.5.0`", sentence)
+        self.assertIn("`v1.5.1`", sentence)
+        self.assertIn("`code-mower==1.5.1`", sentence)
         for relative in ("README.md", "docs/current-state-and-roadmap.md",
                          "docs/friendly-user-rollout-v05.md"):
             with self.subTest(doc=relative):
@@ -188,11 +188,11 @@ class PackagedTemplateConsistencyTests(unittest.TestCase):
 
 
 class PublicReleaseChecklistTests(unittest.TestCase):
-    def test_checklist_names_v150_as_the_source_entrypoint(self):
+    def test_checklist_names_v151_as_the_source_entrypoint(self):
         checklist = " ".join(_read("docs/public-release-checklist.md").split())
         self.assertIn(
-            "The v1.5.0 source defines package-index entrypoint "
-            "`code-mower==1.5.0` (GitHub tag `v1.5.0`). Confirm that the tag "
+            "The v1.5.1 source defines package-index entrypoint "
+            "`code-mower==1.5.1` (GitHub tag `v1.5.1`). Confirm that the tag "
             "and package version are published before using the index command.",
             checklist,
         )
@@ -362,15 +362,15 @@ class UpgradeRehearsalTests(unittest.TestCase):
 
 
 class VersionIdentityTests(unittest.TestCase):
-    def test_source_version_is_1_5_0(self):
-        self.assertEqual(__version__, "1.5.0")
+    def test_source_version_is_1_5_1(self):
+        self.assertEqual(__version__, "1.5.1")
 
     def test_committed_manifest_version_matches_source(self):
         manifest = package_module.generate_committed_package_manifest(ROOT)
         self.assertEqual(manifest["package"]["version"], __version__)
 
     def test_release_tag_for_current_version(self):
-        self.assertEqual(release_readiness._release_tag_for_version(__version__), "v1.5.0")
+        self.assertEqual(release_readiness._release_tag_for_version(__version__), "v1.5.1")
 
 
 class RunbookIdentityTests(unittest.TestCase):
@@ -626,7 +626,7 @@ class BoardAndGraphifyDiscoverabilityTests(unittest.TestCase):
 
 class InstalledPromptPackTests(unittest.TestCase):
     def test_literal_starter_and_explicit_config_walkthrough(self):
-        """Exercise installed 1.5.0 code, with no provider login or network doctor probes."""
+        """Exercise installed 1.5.1 code, with no provider login or network doctor probes."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             supplied = os.environ.get("CODE_MOWER_QUALIFICATION_WHEEL")
@@ -660,7 +660,7 @@ import code_mower
 from code_mower import cli, package
 from code_mower.config import load_config
 assert Path(code_mower.__file__).resolve().is_relative_to(Path(sys.argv[1]).resolve())
-assert code_mower.__version__ == '1.5.0'
+assert code_mower.__version__ == '1.5.1'
 empty_store = Path.cwd() / 'empty-provider-store'
 empty_store.mkdir()
 def run(args, doctor=False):
