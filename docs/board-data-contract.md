@@ -16,6 +16,15 @@ to the newest timestamped result in this current-state snapshot. Superseded
 results remain available in prior local history events, but do not drive the
 current next action or owner queue.
 
+Each readable open PR includes a `lineage` posture. When no repository policy
+was loaded, `status: optional` and `reason: lineage_policy_not_configured`
+preserve the independently readable labels, checks, gate state, and PR next
+action; `lineage.next_action` tells the operator to pass
+`--config code-mower.yml` if they want lineage evaluated. When a configured
+policy cannot read or validate the lineage metadata, `status: unavailable`
+and `reason: lineage_unreadable` direct the operator to restore readable
+metadata and rerun status. Neither posture is presented as verified lineage.
+
 `code_mower.board.v1` is the local board wrapper added by
 `code-mower board serve --repo OWNER/REPO`. It adds board display metadata and
 embeds the lane-status snapshot unchanged.
@@ -465,6 +474,11 @@ the one next action, and observation freshness — stays on screen in every view
 and at every width. The tabs are a real `tablist` of `tab` buttons controlling
 real `tabpanel` regions; the unselected panels carry `hidden`, so they leave the
 accessibility tree instead of being painted away.
+
+The header labels the running package as `Serving version: VERSION`; this is
+the primary version reading, while the Health view retains installed-version
+and restart detail. An empty Recent Code Mower Workflows section renders
+`none`, matching the terminal status surface.
 
 - **Now** — the work rows, the selected work item's evidence, the participant
   summary, and the existing owner queue, lane work, supervised pilot and open

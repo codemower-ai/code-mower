@@ -22,6 +22,11 @@ later entries are regular releases.
   checks quiet; omits checkout workflow checks when no checkout exists; keeps
   repository Actions secret checks distinct; and removes local paths from this
   share-oriented report (#1053).
+- Lane status and the Board now preserve readable PR and gate state when no
+  lineage policy is configured, label lineage as optional with the command
+  needed to evaluate it, and distinguish that posture from unreadable lineage
+  metadata. Empty recent workflows render as `none`, and the Board header
+  names the serving version explicitly (#1055).
 - Hosted-agent installation guidance now includes a Python-based uv bootstrap
   that does not pipe a remote script into a shell. Remote-only orchestrators
   get an explicit packaged-starter doctor command, doctor JSON is identified as

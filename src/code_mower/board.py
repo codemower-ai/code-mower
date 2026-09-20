@@ -4560,8 +4560,8 @@ _BOARD_HTML = """<!doctype html>
       const servingVersion = version.serving_version || "unknown";
       const installedVersion = version.installed_version || servingVersion;
       document.getElementById("version").textContent = version.restart_recommended
-        ? `serving ${servingVersion}; installed ${installedVersion} available after restart`
-        : `serving ${servingVersion}`;
+        ? `Serving version: ${servingVersion}; installed ${installedVersion} available after restart`
+        : `Serving version: ${servingVersion}`;
       document.getElementById("generated").innerHTML = data.generated_at ? `Generated ${localTime(data.generated_at)}` : "Loading...";
       const prs = data.remote?.pull_requests || [];
       const runs = data.remote?.workflow_runs || [];
@@ -4708,14 +4708,20 @@ _BOARD_HTML = """<!doctype html>
         return [header, ...cardRows];
       }).join("");
       put("campaigns", campaignRows || empty(campaignsData.message || "No release campaigns."));
-      put("prs", prs.length ? prs.map(pr => `<div class="row">
+      put("prs", prs.length ? prs.map(pr => {
+        const lineage = pr.lineage || null;
+        const lineageNext = lineage?.next_action || lineage?.owner_action || "";
+        return `<div class="row">
         <div class="line"><a href="${esc(href(pr.url))}">#${esc(pr.number)} ${esc(pr.title)}</a>${pill(pr.merge_state)}${pr.is_draft ? pill("draft") : ""}${pr.stale ? pill("stale") : ""}</div>
         <div class="muted">${esc(pr.branch)} by ${esc(pr.author)}${pr.updated_at ? ` updated ${localTime(pr.updated_at)}` : ""}</div>
         <div>labels: ${labels(pr.labels)}</div>
         <div>checks: ${checks(pr.checks)}</div>
+        ${lineage ? `<div>lineage: <b>${esc(lineage.status || "unavailable")}</b> (${esc(lineage.reason || "reason unavailable")})</div>` : ""}
+        ${lineageNext ? `<div class="muted">lineage next: ${esc(lineageNext)}</div>` : ""}
         <div>next: <b>${esc(pr.next_action)}</b></div>
         ${pr.next_detail ? `<div class="muted">${esc(pr.next_detail)}</div>` : ""}
-      </div>`).join("") : empty("No open pull requests."));
+      </div>`;
+      }).join("") : empty("No open pull requests."));
       put("alerts", !remoteAvailable
         ? empty("GitHub unavailable; gate alerts not recorded.")
         : alerts.length
@@ -4730,7 +4736,7 @@ _BOARD_HTML = """<!doctype html>
         const publisher = isGatePublisher(run.workflow);
         const state = run.conclusion || run.status;
         return `<div class="row"><div class="line"><a href="${esc(href(run.url))}">${esc(run.workflow || "workflow")}</a>${statePill(display(state), stateClass(state))}${publisher ? pill("gate publisher") : ""}</div>${publisher ? `<div class="muted">Publisher execution only; the ${esc(GATE_CONTEXT)} verdict is the commit status listed under each PR.</div>` : ""}<div class="muted">${esc(run.branch)}${run.updated_at ? ` updated ${localTime(run.updated_at)}` : ""}</div></div>`;
-      }).join("") : empty("No recent Code Mower workflow runs."));
+      }).join("") : empty("none"));
       put("verdicts", verdicts.length ? verdicts.map(v => `<div class="row"><div class="line"><a href="${esc(href(v.url))}">#${esc(v.pr_number)} ${esc(v.lane)}</a>${pill(v.verdict)}${pill(v.head_sha_prefix)}</div><div class="muted">${localTime(v.created_at)}</div></div>`).join("") : empty(timelines.verdicts?.message || "No local reviewer verdict history yet."));
       const spendRows = [
         ...spendGroups.map(g => `<div class="row"><div class="line"><b>${esc(g.lane)}</b>${pill(display(g.verdict))}${pill(`${display(g.runs)} runs`)}</div><div class="muted">${seconds(g.wall_seconds_total)} total / ${seconds(g.wall_seconds_avg)} avg / ${money(g.cost_usd_total)} / ${esc(display(g.total_tokens))} tokens</div></div>`),

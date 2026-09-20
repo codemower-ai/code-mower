@@ -174,6 +174,95 @@ class LaneStatusTests(TestCase):
         self.assertEqual(report["remote"]["gate_health"]["status"], "warn")
         self.assertIn("fix BLOCKED audit", lane_status.render_text(report))
 
+    def test_readable_pr_without_lineage_policy_reports_optional_lineage(self) -> None:
+        calls: list[list[str]] = []
+
+        def gh_json(args: list[str]) -> object:
+            calls.append(args)
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 13,
+                        "title": "Document optional lineage",
+                        "url": "https://github.com/owner/repo/pull/13",
+                        "headRefName": "docs/optional-lineage",
+                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                        "author": {"login": "alice"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [{"name": "claude-audit-done"}],
+                        "statusCheckRollup": [
+                            {"context": "code-mower/gate", "state": "SUCCESS"},
+                        ],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            raise lane_status.LaneStatusUnavailable("lineage comments must not be read without policy")
+
+        report = lane_status.collect_status(
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        self.assertEqual(pr["lineage"]["status"], "optional")
+        self.assertEqual(pr["lineage"]["reason"], "lineage_policy_not_configured")
+        self.assertEqual(
+            pr["lineage"]["next_action"],
+            "pass --config code-mower.yml to evaluate lineage",
+        )
+        self.assertEqual(pr["next_action"], "ready for merge or auto-merge")
+        self.assertFalse(any(args[0] == "api" for args in calls))
+        rendered = lane_status.render_text(report)
+        self.assertIn("lineage: optional (lineage_policy_not_configured)", rendered)
+        self.assertIn("lineage next: pass --config code-mower.yml to evaluate lineage", rendered)
+        self.assertIn("Recent Code Mower workflows: none", rendered)
+
+    def test_configured_but_unreadable_lineage_has_precise_recovery(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 14,
+                        "title": "Recover lineage visibility",
+                        "url": "https://github.com/owner/repo/pull/14",
+                        "headRefName": "codex/lineage-recovery",
+                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                        "author": {"login": "alice"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [{"name": "builder:codex"}],
+                        "statusCheckRollup": [
+                            {"context": "code-mower/gate", "state": "PENDING"},
+                        ],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            if args[0] == "api":
+                raise lane_status.LaneStatusUnavailable("comment access denied")
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        report = lane_status.collect_status(
+            lineage_config=policy({}),
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        self.assertEqual(pr["lineage"]["status"], "unavailable")
+        self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable")
+        self.assertEqual(pr["next_action"], "restore readable lineage metadata and rerun status")
+        self.assertEqual(report["next_action"], pr["next_action"])
+        self.assertIn("lineage unavailable: lineage_unreadable", pr["next_detail"])
+
     def test_render_text_includes_copy_pasteable_gate_rerun_command(self) -> None:
         def gh_json(args: list[str]) -> object:
             if args[:2] == ["pr", "list"]:
