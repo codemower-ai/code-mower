@@ -140,7 +140,7 @@ First finalize the README opening release statement and the matching CHANGELOG
 entry, release notes, qualification contract and publication instructions in
 the reviewed final release preparation PR. For v1.5.1 that head must include
 the five reliability revisions tracked by #1050. Follow the
-[immutable release text gate](pypi-release.md#immutable-release-text-gate-v150-onward):
+[immutable release text gate](pypi-release.md):
 run `python src/code_mower/release_identity.py --tag vX.Y.Z` with the actual
 proposed tag before creating it. Publication progress belongs in the release
 issue, not in temporary promises inside the immutable public text. Independent

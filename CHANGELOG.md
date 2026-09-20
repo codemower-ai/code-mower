@@ -54,7 +54,7 @@ and the [qualification contract](docs/v150-qualification.md).
 - Explicit `slack setup` hosted manifest and redacted `slack doctor` (#1024).
   Default install remains Slack-free. Offline snapshots never prove live readiness.
   Basic private-workspace interaction only; telemetry/Board links and rich UX
-  remain v1.6.0. Audit publication binds the current head reliably (#1025).
+  remain v1.5.1. Audit publication binds the current head reliably (#1025).
 
 - Supervisor v2 owns checkpointed `clarify` answers and explicitly authorized
   `fix` requests under the original claim, provider binding, live lease and
