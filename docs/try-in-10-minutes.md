@@ -107,6 +107,19 @@ code-mower init --easy --apply --output-dir .code-mower.generated
 `init --easy` is non-mutating by default. `--apply` writes a generated tree for
 review in `.code-mower.generated`, creates the missing Code Mower labels when
 GitHub access allows it, and still does not trigger reviewers or upload data.
+When the checkout already has a root `code-mower.yml`, easy mode renders from
+that repository configuration so an upgrade keeps its selected lanes and
+policy. To deliberately stage starter defaults instead, name that choice:
+
+```bash
+code-mower init --easy --packaged-starter --apply \
+  --output-dir .code-mower.generated
+```
+
+An apply that would otherwise choose the packaged starter while a root config
+exists is refused with the exact repository-config and explicit-starter commands.
+Use `code-mower migration setup-drift --repo-path .` before copying generated
+upgrade files into the checkout.
 
 The generated tree includes local Codex and Claude audit lanes, the
 `code-mower/gate` workflow, stale-audit cleanup, owner escalation labels, and

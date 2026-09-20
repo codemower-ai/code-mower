@@ -63,16 +63,20 @@ repository setup upgrade follows below.
 From a clean repository checkout:
 
 ```bash
+code-mower init --easy
 code-mower init code-mower.yml --profile PROFILE --dry-run
 code-mower init code-mower.yml --profile PROFILE --apply \
   --output-dir .code-mower.generated
 ```
 
-Replace `PROFILE` with the profile the repository already uses. This explicit
-config path preserves its participant, lane, and policy choices while rendering
-the v1.5.0 support files. If the repository truly has no `code-mower.yml`, use
-`code-mower init --easy --apply --output-dir .code-mower.generated` and review
-the packaged starter as a new adoption.
+Easy mode now detects a root `code-mower.yml` and previews from it. Replace
+`PROFILE` with the profile the repository already uses when you run the explicit
+commands. Both forms preserve participant, lane, and policy choices while
+rendering the installed package's support files. If the repository truly has no
+`code-mower.yml`, use `code-mower init --easy --apply --output-dir
+.code-mower.generated` and review the packaged starter as a new adoption. If a
+root config exists and you intentionally want starter defaults, make that choice
+explicit with `--packaged-starter`.
 
 Treat `.code-mower.generated` as review input. Do not copy it wholesale until
 you have compared it with the existing repository files.
