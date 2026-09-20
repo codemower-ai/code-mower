@@ -7,7 +7,11 @@ later entries are regular releases.
 
 ## Unreleased
 
-No additional changes recorded.
+- Hosted-agent installation guidance now includes a Python-based uv bootstrap
+  that does not pipe a remote script into a shell. Remote-only orchestrators
+  get an explicit packaged-starter doctor command, doctor JSON is identified as
+  local path-bearing evidence, and session guidance states that role admission
+  still applies to `--dry-run` and `--no-lease` (#1050).
 
 ## 1.5.0 — release
 

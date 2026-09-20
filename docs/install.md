@@ -39,6 +39,23 @@ documentation rather than from a copied shell snippet:
 Code Mower does not publish, and you should not use, a
 `curl ... | sh` bootstrap for either installer.
 
+On a hosted Linux image that has Python 3.12 with `venv` support but neither
+installer, bootstrap uv in a small isolated environment instead of piping a
+remote script into a shell or writing into an externally managed system
+Python:
+
+```bash
+UV_BOOTSTRAP="$HOME/.local/share/code-mower-bootstrap/uv"
+python3.12 -m venv "$UV_BOOTSTRAP"
+"$UV_BOOTSTRAP/bin/python" -m pip install --upgrade uv
+"$UV_BOOTSTRAP/bin/python" -m uv --version
+"$UV_BOOTSTRAP/bin/python" -m uv tool install --python 3.12 code-mower==1.5.0
+```
+
+The module form works even when uv is not yet on `PATH`. After installation,
+follow uv's printed path hint, then verify
+`command -v code-mower` and `code-mower --version` before using the repository.
+
 Confirm the installer is on `PATH` before installing Code Mower with it:
 
 ```bash
@@ -429,6 +446,23 @@ but skip local CLI probes:
 code-mower doctor --adoption --hosted-builders --repo OWNER/REPO --json
 code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO --json
 ```
+
+Those commands expect the current checkout to contain `code-mower.yml`. On a
+remote-only host with no repository checkout, select the maintained packaged
+starter explicitly through the easy preset:
+
+```bash
+code-mower doctor --easy --orchestrator-only --repo OWNER/REPO --json
+```
+
+The resulting filesystem and generated-workflow checks describe the packaged
+starter, not the remote repository. Use them for installation posture; use
+`lanes status --repo OWNER/REPO` for current remote PR and gate visibility.
+
+Doctor JSON is local diagnostic evidence. It can include bounded local paths
+such as the selected config, executable, or workflow path. Review or redact it
+before attaching it to an issue or uploading it; the concise text view is the
+safer first status summary.
 
 In those observer/coordinator postures, missing local wrapper environment
 variables and missing `DISPATCH_TOKEN` setup are surfaced as owner setup or
