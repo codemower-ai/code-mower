@@ -39,17 +39,21 @@ documentation rather than from a copied shell snippet:
 Code Mower does not publish, and you should not use, a
 `curl ... | sh` bootstrap for either installer.
 
-On a hosted Linux image that has Python 3.12 but neither installer, bootstrap
-uv through that Python instead of piping a remote script into a shell:
+On a hosted Linux image that has Python 3.12 with `venv` support but neither
+installer, bootstrap uv in a small isolated environment instead of piping a
+remote script into a shell or writing into an externally managed system
+Python:
 
 ```bash
-python3.12 -m pip install --user uv
-python3.12 -m uv --version
-python3.12 -m uv tool install --python 3.12 code-mower==1.5.0
+UV_BOOTSTRAP="$HOME/.local/share/code-mower-bootstrap/uv"
+python3.12 -m venv "$UV_BOOTSTRAP"
+"$UV_BOOTSTRAP/bin/python" -m pip install --upgrade uv
+"$UV_BOOTSTRAP/bin/python" -m uv --version
+"$UV_BOOTSTRAP/bin/python" -m uv tool install --python 3.12 code-mower==1.5.0
 ```
 
-The module form works even when the user-level scripts directory is not yet on
-`PATH`. After installation, follow uv's printed path hint, then verify
+The module form works even when uv is not yet on `PATH`. After installation,
+follow uv's printed path hint, then verify
 `command -v code-mower` and `code-mower --version` before using the repository.
 
 Confirm the installer is on `PATH` before installing Code Mower with it:
