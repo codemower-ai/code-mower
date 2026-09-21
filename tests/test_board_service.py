@@ -1842,6 +1842,42 @@ class BoardServiceLifecycleTest(ServiceHarness):
         )
         self.assertEqual(self.host.identities[5332]["repo"], "codemower-ai/code-mower")
 
+    def test_a_transient_probe_after_settled_replacement_health_cannot_trigger_rollback(self) -> None:
+        original = self.spec()
+        self.install(original)
+        drifted = self.spec(
+            repo="codemower-ai/private-repo", repo_path=self.other_checkout, port=5332
+        )
+        replacement_probes = 0
+
+        def healthy_once(host: str, port: int) -> dict[str, object]:
+            nonlocal replacement_probes
+            identity = self.host.identity_probe(host, port)
+            if identity.get("repo") == "codemower-ai/private-repo":
+                replacement_probes += 1
+                if replacement_probes > 1:
+                    return {"available": False, "error": "transient probe failure"}
+            return identity
+
+        payload = board_service.restart_service(
+            drifted,
+            provider=self.host.provider(),
+            replace=True,
+            command_runner=self.host.run,
+            identity_probe=healthy_once,
+            settle_seconds=0.0,
+            refresh_seconds=0.1,
+            timeout_seconds=0.0,
+            sleeper=self.sleeper,
+        )
+
+        self.assertEqual(payload["status"], "restarted")
+        self.assertEqual(payload["reconciliation"]["state"], "new")
+        self.assertTrue(payload["reconciliation"]["verified"])
+        self.assertEqual(replacement_probes, 1)
+        self.assertNotIn("rollback", payload)
+        self.assertEqual(self.host.identities[5332]["repo"], "codemower-ai/private-repo")
+
     def test_a_first_install_rollback_with_a_detached_listener_is_unresolved(self) -> None:
         host = self.host
 
@@ -2270,6 +2306,34 @@ class BoardServiceLifecycleTest(ServiceHarness):
         )
         self.assertTrue(payload["reconciliation"]["pid_transition_required"])
         self.assertTrue(payload["reconciliation"]["pid_transition_verified"])
+
+    def test_restart_uses_the_settled_health_sample_as_its_terminal_binding(self) -> None:
+        spec = self.spec()
+        self.install(spec)
+        identity_probes = 0
+
+        def healthy_once(host: str, port: int) -> dict[str, object]:
+            nonlocal identity_probes
+            identity_probes += 1
+            if identity_probes > 1:
+                return {"available": False, "error": "transient probe failure"}
+            return self.host.identity_probe(host, port)
+
+        payload = board_service.restart_service(
+            spec,
+            provider=self.host.provider(),
+            command_runner=self.host.run,
+            identity_probe=healthy_once,
+            settle_seconds=0.0,
+            refresh_seconds=0.1,
+            timeout_seconds=0.0,
+            sleeper=self.sleeper,
+        )
+
+        self.assertEqual(payload["status"], "restarted")
+        self.assertEqual(payload["reconciliation"]["state"], "new")
+        self.assertTrue(payload["reconciliation"]["verified"])
+        self.assertEqual(identity_probes, 1)
 
     def test_restart_rejects_a_failed_kickstart_that_left_the_old_pid_running(self) -> None:
         spec = self.spec()

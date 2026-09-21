@@ -27,6 +27,7 @@ import json
 import os
 import plistlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1695,6 +1696,20 @@ def delayed_health(
     }
 
 
+def _health_binding(health: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the final full binding sample from one settled health window.
+
+    ``delayed_health`` exits only after a complete ``validate_binding`` sample
+    passes or its bounded window expires. Reusing that last sample keeps the
+    terminal decision tied to the settled window. A separate unretired probe
+    immediately afterward could overturn a verified pass on one transient
+    listener or HTTP-read failure and cause an unnecessary rollback.
+    """
+
+    binding = health.get("binding")
+    return dict(binding) if isinstance(binding, Mapping) else {}
+
+
 # -- operations -------------------------------------------------------------
 
 
@@ -1944,7 +1959,8 @@ def _recovery_instruction(spec: ServiceSpec, *, show_local_paths: bool) -> dict[
 
     command = (
         "code-mower board service restart "
-        f"--repo {spec.repo} --repo-path . --host {spec.host} --port {spec.port} --replace"
+        f"--repo {shlex.quote(spec.repo)} --repo-path . "
+        f"--host {shlex.quote(spec.host)} --port {spec.port} --replace"
     )
     if "--record-events" not in spec.arguments:
         command += " --no-record-events"
@@ -2065,16 +2081,7 @@ def _rollback_and_reconcile(
             sleeper=sleeper,
             clock=clock,
         )
-        previous_binding = _final_binding_read(
-            previous_spec,
-            provider=provider,
-            command_runner=command_runner,
-            identity_probe=identity_probe,
-            show_local_paths=show_local_paths,
-            expected_digest=previous.digest,
-            expected_arguments=previous.arguments,
-            expected_version=previous_version,
-        )
+        previous_binding = _health_binding(rollback_health)
         restored = _reconciliation(
             "previous", previous_binding, spec=spec, show_local_paths=show_local_paths
         )
@@ -2344,16 +2351,7 @@ def _apply(
             sleeper=sleeper,
             clock=clock,
         )
-        previous_binding = _final_binding_read(
-            previous_spec,
-            provider=provider,
-            command_runner=command_runner,
-            identity_probe=identity_probe,
-            show_local_paths=show_local_paths,
-            expected_digest=previous.digest,
-            expected_arguments=previous.arguments,
-            expected_version=previous_version,
-        )
+        previous_binding = _health_binding(restore_health)
         reconciled = _reconciliation(
             "previous", previous_binding, spec=spec, show_local_paths=show_local_paths
         )
@@ -2405,15 +2403,7 @@ def _apply(
                 clock=clock,
             )
             attempted_health = applied_health
-            applied_binding = _final_binding_read(
-                spec,
-                provider=provider,
-                command_runner=command_runner,
-                identity_probe=identity_probe,
-                show_local_paths=show_local_paths,
-                expected_digest=expected,
-                expected_arguments=spec.arguments,
-            )
+            applied_binding = _health_binding(applied_health)
             applied = _reconciliation(
                 "new", applied_binding, spec=spec, show_local_paths=show_local_paths
             )
@@ -2484,15 +2474,7 @@ def _apply(
             clock=clock,
             attempted_health=health,
         )
-    final_binding = _final_binding_read(
-        spec,
-        provider=provider,
-        command_runner=command_runner,
-        identity_probe=identity_probe,
-        show_local_paths=show_local_paths,
-        expected_digest=expected,
-        expected_arguments=spec.arguments,
-    )
+    final_binding = _health_binding(health)
     reconciled = _reconciliation("new", final_binding, spec=spec, show_local_paths=show_local_paths)
     if not reconciled["verified"]:
         return _rollback_and_reconcile(
@@ -2502,7 +2484,7 @@ def _apply(
             previous_text=previous_text,
             previous_version=previous_version,
             expected=expected,
-            failure_detail="the replacement failed its final binding re-read",
+            failure_detail="the replacement health window did not retain a verified binding",
             command_runner=command_runner,
             identity_probe=identity_probe,
             settle_seconds=settle_seconds,
@@ -2755,15 +2737,7 @@ def restart_service(
             sleeper=sleeper,
             clock=clock,
         )
-        final_binding = _final_binding_read(
-            spec,
-            provider=provider,
-            command_runner=command_runner,
-            identity_probe=identity_probe,
-            show_local_paths=show_local_paths,
-            expected_digest=expected,
-            expected_arguments=spec.arguments,
-        )
+        final_binding = _health_binding(health)
         reconciled = _reconciliation(
             "new", final_binding, spec=spec, show_local_paths=show_local_paths
         )
@@ -2828,7 +2802,7 @@ def restart_service(
             )
         else:
             status = "delayed_health_failed"
-            message = "the service passed delayed health but its final binding re-read did not validate"
+            message = "the delayed health window did not retain a verified final binding"
         provider_result = {"provider_detail": detail} if not ok else {}
         return _operation_payload(
             status,
