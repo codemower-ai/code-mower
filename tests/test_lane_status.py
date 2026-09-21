@@ -1434,3 +1434,95 @@ class ListenerInventoryAvailabilityTests(TestCase):
         pr = report["remote"]["pull_requests"][0]
         self.assertEqual(pr["lineage"]["status"], "unmanaged")
         self.assertEqual(pr["lineage"]["reason"], "no_code_mower_provenance")
+
+    def test_pr_with_malformed_lineage_marker_remains_actionable(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 888,
+                        "title": "PR with malformed lineage",
+                        "url": "https://github.com/owner/repo/pull/888",
+                        "headRefName": "feature/malformed",
+                        "headRefOid": "badc0ffeebadc0ffeebadc0ffeebadc0ffeebadc",
+                        "author": {"login": "developer"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [],
+                        "statusCheckRollup": [],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            if args[0] == "api" and "/comments?" in args[1]:
+                return [
+                    {
+                        "user": {"login": "lineage-publisher[bot]"},
+                        "body": "<!-- CODE_MOWER_BUILDER_LINEAGE: {malformed json} -->",
+                        "created_at": NOW.isoformat(),
+                    }
+                ]
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        config = policy()
+        from code_mower import config as policy_config
+        self.assertEqual(policy_config.validate_config(config), [])
+
+        report = lane_status.collect_status(
+            lineage_config=config,
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        self.assertEqual(pr["lineage"]["status"], "unknown")
+        self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable")
+
+    def test_pr_with_conflicting_lineage_marker_remains_actionable(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 777,
+                        "title": "PR with conflicting lineage",
+                        "url": "https://github.com/owner/repo/pull/777",
+                        "headRefName": "feature/conflict",
+                        "headRefOid": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                        "author": {"login": "developer"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [],
+                        "statusCheckRollup": [],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            if args[0] == "api" and "/comments?" in args[1]:
+                return [
+                    {
+                        "user": {"login": "lineage-publisher[bot]"},
+                        "body": '<!-- CODE_MOWER_BUILDER_LINEAGE: {"schema":"code_mower.builderLineage.v1","episodes":[{"sequence":1,"source_lane":"cursor","destination_lane":"cursor","head_sha":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"},{"sequence":1,"source_lane":"codex","destination_lane":"codex","head_sha":"differentsha0000000000000000000000000"}]} -->',
+                        "created_at": NOW.isoformat(),
+                    }
+                ]
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        config = policy()
+        from code_mower import config as policy_config
+        self.assertEqual(policy_config.validate_config(config), [])
+
+        report = lane_status.collect_status(
+            lineage_config=config,
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        self.assertEqual(pr["lineage"]["status"], "unknown")
+        self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable")

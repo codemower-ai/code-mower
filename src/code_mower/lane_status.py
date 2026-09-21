@@ -547,9 +547,14 @@ def _remote(
                 budget -= 1
                 return gh_json_runner(["api", f"repos/{target.repo}/issues/{target.pr_number}/comments?per_page={size}&page={number}"])
             history = lineage_history(page)
+
+            for comment in history.comments:
+                if "CODE_MOWER_BUILDER_LINEAGE" in comment.body:
+                    has_lineage_markers = True
+                    break
+
             chain, decision = lineage_decision(target, identity, authority, history,
                 author=author_login, labels=label_names)
-            has_lineage_markers = bool(getattr(chain, "episodes", None))
             pr["lineage"] = lineage_projection(decision)
             pr["lineage"]["repo"] = target.repo
             pr["lineage"]["pr_number"] = target.pr_number
