@@ -87,8 +87,7 @@ class PublishedIdentityTests(unittest.TestCase):
         sentence = versioning.public_baseline_sentence(__version__)
         self.assertIn("`v1.5.1`", sentence)
         self.assertIn("`code-mower==1.5.1`", sentence)
-        for relative in ("README.md", "docs/current-state-and-roadmap.md",
-                         "docs/friendly-user-rollout-v05.md"):
+        for relative in ("README.md", "docs/current-state-and-roadmap.md"):
             with self.subTest(doc=relative):
                 self.assertIn(sentence, " ".join(_read(relative).split()))
 
@@ -161,7 +160,7 @@ class ReadmeLinkTests(unittest.TestCase):
             relative = destination[len(self.BLOB_PREFIX):].partition("#")[0]
             if not (ROOT / relative).exists():
                 missing.append(relative)
-        self.assertGreater(checked, 20, "expected the README doc index to be absolute")
+        self.assertGreater(checked, 10, "expected README repository links to be absolute")
         self.assertEqual(missing, [])
 
     def test_pyproject_still_ships_the_readme_as_the_long_description(self):

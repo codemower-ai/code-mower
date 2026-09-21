@@ -259,7 +259,6 @@ class ReleaseHygieneTests(unittest.TestCase):
             self.assertIn("codex login --with-api-key", text, msg=str(path))
 
     def test_install_and_upgrade_docs_cover_agent_paths(self) -> None:
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
         install = (ROOT / "docs/install.md").read_text(encoding="utf-8")
         quickstart = (ROOT / "docs/quickstart.md").read_text(encoding="utf-8")
         try_in_10 = (ROOT / "docs/try-in-10-minutes.md").read_text(encoding="utf-8")
@@ -274,8 +273,9 @@ class ReleaseHygieneTests(unittest.TestCase):
         for env_name in ("PIPX_HOME", "PIPX_BIN_DIR", "PIPX_LOG_DIR"):
             self.assertIn(env_name, install)
             self.assertIn(env_name, troubleshooting)
-        self.assertIn("| Hosted agent, CI box, or minimal Linux VM |", try_in_10)
-        self.assertIn("command -v code-mower", readme)
+        self.assertIn("[Install And Bootstrap](install.md)", try_in_10)
+        self.assertIn("| Hosted agent, CI box, or minimal Linux VM |", install)
+        self.assertIn("command -v code-mower", install)
         self.assertIn("command -v code-mower", quickstart)
         self.assertIn("codex login --with-api-key", quickstart)
         self.assertIn("codex exec --skip-git-repo-check --sandbox read-only", quickstart)
@@ -1251,7 +1251,7 @@ exit 1
 
     def test_public_source_checkout_guidance_uses_dev_wrapper_not_pythonpath(self) -> None:
         public_docs = [
-            ROOT / "README.md",
+            ROOT / "docs/install.md",
             ROOT / "docs/quickstart.md",
             ROOT / "docs/architecture.md",
             ROOT / "docs/public-release-checklist.md",
@@ -11165,10 +11165,8 @@ def main():
         normalized_baseline = " ".join(baseline_sentence.split())
 
         self.assertIn(normalized_baseline, " ".join(current_state.split()))
-        self.assertIn(normalized_baseline, " ".join(rollout.split()))
-        self.assertIn(package_spec, rollout)
-        self.assertIn('export CODE_MOWER_PYTHON="$(command -v python3.12)"', rollout)
-        self.assertIn('pipx install --python "$CODE_MOWER_PYTHON"', rollout)
+        self.assertIn("[Install And Bootstrap](install.md)", rollout)
+        self.assertNotIn(package_spec, rollout)
         self.assertIn(announcement_url, readme)
 
     def test_public_docs_have_no_stale_beta_baselines(self) -> None:
@@ -11209,10 +11207,8 @@ def main():
         release_history = (ROOT / "docs" / "release-history.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn(
-            "[Release History And Archived Plans](https://github.com/codemower-ai/code-mower/blob/main/docs/release-history.md)",
-            readme,
-        )
+        docs_index = (ROOT / "docs/README.md").read_text(encoding="utf-8")
+        self.assertIn("[Release History And Archived Plans](release-history.md)", docs_index)
         self.assertLess(
             release_history.index("[v1.1.0 release notes](v11-release-notes.md)"),
             release_history.index("[v1.0.15 release notes](v1015-release-notes.md)"),
@@ -11246,15 +11242,12 @@ def main():
         current_state = (
             ROOT / "docs" / "current-state-and-roadmap.md"
         ).read_text(encoding="utf-8")
-        rollout = (ROOT / "docs" / "friendly-user-rollout-v05.md").read_text(
-            encoding="utf-8",
-        )
         public_release = (ROOT / "docs" / "public-release-checklist.md").read_text(
             encoding="utf-8",
         )
 
         current_status = code_mower_versioning.public_baseline_sentence(__version__)
-        for text in (readme, current_state, rollout):
+        for text in (readme, current_state):
             self.assertIn(current_status, " ".join(text.split()))
         self.assertIn(
             "The v1.5.1 source defines package-index entrypoint `code-mower==1.5.1`\n"
@@ -11322,7 +11315,7 @@ def main():
             first_user,
         )
         self.assertNotIn("TestPyPI is not\npublished for `1.4.2`", first_user)
-        for text in (readme, current_state, rollout):
+        for text in (readme, current_state):
             self.assertNotIn(
                 "published on PyPI as `code-mower==1.4.2`",
                 text,
@@ -11414,10 +11407,8 @@ def main():
         self.assertIn("## Roles", readme)
         self.assertIn("Claude Code, Codex, Cursor-style", readme)
         self.assertIn("supervised issue-to-merge loop end to end", normalized_readme)
-        self.assertIn(
-            "[Release History And Archived Plans](https://github.com/codemower-ai/code-mower/blob/main/docs/release-history.md)",
-            readme,
-        )
+        docs_index = (ROOT / "docs/README.md").read_text(encoding="utf-8")
+        self.assertIn("[Release History And Archived Plans](release-history.md)", docs_index)
 
     def test_v06_truth_baseline_records_provider_contract_scope(self) -> None:
         baseline = (ROOT / "docs" / "v06-truth-baseline.md").read_text(
@@ -11450,11 +11441,18 @@ def main():
             encoding="utf-8",
         )
 
-        self.assertIn("[Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/main/docs/try-in-10-minutes.md)", readme)
-        self.assertIn("[Build Loop In 30 Minutes](https://github.com/codemower-ai/code-mower/blob/main/docs/build-loop-in-30-minutes.md)", readme)
-        self.assertEqual(len(re.findall(r"^## 8\.", try_in_10, re.MULTILINE)), 1)
+        for link in (
+            "docs/install.md",
+            "docs/quickstart.md",
+            "docs/upgrade-existing-repo.md",
+            "docs/board-service-lifecycle.md",
+            "docs/troubleshooting.md",
+        ):
+            self.assertIn(link, readme)
         self.assertTrue(try_in_10.rstrip().endswith("](build-loop-in-30-minutes.md)."))
-        self.assertIn("[Quickstart](quickstart.md)", try_in_10)
+        self.assertIn("[Code Mower Quickstart](quickstart.md)", try_in_10)
+        self.assertIn("[Install And Bootstrap](install.md)", try_in_10)
+        self.assertNotIn(code_mower_versioning.public_package_spec(__version__), try_in_10)
         self.assertIn("[Quickstart](quickstart.md)", build_loop_30)
         self.assertIn("write a PATCH payload from", build_loop_30)
         self.assertIn("existing source-app bindings", build_loop_30)
@@ -11466,25 +11464,8 @@ def main():
         self.assertNotIn("-F contexts[]=", build_loop_30)
 
         docs_map = readme.split("## Documentation", 1)[1]
-        for link in (
-            "docs/build-loop-in-30-minutes.md",
-            "docs/upgrade-existing-repo.md",
-            "docs/orchestrator-prompt-pack.md",
-            "docs/planning-work-orders.md",
-            "docs/local-audit-runner.md",
-            "docs/self-hosted-mac-runner.md",
-            "docs/build-loop.md",
-            "docs/lanes/README.md",
-            "docs/lanes/codex.md",
-            "docs/lanes/claude.md",
-            "docs/lanes/cursor.md",
-            "docs/lanes/devin.md",
-            "docs/context-setup.md",
-            "docs/context-delivery.md",
-            "docs/release-history.md",
-        ):
-            with self.subTest(link=link):
-                self.assertIn(link, docs_map)
+        self.assertIn("docs/README.md", docs_map)
+        self.assertNotIn("### Install And First Use", docs_map)
 
         self.assertIn("Roles: Claude Code or Codex as orchestrator", build_loop_30)
         self.assertIn("builder:codex: codex", build_loop_30)
@@ -11502,7 +11483,7 @@ def main():
             "detects and dry-runs the repo's native checks."
         )
         self.assertNotIn("migration package-install-rehearsal", try_in_10)
-        self.assertIn("code-mower next-steps --advanced", try_in_10)
+        self.assertIn("code-mower next-steps --repo OWNER/REPO", try_in_10)
         self.assertIn(repo_path_truth, " ".join(quickstart.split()))
         self.assertIn("code-mower board serve --repo OWNER/REPO", readme)
         self.assertIn("code-mower board serve --repo OWNER/REPO", quickstart)
@@ -11523,6 +11504,9 @@ def main():
 
     def test_board_data_contract_preserves_local_only_cloud_boundary(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        board_service = (ROOT / "docs" / "board-service-lifecycle.md").read_text(
+            encoding="utf-8",
+        )
         quickstart = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
         launch_surface = (ROOT / "docs" / "launch-command-surface.md").read_text(
             encoding="utf-8",
@@ -11539,7 +11523,7 @@ def main():
         readme_flat = " ".join(readme.split())
         quickstart_flat = " ".join(quickstart.split())
 
-        self.assertIn("[Board Data Contract](https://github.com/codemower-ai/code-mower/blob/main/docs/board-data-contract.md)", readme)
+        self.assertIn("[Board Data Contract](board-data-contract.md)", board_service)
         self.assertIn("code-mower board record --repo OWNER/REPO", readme)
         self.assertIn("code-mower board serve --repo OWNER/REPO --record-events", readme)
         self.assertIn("code-mower board serve --repo OWNER/REPO --record-events", launch_surface)
@@ -11680,13 +11664,10 @@ def main():
                 self.assertFalse(raw_auth_commands & {line.strip() for line in text.splitlines()})
 
         quickstart = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
-        build_loop_30 = (ROOT / "docs" / "build-loop-in-30-minutes.md").read_text(
-            encoding="utf-8",
-        )
         self_hosted = (ROOT / "docs" / "self-hosted-mac-runner.md").read_text(
             encoding="utf-8",
         )
-        for text in (quickstart, build_loop_30, self_hosted):
+        for text in (quickstart, self_hosted):
             self.assertIn("Do not paste raw provider auth/status output", text)
             self.assertIn(
                 'codex login status >/dev/null 2>&1 && echo "codex auth ok" || '
@@ -11744,7 +11725,6 @@ def main():
                     self.assertNotIn(phrase, text)
 
     def test_orchestrator_prompt_pack_preserves_adoption_guardrails(self) -> None:
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
         quickstart = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
         build_loop_30 = (ROOT / "docs" / "build-loop-in-30-minutes.md").read_text(
             encoding="utf-8",
@@ -11753,7 +11733,7 @@ def main():
             encoding="utf-8",
         )
 
-        for text in (readme, quickstart, build_loop_30):
+        for text in (quickstart, build_loop_30):
             self.assertIn("orchestrator-prompt-pack.md", text)
         prompt_pack_flat = " ".join(prompt_pack.split())
         self.assertIn("Claude Code Adoption Orchestrator", prompt_pack)
@@ -11788,11 +11768,9 @@ def main():
             encoding="utf-8",
         )
 
-        self.assertIn("[Try Code Mower In 10 Minutes](https://github.com/codemower-ai/code-mower/blob/main/docs/try-in-10-minutes.md)", readme)
-        self.assertIn(
-            "[Build Loop In 30 Minutes](https://github.com/codemower-ai/code-mower/blob/main/docs/build-loop-in-30-minutes.md)",
-            readme,
-        )
+        self.assertIn("docs/install.md", readme)
+        self.assertIn("docs/quickstart.md", readme)
+        self.assertIn("docs/README.md", readme)
         self.assertIn("code-mower builder-experiment run", builder_experiments)
         for historical_link in (
             "(v06-release-notes.md)",

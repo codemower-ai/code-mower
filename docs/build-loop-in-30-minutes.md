@@ -53,64 +53,10 @@ export DEFAULT_BRANCH=main
 export OWNER_LOGIN=OWNER_LOGIN
 ```
 
-If path A has not been completed in this repository, do this reviewer-gate
-checkpoint first. If you already have a merged setup PR with Codex and Claude
-audit evidence, skip to section 2.
-
-Confirm `code-mower==1.5.1` is visible on the selected package index before
-running this install block. Prepublication qualification uses the retained
-candidate wheel from the [v1.5.1 release runbook](v151-release-runbook.md).
-
-```bash
-python3.12 --version
-export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.1
-gh auth status >/dev/null 2>&1 && echo "gh auth ok" || { echo "gh auth NOT ready"; false; }
-code-mower init --easy
-code-mower init --easy --apply --output-dir .code-mower.generated
-code-mower doctor --adoption --repo "$REPO" --json
-
-git switch -c chore/code-mower-reviewer-gate
-cp -R .code-mower.generated/. .
-git add code-mower.yml .github tools calibration-corpus.json context-packs.json \
-  reviewer-spend.json reviewer-value-report.example.md
-git commit -m "chore: add code mower reviewer gate"
-git push -u origin HEAD
-cat > /tmp/code-mower-reviewer-gate-pr.md <<'CM_BODY'
-Install Code Mower generated reviewer-gate support.
-CM_BODY
-gh pr create \
-  --repo "$REPO" \
-  --base "$DEFAULT_BRANCH" \
-  --head "$(git branch --show-current)" \
-  --title "chore: add Code Mower reviewer gate" \
-  --body-file /tmp/code-mower-reviewer-gate-pr.md
-export PR_NUMBER="$(gh pr view --repo "$REPO" --json number --jq .number)"
-gh pr edit "$PR_NUMBER" --repo "$REPO" \
-  --add-label needs-codex-audit \
-  --add-label needs-claude-audit
-
-export PR_HEAD_PATH="$(mktemp -d)"
-gh repo clone "$REPO" "$PR_HEAD_PATH"
-git -C "$PR_HEAD_PATH" fetch origin "pull/${PR_NUMBER}/head:code-mower-pr-${PR_NUMBER}"
-git -C "$PR_HEAD_PATH" switch "code-mower-pr-${PR_NUMBER}"
-export GITHUB_TOKEN="$(gh auth token)"
-tools/run_codex_audit_pr.sh \
-  --repo "$REPO" \
-  --pr "$PR_NUMBER" \
-  --repo-paths "$REPO:$PR_HEAD_PATH" \
-  --merge-authority
-tools/run_claude_audit_pr.sh \
-  --repo "$REPO" \
-  --pr "$PR_NUMBER" \
-  --repo-paths "$REPO:$PR_HEAD_PATH" \
-  --merge-authority
-gh pr checks "$PR_NUMBER" --repo "$REPO" --watch
-gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --delete-branch
-```
-
-Path B assumes the generated reviewer-gate workflows and tools have already
-landed on the default branch and that one setup PR has been audited and merged.
+Complete the [Quickstart](quickstart.md) reviewer-gate path before enabling
+automation. It owns installation, GitHub authentication, generated setup, the
+setup pull request, and first independent audits. If that setup PR is already
+merged, continue below with the same repository and owner values.
 
 ## 2. Create The Automation Token
 

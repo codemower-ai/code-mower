@@ -10,12 +10,21 @@ from typing import Any, Iterable
 
 import yaml
 
+from . import __version__
+
 
 MANIFEST_PATH = "docs/docs-manifest.yml"
 INDEX_PATH = "docs/README.md"
 SCHEMA = "code_mower.docsManifest.v1"
 STATUSES = frozenset({"canonical", "supporting", "frozen", "archived"})
 IMMUTABLE_STATUSES = frozenset({"frozen", "archived"})
+JOURNEY_SUBJECTS = (
+    "installation",
+    "quickstart",
+    "upgrade",
+    "board-operations",
+    "troubleshooting",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -117,6 +126,19 @@ def validate_manifest(repo_path: Path) -> dict[str, Any]:
         elif digest is not None:
             problems.append(f"{label}.sha256 is allowed only for immutable documents")
 
+        if status == "supporting":
+            document = repo_path / path
+            try:
+                text = document.read_text(encoding="utf-8")
+            except OSError:
+                text = ""
+            package_spec = f"code-mower=={__version__}"
+            if package_spec in text:
+                problems.append(
+                    f"{path}: supporting documents must link to canonical install "
+                    f"guidance instead of repeating the current pin {package_spec}"
+                )
+
     actual = _markdown_paths(repo_path)
     declared = set(inventory)
     missing = sorted(actual - declared)
@@ -125,6 +147,11 @@ def validate_manifest(repo_path: Path) -> dict[str, Any]:
         problems.append("unclassified Markdown documents: " + ", ".join(missing))
     if stale:
         problems.append("manifest paths that do not exist: " + ", ".join(stale))
+    missing_journey = [subject for subject in JOURNEY_SUBJECTS if subject not in canonical_subjects]
+    if missing_journey:
+        problems.append(
+            "maintained journey is missing canonical subjects: " + ", ".join(missing_journey)
+        )
 
     expected_index = render_index(payload, repo_path=repo_path)
     index_path = repo_path / INDEX_PATH
@@ -191,11 +218,25 @@ def render_index(payload: dict[str, Any], *, repo_path: Path | None = None) -> s
         "detail without redefining these contracts. Frozen and archived documents preserve",
         "historical release evidence and are not current operating guidance.",
         "",
-        "## Canonical guides",
+        "## Maintained user journey",
         "",
-        "| Subject | Guide |",
-        "| --- | --- |",
     ]
+    canonical_by_subject = dict(canonical)
+    for index, subject in enumerate(JOURNEY_SUBJECTS, start=1):
+        path = canonical_by_subject.get(subject)
+        if not path:
+            continue
+        relative = Path(path).relative_to("docs").as_posix()
+        lines.append(f"{index}. [{_title(root, path)}]({relative})")
+    lines.extend(
+        [
+            "",
+            "## Canonical guides",
+            "",
+            "| Subject | Guide |",
+            "| --- | --- |",
+        ]
+    )
     for subject, path in canonical:
         relative = Path(path).relative_to("docs").as_posix()
         lines.append(

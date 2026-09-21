@@ -31,8 +31,9 @@ Actions limitations.
 Run:
 
 ```bash
+export CODE_MOWER_PACKAGE_SPEC='code-mower==<published-version>'
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.5.1 \
+  --package-spec "$CODE_MOWER_PACKAGE_SPEC" \
   --allow-package-index \
   --repo-path /path/to/product-repo \
   --json

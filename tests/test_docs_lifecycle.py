@@ -9,6 +9,7 @@ import unittest
 
 import yaml
 
+from code_mower import __version__
 from code_mower import docs_lifecycle
 from code_mower import release_readiness
 
@@ -35,6 +36,26 @@ class DocumentationLifecycleTests(unittest.TestCase):
         self.assertEqual(report["document_count"], report["declared_count"])
         self.assertGreater(report["status_counts"]["canonical"], 0)
         self.assertGreater(report["status_counts"]["frozen"], 0)
+        self.assertEqual(
+            list(docs_lifecycle.JOURNEY_SUBJECTS),
+            [
+                "installation",
+                "quickstart",
+                "upgrade",
+                "board-operations",
+                "troubleshooting",
+            ],
+        )
+        index = (ROOT / docs_lifecycle.INDEX_PATH).read_text(encoding="utf-8")
+        journey_links = [
+            "(install.md)",
+            "(quickstart.md)",
+            "(upgrade-existing-repo.md)",
+            "(board-service-lifecycle.md)",
+            "(troubleshooting.md)",
+        ]
+        offsets = [index.index(link) for link in journey_links]
+        self.assertEqual(offsets, sorted(offsets))
 
         readiness = release_readiness.render_release_readiness(ROOT)
         lifecycle_check = next(
@@ -90,3 +111,29 @@ class DocumentationLifecycleTests(unittest.TestCase):
             self._write(root, "docs/README.md", first + "manual edit\n")
             report = docs_lifecycle.validate_manifest(root)
             self.assertTrue(any("generated index is stale" in item for item in report["problems"]))
+
+    def test_supporting_document_cannot_repeat_current_install_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write(root, "docs/README.md", "placeholder")
+            self._write(
+                root,
+                "docs/detail.md",
+                f"# Detail\n\nInstall `code-mower=={__version__}`.\n",
+            )
+            self._manifest(
+                root,
+                [
+                    {
+                        "path": "docs/README.md",
+                        "status": "canonical",
+                        "subject": "index",
+                    },
+                    {"path": "docs/detail.md", "status": "supporting"},
+                ],
+            )
+            docs_lifecycle.write_index(root)
+            report = docs_lifecycle.validate_manifest(root)
+            self.assertTrue(
+                any("supporting documents must link" in item for item in report["problems"])
+            )

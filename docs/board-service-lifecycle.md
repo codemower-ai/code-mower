@@ -7,6 +7,8 @@ binding it cannot prove is its own.
 
 macOS is the implemented provider (launchd). Every other platform reports
 `unsupported_platform` rather than calling a transient process a service.
+See the [Board Data Contract](board-data-contract.md) for local storage,
+retention, redaction, API schemas, and the cloud boundary.
 
 ## Commands
 

@@ -20,6 +20,7 @@ from . import versioning as code_mower_versioning
 
 RELEASE_DOC_PATHS = (
     "README.md",
+    "docs/install.md",
     "docs/quickstart.md",
     "docs/try-in-10-minutes.md",
     "docs/first-user-install-rehearsal.md",
@@ -30,8 +31,8 @@ RELEASE_DOC_PATHS = (
 )
 REQUIRED_PUBLIC_PACKAGE_SPEC_DOC_PATHS = (
     "README.md",
+    "docs/install.md",
     "docs/quickstart.md",
-    "docs/try-in-10-minutes.md",
     "docs/first-user-install-rehearsal.md",
     "docs/public-release-checklist.md",
 )
