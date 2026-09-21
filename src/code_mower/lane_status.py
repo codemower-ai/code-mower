@@ -344,11 +344,6 @@ def _has_code_mower_claim(
 
     label_set = set(_text(label).lower() for label in labels)
 
-    audit_patterns = {"dispatched:codex", "dispatched:claude", "dispatched:cursor",
-                      "dispatched:devin", "dispatched:gitar", "dispatched:muse"}
-    if label_set & audit_patterns:
-        return True
-
     for label in label_set:
         if (label.startswith("needs-") and label.endswith("-audit")) or \
            label.endswith("-audit-done") or label.endswith("-audit-blocked"):
@@ -356,7 +351,7 @@ def _has_code_mower_claim(
 
     for check in checks:
         check_name = _text(check.get("name")).lower()
-        if any(term in check_name for term in CHECK_TERMS):
+        if "code-mower" in check_name or check_name.startswith("code_mower"):
             return True
 
     if identity:
