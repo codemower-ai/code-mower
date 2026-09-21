@@ -1,0 +1,32 @@
+{
+  "contract_schema": "code_mower.controlSurfaceSessionSummary.v1",
+  "digest_scope": "exact_file_bytes",
+  "encoding": "utf-8",
+  "files": [
+    {
+      "bytes": 16933,
+      "path": "control_surface_session_summary.accepted.json",
+      "role": "accepted",
+      "sha256": "f6629a2561068fd1ca495cc7e028bc527840fb6ed13ef4f182593ca2a4b0ab38"
+    },
+    {
+      "bytes": 1869,
+      "path": "control_surface_session_summary.expectations.json",
+      "role": "expectations",
+      "sha256": "01c8e9bb26f60fb8163a69801070ab6eabeadf20c271a41455634063966c7a21"
+    },
+    {
+      "bytes": 27232,
+      "path": "control_surface_session_summary.rejected.json",
+      "role": "rejected",
+      "sha256": "13425843929101c5dac575238a5896e4a49737fb74fbab605fbbe36286e65760"
+    },
+    {
+      "bytes": 5278,
+      "path": "control_surface_session_summary.schema.json",
+      "role": "schema",
+      "sha256": "5b84475db6671c19752f6c6528bde217186ccdc6e83e97682f75b32f7d0582d5"
+    }
+  ],
+  "schema": "code_mower.controlSurfaceSessionFixtureManifest.v1"
+}

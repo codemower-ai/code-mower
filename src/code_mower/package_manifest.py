@@ -31,6 +31,36 @@ PACKAGE_FILES = (
     ("src/code_mower/board_local_observation.py", "src/code_mower/board_local_observation.py", "core"),
     ("src/code_mower/board_remote_observation.py", "src/code_mower/board_remote_observation.py", "core"),
     ("src/code_mower/board_service.py", "src/code_mower/board_service.py", "core"),
+    (
+        "src/code_mower/control_surface_summary.py",
+        "src/code_mower/control_surface_summary.py",
+        "core",
+    ),
+    (
+        "src/code_mower/control_surface_session_summary.schema.json",
+        "src/code_mower/control_surface_session_summary.schema.json",
+        "schema",
+    ),
+    (
+        "src/code_mower/control_surface_session_summary.accepted.json",
+        "src/code_mower/control_surface_session_summary.accepted.json",
+        "fixture",
+    ),
+    (
+        "src/code_mower/control_surface_session_summary.rejected.json",
+        "src/code_mower/control_surface_session_summary.rejected.json",
+        "fixture",
+    ),
+    (
+        "src/code_mower/control_surface_session_summary.expectations.json",
+        "src/code_mower/control_surface_session_summary.expectations.json",
+        "fixture",
+    ),
+    (
+        "src/code_mower/control_surface_session_summary.fixture-manifest.json",
+        "src/code_mower/control_surface_session_summary.fixture-manifest.json",
+        "fixture",
+    ),
     ("src/code_mower/file_locks.py", "src/code_mower/file_locks.py", "core"),
     ("src/code_mower/builder_runs.py", "src/code_mower/builder_runs.py", "core"),
     ("src/code_mower/builder_experiment.py", "src/code_mower/builder_experiment.py", "core"),

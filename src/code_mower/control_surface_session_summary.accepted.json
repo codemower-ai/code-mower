@@ -1,0 +1,502 @@
+{
+  "events": [
+    {
+      "event": {
+        "created_at": "2026-09-20T12:01:00Z",
+        "dimensions": {
+          "capability_version": 1,
+          "control_surface": "slack",
+          "outcome": "unknown",
+          "owner_action": "none",
+          "privacy_classification": "metadata_only",
+          "session": "00000000000000000000000000000001",
+          "state": "pending",
+          "summary_schema": "code_mower.controlSurfaceSessionSummary.v1"
+        },
+        "event_id": "00000000-0000-4000-8000-000000000001",
+        "event_type": "control_surface_session_summary",
+        "install_id": "",
+        "lens": "",
+        "metrics": {
+          "cancel_count": 0,
+          "collect_count": 0,
+          "dispatch_count": 1,
+          "message_count": 0,
+          "summary_count": 1
+        },
+        "provider": "codex",
+        "repo_slug": "example/project",
+        "schema": "code_mower.benchmarkEvent.v1",
+        "source": "code-mower slack lifecycle",
+        "status": "pending",
+        "team_id": "",
+        "tool": {
+          "integration": "code-mower slack lifecycle",
+          "lens": "",
+          "model": "",
+          "model_source": "not_applicable",
+          "model_version_raw": "",
+          "prompt_pack_version": "",
+          "provider": "code-mower",
+          "role": "reporter",
+          "runtime_environment": "local",
+          "schema": "code_mower.toolProvenance.v1",
+          "source": "code-mower slack lifecycle",
+          "tool_name": "code-mower",
+          "tool_version": "1.6.0",
+          "version_source": "package_version"
+        }
+      },
+      "name": "pending_no_pr"
+    },
+    {
+      "event": {
+        "created_at": "2026-09-20T12:02:00Z",
+        "dimensions": {
+          "capability_version": 1,
+          "control_surface": "slack",
+          "outcome": "unknown",
+          "owner_action": "none",
+          "privacy_classification": "metadata_only",
+          "session": "00000000000000000000000000000002",
+          "state": "running",
+          "summary_schema": "code_mower.controlSurfaceSessionSummary.v1"
+        },
+        "event_id": "00000000-0000-4000-8000-000000000002",
+        "event_type": "control_surface_session_summary",
+        "install_id": "",
+        "lens": "",
+        "metrics": {
+          "cancel_count": 0,
+          "collect_count": 0,
+          "dispatch_count": 1,
+          "message_count": 0,
+          "summary_count": 1
+        },
+        "provider": "codex",
+        "repo_slug": "example/project",
+        "schema": "code_mower.benchmarkEvent.v1",
+        "source": "code-mower slack lifecycle",
+        "status": "running",
+        "team_id": "",
+        "tool": {
+          "integration": "code-mower slack lifecycle",
+          "lens": "",
+          "model": "",
+          "model_source": "not_applicable",
+          "model_version_raw": "",
+          "prompt_pack_version": "",
+          "provider": "code-mower",
+          "role": "reporter",
+          "runtime_environment": "local",
+          "schema": "code_mower.toolProvenance.v1",
+          "source": "code-mower slack lifecycle",
+          "tool_name": "code-mower",
+          "tool_version": "1.6.0",
+          "version_source": "package_version"
+        }
+      },
+      "name": "running_no_pr"
+    },
+    {
+      "event": {
+        "created_at": "2026-09-20T12:03:00Z",
+        "dimensions": {
+          "capability_version": 1,
+          "control_surface": "slack",
+          "outcome": "unknown",
+          "owner_action": "answer_question",
+          "privacy_classification": "metadata_only",
+          "session": "00000000000000000000000000000003",
+          "state": "waiting_for_user",
+          "summary_schema": "code_mower.controlSurfaceSessionSummary.v1"
+        },
+        "event_id": "00000000-0000-4000-8000-000000000003",
+        "event_type": "control_surface_session_summary",
+        "install_id": "",
+        "lens": "",
+        "metrics": {
+          "cancel_count": 0,
+          "collect_count": 0,
+          "dispatch_count": 1,
+          "message_count": 0,
+          "summary_count": 1
+        },
+        "provider": "codex",
+        "repo_slug": "example/project",
+        "schema": "code_mower.benchmarkEvent.v1",
+        "source": "code-mower slack lifecycle",
+        "status": "waiting_for_user",
+        "team_id": "",
+        "tool": {
+          "integration": "code-mower slack lifecycle",
+          "lens": "",
+          "model": "",
+          "model_source": "not_applicable",
+          "model_version_raw": "",
+          "prompt_pack_version": "",
+          "provider": "code-mower",
+          "role": "reporter",
+          "runtime_environment": "local",
+          "schema": "code_mower.toolProvenance.v1",
+          "source": "code-mower slack lifecycle",
+          "tool_name": "code-mower",
+          "tool_version": "1.6.0",
+          "version_source": "package_version"
+        }
+      },
+      "name": "waiting_for_user"
+    },
+    {
+      "event": {
+        "created_at": "2026-09-20T12:04:00Z",
+        "dimensions": {
+          "capability_version": 1,
+          "control_surface": "slack",
+          "outcome": "unknown",
+          "owner_action": "respond_to_approval",
+          "privacy_classification": "metadata_only",
+          "session": "00000000000000000000000000000004",
+          "state": "waiting_for_approval",
+          "summary_schema": "code_mower.controlSurfaceSessionSummary.v1"
+        },
+        "event_id": "00000000-0000-4000-8000-000000000004",
+        "event_type": "control_surface_session_summary",
+        "install_id": "",
+        "lens": "",
+        "metrics": {
+          "cancel_count": 0,
+          "collect_count": 0,
+          "dispatch_count": 1,
+          "message_count": 0,
+          "summary_count": 1
+        },
+        "provider": "codex",
+        "repo_slug": "example/project",
+        "schema": "code_mower.benchmarkEvent.v1",
+        "source": "code-mower slack lifecycle",
+        "status": "waiting_for_approval",
+        "team_id": "",
+        "tool": {
+          "integration": "code-mower slack lifecycle",
+          "lens": "",
+          "model": "",
+          "model_source": "not_applicable",
+          "model_version_raw": "",
+          "prompt_pack_version": "",
+          "provider": "code-mower",
+          "role": "reporter",
+          "runtime_environment": "local",
+          "schema": "code_mower.toolProvenance.v1",
+          "source": "code-mower slack lifecycle",
+          "tool_name": "code-mower",
+          "tool_version": "1.6.0",
+          "version_source": "package_version"
+        }
+      },
+      "name": "waiting_for_approval"
+    },
+    {
+      "event": {
+        "created_at": "2026-09-20T12:05:00Z",
+        "dimensions": {
+          "capability_version": 1,
+          "control_surface": "slack",
+          "outcome": "unknown",
+          "owner_action": "inspect_failure",
+          "privacy_classification": "metadata_only",
+          "session": "00000000000000000000000000000005",
+          "state": "suspended",
+          "summary_schema": "code_mower.controlSurfaceSessionSummary.v1"
+        },
+        "event_id": "00000000-0000-4000-8000-000000000005",
+        "event_type": "control_surface_session_summary",
+        "install_id": "",
+        "lens": "",
+        "metrics": {
+          "cancel_count": 0,
+          "collect_count": 0,
+          "dispatch_count": 1,
+          "message_count": 0,
+          "summary_count": 1
+        },
+        "provider": "codex",
+        "repo_slug": "example/project",
+        "schema": "code_mower.benchmarkEvent.v1",
+        "source": "code-mower slack lifecycle",
+        "status": "suspended",
+        "team_id": "",
+        "tool": {
+          "integration": "code-mower slack lifecycle",
+          "lens": "",
+          "model": "",
+          "model_source": "not_applicable",
+          "model_version_raw": "",
+          "prompt_pack_version": "",
+          "provider": "code-mower",
+          "role": "reporter",
+          "runtime_environment": "local",
+          "schema": "code_mower.toolProvenance.v1",
+          "source": "code-mower slack lifecycle",
+          "tool_name": "code-mower",
+          "tool_version": "1.6.0",
+          "version_source": "package_version"
+        }
+      },
+      "name": "suspended_no_pr"
+    },
+    {
+      "event": {
+        "created_at": "2026-09-20T12:06:00Z",
+        "dimensions": {
+          "capability_version": 1,
+          "control_surface": "slack",
+          "outcome": "unknown",
+          "owner_action": "inspect_provider",
+          "privacy_classification": "metadata_only",
+          "session": "00000000000000000000000000000006",
+          "state": "uncertain",
+          "summary_schema": "code_mower.controlSurfaceSessionSummary.v1"
+        },
+        "event_id": "00000000-0000-4000-8000-000000000006",
+        "event_type": "control_surface_session_summary",
+        "install_id": "",
+        "lens": "",
+        "metrics": {
+          "cancel_count": 0,
+          "collect_count": 0,
+          "dispatch_count": 1,
+          "message_count": 0,
+          "summary_count": 1
+        },
+        "provider": "codex",
+        "repo_slug": "example/project",
+        "schema": "code_mower.benchmarkEvent.v1",
+        "source": "code-mower slack lifecycle",
+        "status": "uncertain",
+        "team_id": "",
+        "tool": {
+          "integration": "code-mower slack lifecycle",
+          "lens": "",
+          "model": "",
+          "model_source": "not_applicable",
+          "model_version_raw": "",
+          "prompt_pack_version": "",
+          "provider": "code-mower",
+          "role": "reporter",
+          "runtime_environment": "local",
+          "schema": "code_mower.toolProvenance.v1",
+          "source": "code-mower slack lifecycle",
+          "tool_name": "code-mower",
+          "tool_version": "1.6.0",
+          "version_source": "package_version"
+        }
+      },
+      "name": "uncertain_inspect_provider"
+    },
+    {
+      "event": {
+        "created_at": "2026-09-20T12:07:00Z",
+        "dimensions": {
+          "capability_version": 1,
+          "control_surface": "slack",
+          "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "outcome": "succeeded",
+          "owner_action": "none",
+          "pr_number": "921",
+          "pr_state": "open",
+          "privacy_classification": "metadata_only",
+          "session": "00000000000000000000000000000007",
+          "state": "complete",
+          "summary_schema": "code_mower.controlSurfaceSessionSummary.v1"
+        },
+        "event_id": "00000000-0000-4000-8000-000000000007",
+        "event_type": "control_surface_session_summary",
+        "install_id": "",
+        "lens": "",
+        "metrics": {
+          "cancel_count": 0,
+          "collect_count": 1,
+          "dispatch_count": 1,
+          "elapsed_seconds": 420.0,
+          "message_count": 0,
+          "summary_count": 1
+        },
+        "provider": "codex",
+        "repo_slug": "example/project",
+        "schema": "code_mower.benchmarkEvent.v1",
+        "source": "code-mower slack lifecycle",
+        "status": "complete",
+        "team_id": "",
+        "tool": {
+          "integration": "code-mower slack lifecycle",
+          "lens": "",
+          "model": "",
+          "model_source": "not_applicable",
+          "model_version_raw": "",
+          "prompt_pack_version": "",
+          "provider": "code-mower",
+          "role": "reporter",
+          "runtime_environment": "local",
+          "schema": "code_mower.toolProvenance.v1",
+          "source": "code-mower slack lifecycle",
+          "tool_name": "code-mower",
+          "tool_version": "1.6.0",
+          "version_source": "package_version"
+        }
+      },
+      "name": "complete_with_open_pr"
+    },
+    {
+      "event": {
+        "created_at": "2026-09-20T12:08:00Z",
+        "dimensions": {
+          "capability_version": 1,
+          "control_surface": "slack",
+          "outcome": "failed",
+          "owner_action": "inspect_failure",
+          "privacy_classification": "metadata_only",
+          "session": "00000000000000000000000000000008",
+          "state": "failed",
+          "summary_schema": "code_mower.controlSurfaceSessionSummary.v1"
+        },
+        "event_id": "00000000-0000-4000-8000-000000000008",
+        "event_type": "control_surface_session_summary",
+        "install_id": "",
+        "lens": "",
+        "metrics": {
+          "cancel_count": 0,
+          "collect_count": 0,
+          "dispatch_count": 1,
+          "message_count": 0,
+          "summary_count": 1
+        },
+        "provider": "codex",
+        "repo_slug": "example/project",
+        "schema": "code_mower.benchmarkEvent.v1",
+        "source": "code-mower slack lifecycle",
+        "status": "failed",
+        "team_id": "",
+        "tool": {
+          "integration": "code-mower slack lifecycle",
+          "lens": "",
+          "model": "",
+          "model_source": "not_applicable",
+          "model_version_raw": "",
+          "prompt_pack_version": "",
+          "provider": "code-mower",
+          "role": "reporter",
+          "runtime_environment": "local",
+          "schema": "code_mower.toolProvenance.v1",
+          "source": "code-mower slack lifecycle",
+          "tool_name": "code-mower",
+          "tool_version": "1.6.0",
+          "version_source": "package_version"
+        }
+      },
+      "name": "failed_without_pr"
+    },
+    {
+      "event": {
+        "created_at": "2026-09-20T12:09:00Z",
+        "dimensions": {
+          "capability_version": 1,
+          "control_surface": "slack",
+          "outcome": "cancelled",
+          "owner_action": "none",
+          "privacy_classification": "metadata_only",
+          "session": "00000000000000000000000000000009",
+          "state": "terminated",
+          "summary_schema": "code_mower.controlSurfaceSessionSummary.v1"
+        },
+        "event_id": "00000000-0000-4000-8000-000000000009",
+        "event_type": "control_surface_session_summary",
+        "install_id": "",
+        "lens": "",
+        "metrics": {
+          "cancel_count": 1,
+          "collect_count": 0,
+          "dispatch_count": 1,
+          "message_count": 0,
+          "summary_count": 1
+        },
+        "provider": "codex",
+        "repo_slug": "example/project",
+        "schema": "code_mower.benchmarkEvent.v1",
+        "source": "code-mower slack lifecycle",
+        "status": "terminated",
+        "team_id": "",
+        "tool": {
+          "integration": "code-mower slack lifecycle",
+          "lens": "",
+          "model": "",
+          "model_source": "not_applicable",
+          "model_version_raw": "",
+          "prompt_pack_version": "",
+          "provider": "code-mower",
+          "role": "reporter",
+          "runtime_environment": "local",
+          "schema": "code_mower.toolProvenance.v1",
+          "source": "code-mower slack lifecycle",
+          "tool_name": "code-mower",
+          "tool_version": "1.6.0",
+          "version_source": "package_version"
+        }
+      },
+      "name": "terminated_without_pr"
+    },
+    {
+      "event": {
+        "created_at": "2026-09-20T12:10:00Z",
+        "dimensions": {
+          "capability_version": 1,
+          "control_surface": "slack",
+          "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "outcome": "unknown",
+          "owner_action": "none",
+          "pr_number": "921",
+          "pr_state": "open",
+          "privacy_classification": "metadata_only",
+          "session": "0000000000000000000000000000000a",
+          "state": "archived",
+          "summary_schema": "code_mower.controlSurfaceSessionSummary.v1"
+        },
+        "event_id": "00000000-0000-4000-8000-00000000000a",
+        "event_type": "control_surface_session_summary",
+        "install_id": "",
+        "lens": "",
+        "metrics": {
+          "cancel_count": 0,
+          "collect_count": 0,
+          "dispatch_count": 1,
+          "message_count": 0,
+          "summary_count": 1
+        },
+        "provider": "codex",
+        "repo_slug": "example/project",
+        "schema": "code_mower.benchmarkEvent.v1",
+        "source": "code-mower slack lifecycle",
+        "status": "archived",
+        "team_id": "",
+        "tool": {
+          "integration": "code-mower slack lifecycle",
+          "lens": "",
+          "model": "",
+          "model_source": "not_applicable",
+          "model_version_raw": "",
+          "prompt_pack_version": "",
+          "provider": "code-mower",
+          "role": "reporter",
+          "runtime_environment": "local",
+          "schema": "code_mower.toolProvenance.v1",
+          "source": "code-mower slack lifecycle",
+          "tool_name": "code-mower",
+          "tool_version": "1.6.0",
+          "version_source": "package_version"
+        }
+      },
+      "name": "archived_with_retained_pr"
+    }
+  ],
+  "schema": "code_mower.controlSurfaceSessionSummaryAcceptedFixtures.v1"
+}

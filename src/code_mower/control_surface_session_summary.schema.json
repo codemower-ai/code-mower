@@ -1,0 +1,233 @@
+{
+  "$defs": {
+    "dimensions": {
+      "additionalProperties": false,
+      "properties": {
+        "capability_version": {
+          "const": 1
+        },
+        "control_surface": {
+          "const": "slack"
+        },
+        "head_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "unknown",
+            "succeeded",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "owner_action": {
+          "enum": [
+            "none",
+            "answer_question",
+            "respond_to_approval",
+            "inspect_provider",
+            "inspect_failure"
+          ]
+        },
+        "pr_number": {
+          "pattern": "^[1-9][0-9]{0,9}$",
+          "type": "string"
+        },
+        "pr_state": {
+          "enum": [
+            "open",
+            "merged",
+            "closed_unmerged"
+          ]
+        },
+        "privacy_classification": {
+          "const": "metadata_only"
+        },
+        "session": {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "archived",
+            "complete",
+            "failed",
+            "pending",
+            "running",
+            "suspended",
+            "terminated",
+            "uncertain",
+            "waiting_for_approval",
+            "waiting_for_user"
+          ]
+        },
+        "summary_schema": {
+          "const": "code_mower.controlSurfaceSessionSummary.v1"
+        }
+      },
+      "required": [
+        "summary_schema",
+        "capability_version",
+        "control_surface",
+        "session",
+        "privacy_classification",
+        "state",
+        "outcome",
+        "owner_action"
+      ],
+      "type": "object"
+    },
+    "metrics": {
+      "additionalProperties": false,
+      "properties": {
+        "cancel_count": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "collect_count": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dispatch_count": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "elapsed_seconds": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "message_count": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "summary_count": {
+          "const": 1
+        },
+        "usage_acu": {
+          "minimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "summary_count",
+        "dispatch_count",
+        "message_count",
+        "cancel_count",
+        "collect_count"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "code_mower.controlSurfaceSessionSummary.v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Closed metadata-only Slack lifecycle event inside code_mower.benchmarkEvent.v1.",
+  "properties": {
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "dimensions": {
+      "$ref": "#/$defs/dimensions"
+    },
+    "event_id": {
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "event_type": {
+      "const": "control_surface_session_summary"
+    },
+    "install_id": {
+      "const": ""
+    },
+    "lens": {
+      "const": ""
+    },
+    "metrics": {
+      "$ref": "#/$defs/metrics"
+    },
+    "provider": {
+      "oneOf": [
+        {
+          "enum": [
+            "antigravity",
+            "claude",
+            "codex",
+            "cursor",
+            "cursor-bugbot",
+            "devin",
+            "gitar",
+            "greptile",
+            "grok-bot",
+            "muse",
+            "qodo"
+          ]
+        },
+        {
+          "pattern": "^custom:[a-z][a-z0-9-]{0,63}$",
+          "type": "string"
+        }
+      ]
+    },
+    "repo_slug": {
+      "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "type": "string"
+    },
+    "schema": {
+      "const": "code_mower.benchmarkEvent.v1"
+    },
+    "source": {
+      "const": "code-mower slack lifecycle"
+    },
+    "status": {
+      "enum": [
+        "archived",
+        "complete",
+        "failed",
+        "pending",
+        "running",
+        "suspended",
+        "terminated",
+        "uncertain",
+        "waiting_for_approval",
+        "waiting_for_user"
+      ]
+    },
+    "team_id": {
+      "const": ""
+    },
+    "tool": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema",
+    "event_type",
+    "event_id",
+    "created_at",
+    "repo_slug",
+    "team_id",
+    "install_id",
+    "source",
+    "provider",
+    "lens",
+    "status",
+    "metrics",
+    "dimensions",
+    "tool"
+  ],
+  "title": "Control-surface session summary v1",
+  "type": "object",
+  "x-code-mower-invariants": [
+    "status equals dimensions.state",
+    "complete=>succeeded, failed=>failed, terminated=>cancelled, every other state=>unknown",
+    "owner_action is derived from the validated local lifecycle reason",
+    "head_sha and pr_state require pr_number",
+    "usage_acu is allowed only for devin and only when already observed"
+  ]
+}

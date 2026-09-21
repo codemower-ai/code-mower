@@ -893,6 +893,36 @@
       "target": "src/code_mower/context_store.py"
     },
     {
+      "kind": "fixture",
+      "source": "src/code_mower/control_surface_session_summary.accepted.json",
+      "target": "src/code_mower/control_surface_session_summary.accepted.json"
+    },
+    {
+      "kind": "fixture",
+      "source": "src/code_mower/control_surface_session_summary.expectations.json",
+      "target": "src/code_mower/control_surface_session_summary.expectations.json"
+    },
+    {
+      "kind": "fixture",
+      "source": "src/code_mower/control_surface_session_summary.fixture-manifest.json",
+      "target": "src/code_mower/control_surface_session_summary.fixture-manifest.json"
+    },
+    {
+      "kind": "fixture",
+      "source": "src/code_mower/control_surface_session_summary.rejected.json",
+      "target": "src/code_mower/control_surface_session_summary.rejected.json"
+    },
+    {
+      "kind": "schema",
+      "source": "src/code_mower/control_surface_session_summary.schema.json",
+      "target": "src/code_mower/control_surface_session_summary.schema.json"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/control_surface_summary.py",
+      "target": "src/code_mower/control_surface_summary.py"
+    },
+    {
       "kind": "core",
       "source": "src/code_mower/controller.py",
       "target": "src/code_mower/controller.py"
