@@ -1130,3 +1130,248 @@ class ListenerInventoryAvailabilityTests(TestCase):
         self.assertEqual(pr["lineage"]["status"], "unknown")
         self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable")
         self.assertEqual(pr["next_action"], "owner action required")
+
+    def test_pr_with_dispatch_label_is_managed(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 333,
+                        "title": "Dispatched work",
+                        "url": "https://github.com/owner/repo/pull/333",
+                        "headRefName": "feature/work",
+                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                        "author": {"login": "human-contributor"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [{"name": "dispatched:cursor"}],
+                        "statusCheckRollup": [],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            if args[0] == "api" and "/comments?" in args[1]:
+                raise RuntimeError("Simulated error")
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        config_with_lanes = policy({})
+        config_with_lanes["lanes"] = {
+            "cursor": {"dispatch_label": "dispatched:cursor"}
+        }
+
+        report = lane_status.collect_status(
+            lineage_config=config_with_lanes,
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        self.assertEqual(pr["lineage"]["status"], "unknown")
+        self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable")
+
+    def test_pr_with_dispatch_alias_is_managed(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 444,
+                        "title": "Legacy dispatch",
+                        "url": "https://github.com/owner/repo/pull/444",
+                        "headRefName": "feature/legacy",
+                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                        "author": {"login": "human"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [{"name": "dispatched:grok-bot"}],
+                        "statusCheckRollup": [],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            if args[0] == "api" and "/comments?" in args[1]:
+                raise RuntimeError("Simulated error")
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        config_with_alias = policy({})
+        config_with_alias["lanes"] = {
+            "cursor": {
+                "dispatch_label": "dispatched:cursor",
+                "dispatch_labels": ["dispatched:grok-bot"]
+            }
+        }
+
+        report = lane_status.collect_status(
+            lineage_config=config_with_alias,
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        self.assertEqual(pr["lineage"]["status"], "unknown")
+        self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable")
+
+    def test_pr_with_audit_need_label_is_managed(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 555,
+                        "title": "Needs audit",
+                        "url": "https://github.com/owner/repo/pull/555",
+                        "headRefName": "feature/needs-audit",
+                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                        "author": {"login": "contributor"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [{"name": "needs-codex-audit"}],
+                        "statusCheckRollup": [],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            if args[0] == "api" and "/comments?" in args[1]:
+                raise RuntimeError("Simulated error")
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        config_with_audit = policy({})
+        config_with_audit["lanes"] = {
+            "codex": {"audit_need": "needs-codex-audit"}
+        }
+
+        report = lane_status.collect_status(
+            lineage_config=config_with_audit,
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        self.assertEqual(pr["lineage"]["status"], "unknown")
+        self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable")
+
+    def test_pr_with_generic_audit_label_is_unmanaged(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 666,
+                        "title": "Security audit needed",
+                        "url": "https://github.com/owner/repo/pull/666",
+                        "headRefName": "feature/security",
+                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                        "author": {"login": "developer"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [{"name": "needs-security-audit"}],
+                        "statusCheckRollup": [],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            if args[0] == "api" and "/comments?" in args[1]:
+                return []
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        config_with_codex_audit = policy({})
+        config_with_codex_audit["lanes"] = {
+            "codex": {"audit_need": "needs-codex-audit"}
+        }
+
+        report = lane_status.collect_status(
+            lineage_config=config_with_codex_audit,
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        self.assertEqual(pr["lineage"]["status"], "unmanaged")
+        self.assertEqual(pr["lineage"]["reason"], "no_code_mower_provenance")
+
+    def test_configured_author_recognized_when_exclusion_disabled(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 777,
+                        "title": "Bot PR with exclusion disabled",
+                        "url": "https://github.com/owner/repo/pull/777",
+                        "headRefName": "bot/work",
+                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                        "author": {"login": "source-bot"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [],
+                        "statusCheckRollup": [],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            if args[0] == "api" and "/comments?" in args[1]:
+                raise RuntimeError("Simulated error")
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        config_no_exclusion = policy()
+        config_no_exclusion["merge_authority_excludes_author"] = False
+
+        report = lane_status.collect_status(
+            lineage_config=config_no_exclusion,
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        self.assertEqual(pr["lineage"]["status"], "unknown")
+        self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable")
+
+    def test_configured_prefix_recognized_when_exclusion_disabled(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 888,
+                        "title": "Branch prefix with exclusion disabled",
+                        "url": "https://github.com/owner/repo/pull/888",
+                        "headRefName": "codex/prefix-work",
+                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                        "author": {"login": "human"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [],
+                        "statusCheckRollup": [],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            if args[0] == "api" and "/comments?" in args[1]:
+                raise RuntimeError("Simulated error")
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        config_no_exclusion = policy()
+        config_no_exclusion["merge_authority_excludes_author"] = False
+
+        report = lane_status.collect_status(
+            lineage_config=config_no_exclusion,
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        self.assertEqual(pr["lineage"]["status"], "unknown")
+        self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable")

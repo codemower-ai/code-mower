@@ -324,6 +324,52 @@ def _author(pr: Mapping[str, Any]) -> str:
     return _text(author.get("login")) if isinstance(author, Mapping) else _text(author)
 
 
+def _extract_code_mower_labels(lineage_config: Mapping[str, Any] | None) -> set[str]:
+    """Extract all configured Code Mower labels from policy.
+
+    Returns builder labels, dispatch labels, and audit labels derived from
+    validated policy. Empty when lineage_config is None or lanes are missing.
+    """
+    if lineage_config is None:
+        return set()
+
+    labels = set()
+
+    builder_identity = lineage_config.get("builder_identity", {})
+    if isinstance(builder_identity, Mapping):
+        builder_labels = builder_identity.get("labels", {})
+        if isinstance(builder_labels, Mapping):
+            labels.update(_text(label).lower() for label in builder_labels.keys())
+
+    lanes = lineage_config.get("lanes", {})
+    if isinstance(lanes, Mapping):
+        for lane_data in lanes.values():
+            if not isinstance(lane_data, Mapping):
+                continue
+
+            dispatch_label = lane_data.get("dispatch_label", "")
+            if dispatch_label:
+                labels.add(_text(dispatch_label).lower())
+
+            dispatch_labels = lane_data.get("dispatch_labels", [])
+            if isinstance(dispatch_labels, (list, tuple)):
+                labels.update(_text(label).lower() for label in dispatch_labels if label)
+
+            audit_need = lane_data.get("audit_need", "")
+            if audit_need:
+                labels.add(_text(audit_need).lower())
+
+            blocked_label = lane_data.get("blocked", "")
+            if blocked_label:
+                labels.add(_text(blocked_label).lower())
+
+            done_label = lane_data.get("done", "")
+            if done_label:
+                labels.add(_text(done_label).lower())
+
+    return labels
+
+
 def _has_code_mower_claim(
     *,
     labels: Sequence[str],
@@ -332,6 +378,7 @@ def _has_code_mower_claim(
     checks: Sequence[Mapping[str, str]],
     identity: Any,
     has_lineage_markers: bool,
+    lineage_config: Mapping[str, Any] | None = None,
 ) -> bool:
     """Check if a PR has any Code Mower provenance claim.
 
@@ -344,10 +391,9 @@ def _has_code_mower_claim(
 
     label_set = set(_text(label).lower() for label in labels)
 
-    for label in label_set:
-        if (label.startswith("needs-") and label.endswith("-audit")) or \
-           label.endswith("-audit-done") or label.endswith("-audit-blocked"):
-            return True
+    configured_labels = _extract_code_mower_labels(lineage_config)
+    if label_set & configured_labels:
+        return True
 
     for check in checks:
         check_name = _text(check.get("name")).lower()
@@ -355,25 +401,18 @@ def _has_code_mower_claim(
             return True
 
     if identity:
-        identity_labels = getattr(identity, "labels", ())
-        if identity_labels:
-            configured_labels = {_text(label).lower() for label, _ in identity_labels}
-            if label_set & configured_labels:
+        identity_authors = getattr(identity, "authors", ())
+        if identity_authors:
+            author_lower = _text(author).lower()
+            configured_authors = {_text(account).lower() for account, _ in identity_authors}
+            if author_lower in configured_authors:
                 return True
 
-        if getattr(identity, "enabled", False):
-            identity_authors = getattr(identity, "authors", ())
-            if identity_authors:
-                author_lower = _text(author).lower()
-                configured_authors = {_text(account).lower() for account, _ in identity_authors}
-                if author_lower in configured_authors:
-                    return True
-
-            identity_prefixes = getattr(identity, "branch_prefixes", ())
-            if identity_prefixes:
-                branch_lower = _text(branch).lower()
-                if any(branch_lower.startswith(_text(prefix).lower()) for prefix, _ in identity_prefixes):
-                    return True
+        identity_prefixes = getattr(identity, "branch_prefixes", ())
+        if identity_prefixes:
+            branch_lower = _text(branch).lower()
+            if any(branch_lower.startswith(_text(prefix).lower()) for prefix, _ in identity_prefixes):
+                return True
 
     return False
 
@@ -532,6 +571,7 @@ def _remote(
                     checks=checks,
                     identity=identity,
                     has_lineage_markers=has_lineage_markers,
+                    lineage_config=lineage_config,
                 )
                 if not has_claim:
                     pr["lineage"] = {"status": "unmanaged", "reason": "no_code_mower_provenance",
@@ -544,6 +584,7 @@ def _remote(
                 checks=checks,
                 identity=identity,
                 has_lineage_markers=has_lineage_markers,
+                lineage_config=lineage_config,
             )
             if has_claim:
                 pr["lineage"] = {
@@ -565,6 +606,7 @@ def _remote(
                 checks=checks,
                 identity=identity,
                 has_lineage_markers=has_lineage_markers,
+                lineage_config=lineage_config,
             )
             if has_claim:
                 pr["lineage"] = {"status": "unknown", "reason": "lineage_unreadable",
