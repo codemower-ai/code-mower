@@ -18,8 +18,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CANONICAL = ROOT / "templates/workflows/code-mower-gate.yml.j2"
-MIRROR = ROOT / "src/code_mower/templates/workflows/code-mower-gate.yml.j2"
+TEMPLATE = ROOT / "src/code_mower/templates/workflows/code-mower-gate.yml.j2"
 CHECKED_IN = ROOT / ".github/workflows/code-mower-gate.yml"
 
 BEGIN = "# CODE_MOWER_GATE_AUTOMERGE_BEGIN"
@@ -78,7 +77,7 @@ def _automerge_block(path: Path) -> str:
 
 def _run_block(scenario: str, *, max_attempts: str = "5") -> tuple[int, str, list[str]]:
     """Run the extracted gate block against a fake ``gh``; return exit/output/calls."""
-    block = _automerge_block(CANONICAL)
+    block = _automerge_block(TEMPLATE)
     script = (
         "set -euo pipefail\n"
         'PR_NUMBER="466"\n'
@@ -122,12 +121,11 @@ def _run_block(scenario: str, *, max_attempts: str = "5") -> tuple[int, str, lis
 
 
 class GateAutomergeTemplateTests(unittest.TestCase):
-    def test_canonical_mirror_and_checked_in_blocks_match(self) -> None:
-        self.assertEqual(_automerge_block(CANONICAL), _automerge_block(MIRROR))
-        self.assertEqual(_automerge_block(CANONICAL), _automerge_block(CHECKED_IN))
+    def test_authored_template_and_checked_in_blocks_match(self) -> None:
+        self.assertEqual(_automerge_block(TEMPLATE), _automerge_block(CHECKED_IN))
 
     def test_single_head_pinned_merge_command(self) -> None:
-        block = _automerge_block(CANONICAL)
+        block = _automerge_block(TEMPLATE)
         self.assertIn("gh pr merge", block)
         self.assertIn("--auto", block)
         self.assertIn("--squash", block)
@@ -138,14 +136,14 @@ class GateAutomergeTemplateTests(unittest.TestCase):
         self.assertNotIn("pr_node_id", block)
 
     def test_no_graphql_automerge_left_in_gate_files(self) -> None:
-        for path in (CANONICAL, MIRROR, CHECKED_IN):
+        for path in (TEMPLATE, CHECKED_IN):
             with self.subTest(path=path.name):
                 text = path.read_text(encoding="utf-8")
                 self.assertNotIn("enablePullRequestAutoMerge", text)
                 self.assertNotIn("pr_node_id", text)
 
     def test_merge_uses_dedicated_token(self) -> None:
-        block = _automerge_block(CANONICAL)
+        block = _automerge_block(TEMPLATE)
         self.assertIn('GH_TOKEN="${automerge_token}" gh pr merge', block)
         self.assertIn(
             'automerge_token="${CODE_MOWER_GATE_AUTOMERGE_TOKEN:-${GH_TOKEN:-}}"', block

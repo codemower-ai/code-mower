@@ -4,6 +4,19 @@ Code Mower should be headless by default, but not opaque. The package exposes
 three review-runtime customization surfaces that teams can edit without changing
 provider wrappers.
 
+## Template ownership
+
+The repository authors every distributable template under
+`src/code_mower/templates/`. `code-mower package --output-dir PACKAGE_DIR`
+projects those sources into the convenient `templates/` paths in a generated
+standalone package. Edit the authored source and regenerate the package
+manifest; do not maintain a second hand-copied template tree.
+
+Some projections are rendered rather than copied. In particular, the starter
+configuration and per-provider files are derived from the packaged provider
+catalog. The package tests materialize a fresh tree and verify those outputs,
+so source and consumer paths cannot drift silently.
+
 ## Prompt Lenses
 
 Prompt lenses live in `tools/lane_prompts/` in the reference repo and in

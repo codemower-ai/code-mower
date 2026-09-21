@@ -56,7 +56,7 @@ class ProjectionConsumers(unittest.TestCase):
 
     def test_materialized_and_maintained_gate_empty_conflict_stale_and_all_contributors(self):
         sources = [self.materialized/'.github/workflows/code-mower-gate.yml', ROOT/'.github/workflows/code-mower-gate.yml',
-            ROOT/'templates/workflows/code-mower-gate.yml.j2', ROOT/'src/code_mower/templates/workflows/code-mower-gate.yml.j2']
+            ROOT/'src/code_mower/templates/workflows/code-mower-gate.yml.j2']
         for source in sources:
             for name, pr, history, state, detail in (
                 ('conflict', complete_pr(branch='codex/topic', labels=['builder:claude']), [[]], 'failure', 'identity_branch_conflict'),
@@ -144,7 +144,7 @@ class ProjectionConsumers(unittest.TestCase):
 
     def test_custom_prefix_and_no_contract_pass_real_gates_and_status_controller_board(self):
         sources = [self.materialized/'.github/workflows/code-mower-gate.yml', ROOT/'.github/workflows/code-mower-gate.yml',
-            ROOT/'templates/workflows/code-mower-gate.yml.j2', ROOT/'src/code_mower/templates/workflows/code-mower-gate.yml.j2']
+            ROOT/'src/code_mower/templates/workflows/code-mower-gate.yml.j2']
         for branch, prefixes, writer, reviewer in (
             ('feature/cx-topic', None, 'codex', 'claude'),
             ('codex/topic', {}, 'claude', 'codex'),

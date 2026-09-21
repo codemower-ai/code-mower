@@ -21,8 +21,8 @@ OAuth installation, network client, worker dispatch, or deployment. Default
 installation is still Claude + Codex. Slack has no participant, provider,
 review, or merge authority.
 
-The mirrored `templates/slack/app-manifest.json` is an optional implementer
-template. Replace the reserved example endpoint privately before deployment.
+The authored `src/code_mower/templates/slack/app-manifest.json` is an optional
+implementer template. Replace the reserved example endpoint privately before deployment.
 It requests only the bot `commands` scope, with one `/code-mower` command and interactivity.
 It requests no user scopes/tokens, history, files, email, or posting permissions.
 There are no Events API subscriptions: the contract requires explicit commands

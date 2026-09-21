@@ -807,7 +807,7 @@ class ContractTests(unittest.TestCase):
             self.assertFalse(check(run=run | changes))
 
     def test_workflow_has_no_unvalidated_output_or_pr_execution(self):
-        text = (ROOT / "templates/workflows/local-audit-publication.yml.j2").read_text()
+        text = (ROOT / "src/code_mower/templates/workflows/local-audit-publication.yml.j2").read_text()
         self.assertIn("client_payload[publication_run_id]", text)
         self.assertIn("event_type=code-mower-local-audit-published", text)
         self.assertNotIn("workflow_dispatch:", text)
@@ -822,16 +822,6 @@ class ContractTests(unittest.TestCase):
         # Read-only permission fails at the reservation-comment write with 403.
         self.assertIn("pull-requests: write", text)
         self.assertIn("issues: write", text)
-        for name in (
-            "local-audit-publication.yml.j2",
-            "trailer-comment-labeler.yml.j2",
-            "self-hosted-local-audit.yml.j2",
-            "local-audit-request.yml.j2",
-        ):
-            self.assertEqual(
-                (ROOT / "templates/workflows" / name).read_bytes(),
-                (ROOT / "src/code_mower/templates/workflows" / name).read_bytes(),
-            )
 
 
 class WrapperTests(unittest.TestCase):

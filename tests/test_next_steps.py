@@ -25,7 +25,7 @@ class NextStepsTests(unittest.TestCase):
         self.templates = package.load_provider_templates(CATALOG)
 
     def test_initial_profiles_agree_across_starter_and_catalogs(self) -> None:
-        for path in (STARTER, CATALOG, ROOT / "templates/providers.yml"):
+        for path in (STARTER, CATALOG):
             payload = yaml.safe_load(path.read_text())
             for profile in ("recommended", "public_oss"):
                 with self.subTest(path=path, profile=profile):

@@ -23,7 +23,7 @@ from code_mower import lane_delivery
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNNER_TEMPLATE = ROOT / "templates/lanes/run_mac_lane.sh"
+RUNNER_TEMPLATE = ROOT / "src/code_mower/templates/lanes/run_mac_lane.sh"
 PACKAGED_RUNNER_TEMPLATE = ROOT / "src/code_mower/templates/lanes/run_mac_lane.sh"
 REPO_RUNNER = ROOT / "tools/lanes/run_mac_lane.sh"
 SHA_A = "a" * 40

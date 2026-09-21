@@ -45,7 +45,7 @@ from .supervised_pilot import check_supervised_pilot
 
 def _provider_templates_source_root() -> Path:
     source_root = Path(__file__).resolve().parents[3]
-    if (source_root / "templates/workflows").is_dir():
+    if (source_root / "src/code_mower/templates/workflows").is_dir():
         return source_root
     return Path(__file__).resolve().parents[1]
 

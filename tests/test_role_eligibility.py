@@ -320,7 +320,7 @@ esac
             self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
             self.assertIn("repository role policy disables", result.stderr)
             self.assertFalse(marker.exists())
-            source = (ROOT / "templates/lanes/run_mac_lane.sh").read_text()
+            source = (ROOT / "src/code_mower/templates/lanes/run_mac_lane.sh").read_text()
             self.assertLess(source.index('"${lane_delivery[@]}" admit-builder'), source.index("--reserve-launch"))
 
 

@@ -246,10 +246,12 @@ print(init._render_workflow_template(source.read_text(), {}), end='')
                         self.assertEqual(requested_pages, [[str(page)] for page in range(1, 10)])
                         self.assertNotIn(['10'], requested_pages)
 
-    def test_manifest_mirror_core_and_existing_definition_parity(self):
+    def test_manifest_package_core_and_existing_definition_parity(self):
         for asset in ASSETS:
-            self.assertEqual((ROOT/"templates"/asset).read_bytes(), (ROOT/"src/code_mower/templates"/asset).read_bytes())
-            self.assertEqual((ROOT/"templates"/asset).read_bytes(), (self.installed/"code_mower/templates"/asset).read_bytes())
+            self.assertEqual(
+                (ROOT / "src/code_mower/templates" / asset).read_bytes(),
+                (self.installed / "code_mower/templates" / asset).read_bytes(),
+            )
         for path in ("src/code_mower/builder_lineage.py", "tools/builder_lineage.py"):
             self.assertEqual(hashlib.sha256((ROOT/path).read_bytes()).hexdigest(), CORE_HASH)
         for path, baseline in self.accepted_baseline()['modules'].items():

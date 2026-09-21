@@ -1272,8 +1272,10 @@ exit 1
         self.assertNotIn("from tools import local_llm_profiles", text)
         self.assertNotIn("direct repo execution fallback", text)
 
-    def test_shared_templates_match_packaged_templates(self) -> None:
-        shared_templates = [
+    def test_authored_templates_have_one_canonical_tree(self) -> None:
+        self.assertFalse((ROOT / "templates").exists())
+        template_root = ROOT / "src/code_mower/templates"
+        for relative_path in (
             "builder-experiment.example.json",
             "calibration-corpus.example.json",
             "calibration-corpus.json",
@@ -1281,35 +1283,55 @@ exit 1
             "providers.yml",
             "reviewer-value-report.example.md",
             "reviewer-spend.example.json",
-        ]
-        for relative_path in shared_templates:
+            "slack/app-manifest.json",
+            "cursor/BUGBOT.md",
+            "workflows/code-mower-gate.yml.j2",
+            "lanes/run_mac_lane.sh",
+        ):
             with self.subTest(template=relative_path):
-                self.assertEqual(
-                    (ROOT / "templates" / relative_path).read_text(encoding="utf-8"),
-                    (ROOT / "src/code_mower/templates" / relative_path).read_text(
-                        encoding="utf-8"
-                    ),
-                )
+                self.assertTrue((template_root / relative_path).is_file())
         self.assertEqual(
             (ROOT / "tools/reviewer_value_report.example.md").read_text(
                 encoding="utf-8"
             ),
-            (ROOT / "templates/reviewer-value-report.example.md").read_text(
+            (template_root / "reviewer-value-report.example.md").read_text(
                 encoding="utf-8"
             ),
         )
 
+    def test_fresh_package_projects_authored_templates_without_drift(self) -> None:
+        plan = code_mower_package.render_package_plan(
+            code_mower_package.load_config(
+                ROOT / "src/code_mower/templates/code-mower.example.yml"
+            ),
+            code_mower_package.load_provider_templates(
+                ROOT / "src/code_mower/templates/providers.yml"
+            ),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "package"
+            code_mower_package.materialize_package_plan(
+                plan, output_dir=output, repo_root=ROOT
+            )
+            projected = 0
+            for target in (output / "templates").rglob("*"):
+                if not target.is_file():
+                    continue
+                authored = (
+                    ROOT
+                    / "src/code_mower/templates"
+                    / target.relative_to(output / "templates")
+                )
+                if not authored.is_file() or target.name == "providers.yml":
+                    continue
+                self.assertEqual(target.read_bytes(), authored.read_bytes())
+                projected += 1
+            self.assertGreaterEqual(projected, 35)
+
     def test_clear_stale_workflow_template_matches_package_generator(self) -> None:
         template = (
-            ROOT / "templates/workflows/review-clear-stale.yml.j2"
+            ROOT / "src/code_mower/templates/workflows/review-clear-stale.yml.j2"
         ).read_text(encoding="utf-8")
-        self.assertEqual(
-            template,
-            (
-                ROOT
-                / "src/code_mower/templates/workflows/review-clear-stale.yml.j2"
-            ).read_text(encoding="utf-8"),
-        )
         self.assertEqual(
             template,
             code_mower_package_content._workflow_template_text(
@@ -1350,12 +1372,8 @@ exit 1
         for filename in workflow_templates:
             with self.subTest(workflow=filename):
                 template = (
-                    ROOT / "templates/workflows" / filename
-                ).read_text(encoding="utf-8")
-                packaged_template = (
                     ROOT / "src/code_mower/templates/workflows" / filename
                 ).read_text(encoding="utf-8")
-                self.assertEqual(template, packaged_template)
                 self.assertEqual(
                     template,
                     code_mower_package_content._workflow_template_text(
@@ -1379,7 +1397,6 @@ exit 1
     def test_generated_workflows_use_checkout_v7_pin(self) -> None:
         workflow_paths = [
             *sorted((ROOT / ".github/workflows").glob("*.yml")),
-            *sorted((ROOT / "templates/workflows").glob("*.yml.j2")),
             *sorted((ROOT / "src/code_mower/templates/workflows").glob("*.yml.j2")),
             ROOT / "src/code_mower/package_content.py",
             ROOT / "src/code_mower/package_static.py",
@@ -1397,9 +1414,7 @@ exit 1
 
     def test_generated_templates_do_not_inline_github_markdown_bodies(self) -> None:
         templates = [
-            *sorted((ROOT / "templates/workflows").glob("*.yml.j2")),
             *sorted((ROOT / "src/code_mower/templates/workflows").glob("*.yml.j2")),
-            *sorted((ROOT / "templates/lanes").glob("*.sh")),
             *sorted((ROOT / "src/code_mower/templates/lanes").glob("*.sh")),
         ]
         self.assertGreater(len(templates), 0)
@@ -1409,7 +1424,7 @@ exit 1
                 self.assertNotIn("--body ", text)
 
         trailer = (
-            ROOT / "templates/workflows/trailer-comment-labeler.yml.j2"
+            ROOT / "src/code_mower/templates/workflows/trailer-comment-labeler.yml.j2"
         ).read_text(encoding="utf-8")
         self.assertIn("tools/code_mower trailer-comment-labeler", trailer)
         self.assertIn("__TRAILER_LANE__", trailer)
@@ -1428,7 +1443,7 @@ exit 1
         self.assertNotIn("workflow_dispatch:", trailer)
         self.assertNotIn("github.event.inputs.lane", trailer)
         gate_template = (
-            ROOT / "templates/workflows/code-mower-gate.yml.j2"
+            ROOT / "src/code_mower/templates/workflows/code-mower-gate.yml.j2"
         ).read_text(encoding="utf-8")
         self.assertIn("actions: read", gate_template)
         self.assertIn("contents: read", gate_template)
@@ -1457,12 +1472,12 @@ exit 1
             gate_template,
         )
         hosted = (
-            ROOT / "templates/workflows/hosted-bridge.yml.j2"
+            ROOT / "src/code_mower/templates/workflows/hosted-bridge.yml.j2"
         ).read_text(encoding="utf-8")
         self.assertIn("gh issue edit", hosted)
         self.assertIn("pull-requests: write", hosted)
         saas = (
-            ROOT / "templates/workflows/saas-reviewer-labeler.yml.j2"
+            ROOT / "src/code_mower/templates/workflows/saas-reviewer-labeler.yml.j2"
         ).read_text(encoding="utf-8")
         self.assertIn("tools/code_mower saas-reviewer-labeler", saas)
         self.assertIn("__BOT_AUTHORS__", saas)
@@ -1470,11 +1485,11 @@ exit 1
         self.assertNotIn("workflow_dispatch:", saas)
         self.assertNotIn("github.event.inputs.adapter", saas)
         cleanup = (
-            ROOT / "templates/workflows/audit-label-cleanup.yml.j2"
+            ROOT / "src/code_mower/templates/workflows/audit-label-cleanup.yml.j2"
         ).read_text(encoding="utf-8")
         self.assertIn("pull-requests: write", cleanup)
         local_audit = (
-            ROOT / "templates/workflows/self-hosted-local-audit.yml.j2"
+            ROOT / "src/code_mower/templates/workflows/self-hosted-local-audit.yml.j2"
         ).read_text(encoding="utf-8")
         self.assertIn("pull-requests: write", local_audit)
         self.assertIn("vars.__LOCAL_AUDIT_RUNNER_ENABLED_VAR__ == 'true'", local_audit)
@@ -1498,7 +1513,7 @@ exit 1
         self.assertIn('${event_args[@]+"${event_args[@]}"}', local_audit)
         self.assertNotIn('"${event_args[@]}" || upload_failed=1', local_audit)
         gate_health = (
-            ROOT / "templates/workflows/code-mower-gate-health.yml.j2"
+            ROOT / "src/code_mower/templates/workflows/code-mower-gate-health.yml.j2"
         ).read_text(encoding="utf-8")
         self.assertIn("CODE_MOWER_GATE_HEALTH_LANES_JSON", gate_health)
         self.assertIn("tools/code_mower gate-health", gate_health)
@@ -1522,7 +1537,7 @@ exit 1
                 "dispatch",
             ),
         )
-        for rel_dir in ("templates/workflows", "src/code_mower/templates/workflows"):
+        for rel_dir in ("src/code_mower/templates/workflows",):
             for filename, expected_types, job_name in template_configs:
                 with self.subTest(directory=rel_dir, workflow=filename):
                     path = ROOT / rel_dir / filename
@@ -1663,10 +1678,7 @@ jobs:
         self.assertNotIn("python3 - <<'PY'", template)
 
     def test_provider_catalog_wires_merge_authority_stale_hygiene(self) -> None:
-        for relative_path in (
-            "templates/providers.yml",
-            "src/code_mower/templates/providers.yml",
-        ):
+        for relative_path in ("src/code_mower/templates/providers.yml",):
             catalog = code_mower_config.load_config(ROOT / relative_path)
             providers = catalog["provider_templates"]
             self.assertEqual(
@@ -5535,11 +5547,15 @@ printf 'repo:%s:%s:%s\\n' "${lane}" "${stdin_flag}" "${token}"
         targets = [target for _source, target, _mode in code_mower_package.PACKAGE_FILES]
         self.assertEqual(len(targets), len(set(targets)))
         expected_source_reuse = {
-            "tools/builder_experiment.example.json",
-            "tools/calibration_corpus.example.json",
-            "tools/context_packs.example.json",
-            "tools/reviewer_spend.example.json",
-            "tools/reviewer_value_report.example.md",
+            "src/code_mower/templates/builder-experiment.example.json",
+            "src/code_mower/templates/calibration-corpus.example.json",
+            "src/code_mower/templates/calibration-corpus.json",
+            "src/code_mower/templates/context-packs.example.json",
+            "src/code_mower/templates/lanes/lineage-producer.sh",
+            "src/code_mower/templates/reviewer-spend.example.json",
+            "src/code_mower/templates/reviewer-value-report.example.md",
+            "src/code_mower/templates/slack/app-manifest.json",
+            "src/code_mower/templates/workflows/builder-lineage-producer.yml.j2",
         }
         repeated_sources = {
             source for source, count in Counter(sources).items() if count > 1
@@ -5815,7 +5831,6 @@ printf 'repo:%s:%s:%s\\n' "${lane}" "${stdin_flag}" "${token}"
 
     def test_private_shadow_workflow_uses_authenticated_package_rehearsal(self) -> None:
         for rel_path in (
-            "templates/workflows/private-standalone-shadow.yml.j2",
             "src/code_mower/templates/workflows/private-standalone-shadow.yml.j2",
         ):
             with self.subTest(rel_path=rel_path):
@@ -5841,20 +5856,19 @@ printf 'repo:%s:%s:%s\\n' "${lane}" "${stdin_flag}" "${token}"
                 self.assertIn("tools/code_mower migration package-install-rehearsal", text)
                 self.assertIn(".code-mower/package-install-rehearsal.json", text)
                 self.assertNotIn("source tools/code_mower_standalone_pin.env", text)
+                self.assertEqual(
+                    code_mower_package_content._workflow_template_text(
+                        "templates/workflows/private-standalone-shadow.yml.j2"
+                    ),
+                    text,
+                )
 
-        fallback_text = "\n".join(
-            [
-                (ROOT / "src/code_mower/package.py").read_text(encoding="utf-8"),
-                (ROOT / "src/code_mower/package_content.py").read_text(
-                    encoding="utf-8"
-                ),
-            ]
-        )
-        self.assertIn("CODE_MOWER_STANDALONE_PACKAGE_REPO_URL", fallback_text)
-        self.assertIn('code_mower_ref="${CODE_MOWER_STANDALONE_REF:-}"', fallback_text)
-        self.assertIn(
-            'package_spec="${CODE_MOWER_STANDALONE_PACKAGE_REPO_URL}@${code_mower_ref}"',
-            fallback_text,
+        package_content_text = (
+            ROOT / "src/code_mower/package_content.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn(
+            "CODE_MOWER_STANDALONE_PACKAGE_REPO_URL",
+            package_content_text,
         )
 
     def test_claude_diff_builder_does_not_use_fetch_head_for_pr_head(self) -> None:

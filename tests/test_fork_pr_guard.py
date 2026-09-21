@@ -113,35 +113,28 @@ class ForkPrGuardTests(unittest.TestCase):
                     workflow["jobs"][job_name]["if"], EXPECTED_GATE_GUARD if job_name == 'gate' else EXPECTED_GUARD
                 )
 
-    def test_canonical_and_mirror_clear_stale_templates_match(self) -> None:
-        canonical = ROOT.joinpath(
-            "templates/workflows/review-clear-stale.yml.j2").read_text(
+    def test_authored_clear_stale_template_carries_guard(self) -> None:
+        template = ROOT.joinpath(
+            "src/code_mower/templates/workflows/review-clear-stale.yml.j2").read_text(
                 encoding="utf-8")
-        mirror = ROOT.joinpath(
-            "src/code_mower/templates/workflows/review-clear-stale.yml.j2"
-        ).read_text(encoding="utf-8")
-        self.assertEqual(canonical, mirror)
-        self.assertIn(f"if: {EXPECTED_GUARD}", canonical)
+        self.assertIn(f"if: {EXPECTED_GUARD}", template)
 
-    def test_canonical_and_mirror_gate_templates_match(self) -> None:
-        canonical = ROOT.joinpath(
-            "templates/workflows/code-mower-gate.yml.j2").read_text(
+    def test_authored_gate_template_carries_guard(self) -> None:
+        template = ROOT.joinpath(
+            "src/code_mower/templates/workflows/code-mower-gate.yml.j2").read_text(
                 encoding="utf-8")
-        mirror = ROOT.joinpath(
-            "src/code_mower/templates/workflows/code-mower-gate.yml.j2"
-        ).read_text(encoding="utf-8")
-        self.assertEqual(canonical, mirror)
-        self.assertIn(f"({EXPECTED_GUARD}) &&", canonical)
+        self.assertIn(f"({EXPECTED_GUARD}) &&", template)
 
-    def test_packaged_clear_stale_fallback_carries_guard(self) -> None:
+    def test_missing_authored_workflow_fails_closed(self) -> None:
         with mock.patch.object(
             code_mower_package_content,
             "_workflow_template_file_text",
             return_value=None,
         ):
-            fallback = code_mower_package_content._workflow_template_text(
-                "templates/workflows/review-clear-stale.yml.j2")
-        self.assertIn(f"if: {EXPECTED_GUARD}", fallback)
+            with self.assertRaisesRegex(FileNotFoundError, "workflow template not found"):
+                code_mower_package_content._workflow_template_text(
+                    "templates/workflows/review-clear-stale.yml.j2"
+                )
 
     def test_generated_clear_stale_workflows_guard_fork_prs(self) -> None:
         texts = _generated_workflows()

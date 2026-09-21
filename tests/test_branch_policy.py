@@ -974,7 +974,6 @@ exec __REAL_LANE_DELIVERY__ "$@"
 
     def test_every_runner_copy_passes_the_same_creation_origin_binding(self) -> None:
         for path in (ROOT / "tools/lanes/run_mac_lane.sh",
-                     ROOT / "templates/lanes/run_mac_lane.sh",
                      ROOT / "src/code_mower/templates/lanes/run_mac_lane.sh"):
             text = path.read_text(encoding="utf-8")
             with self.subTest(runner=path.name, parent=path.parent.as_posix()):
@@ -1483,7 +1482,6 @@ exit 0
             text,
         )
         for path in (ROOT / "tools/lanes/run_mac_lane.sh",
-                     ROOT / "templates/lanes/run_mac_lane.sh",
                      ROOT / "src/code_mower/templates/lanes/run_mac_lane.sh"):
             with self.subTest(path=path.name):
                 self.assertIn('or $policy_branch != "" then []', path.read_text(encoding="utf-8"))
