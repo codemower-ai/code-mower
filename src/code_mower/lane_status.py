@@ -260,10 +260,13 @@ def _has_code_mower_check_claim(raw: Any) -> bool:
                 value = app.get(field)
                 if not isinstance(value, str):
                     continue
-                app_identity = re.sub(r"[\s_]+", "-", value.strip().casefold())
-                if "code-mower" in app_identity:
+                if _normalized_app_identity(value) == "code-mower":
                     return True
     return False
+
+
+def _normalized_app_identity(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", value.strip().casefold()).strip("-")
 
 
 def _status_check_rollup_is_readable(raw: Any) -> bool:
@@ -327,11 +330,18 @@ def _status_check_rollup_is_readable(raw: Any) -> bool:
             if not isinstance(app, Mapping):
                 return False
             recognized_identity = False
+            normalized_text_identities = []
             for field in ("slug", "name"):
                 if field in app:
                     if not isinstance(app[field], str) or not app[field].strip():
                         return False
+                    normalized_identity = _normalized_app_identity(app[field])
+                    if not normalized_identity:
+                        return False
+                    normalized_text_identities.append(normalized_identity)
                     recognized_identity = True
+            if len(set(normalized_text_identities)) > 1:
+                return False
             if "databaseId" in app:
                 database_id = app["databaseId"]
                 if not (
@@ -632,6 +642,7 @@ def _remote(
         identity = None
         has_lineage_markers = False
         prerequisites_validated = False
+        history_validated = False
         raw_labels = raw_pr.get("labels")
         label_names = [item.get("name", "") for item in raw_labels if isinstance(item, Mapping)] if isinstance(raw_labels, list) else []
         raw_author = raw_pr.get("author")
@@ -666,6 +677,7 @@ def _remote(
                 budget -= 1
                 return gh_json_runner(["api", f"repos/{target.repo}/issues/{target.pr_number}/comments?per_page={size}&page={number}"])
             history = lineage_history(page)
+            history_validated = True
 
             for comment in history.comments:
                 if comment.account in authority.accounts and "CODE_MOWER_BUILDER_LINEAGE" in comment.body:
@@ -719,7 +731,7 @@ def _remote(
                 pr["lineage"] = {"status": "unmanaged", "reason": "no_code_mower_provenance",
                                  "current_writer": None, "contributors": [], "admitted_reviewers": []}
         except (ValueError, KeyError, TypeError, RuntimeError):
-            if not prerequisites_validated:
+            if not prerequisites_validated or not history_validated:
                 pr["lineage"] = {"status": "unknown", "reason": "lineage_unreadable",
                                  "current_writer": None, "contributors": [], "admitted_reviewers": []}
             else:

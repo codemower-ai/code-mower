@@ -1909,6 +1909,11 @@ class ListenerInventoryAvailabilityTests(TestCase):
             [{"context": "external-ci"}],
             [{"__typename": "CheckRun", "name": "gate", "app": {"slug": "code-mower"}}],
             [{"__typename": "CheckRun", "name": "gate", "app": {"name": "Code Mower"}}],
+            [{
+                "__typename": "CheckRun",
+                "name": "package",
+                "app": {"slug": "github-actions", "name": "GitHub Actions"},
+            }],
             [{"__typename": "CheckRun", "name": "package", "app": {"databaseId": 15368}}],
         )
         invalid_rollups = (
@@ -1930,9 +1935,15 @@ class ListenerInventoryAvailabilityTests(TestCase):
             [{"__typename": "CheckRun", "name": "package", "app": {}}],
             [{"__typename": "CheckRun", "name": "package", "app": {"owner": 42}}],
             [{"__typename": "CheckRun", "name": "package", "app": {"slug": ""}}],
+            [{"__typename": "CheckRun", "name": "package", "app": {"slug": "---"}}],
             [{"__typename": "CheckRun", "name": "package", "app": {"name": None}}],
             [{"__typename": "CheckRun", "name": "package", "app": {"databaseId": 0}}],
             [{"__typename": "CheckRun", "name": "package", "app": {"databaseId": False}}],
+            [{
+                "__typename": "CheckRun",
+                "name": "gate",
+                "app": {"slug": "github-actions", "name": "Code Mower"},
+            }],
         )
 
         for rollup in valid_rollups:
@@ -1942,46 +1953,109 @@ class ListenerInventoryAvailabilityTests(TestCase):
             with self.subTest(invalid=rollup):
                 self.assertFalse(lane_status._status_check_rollup_is_readable(rollup))
 
-    def test_valid_code_mower_app_identity_claims_pr_when_history_is_unavailable(self) -> None:
-        def gh_json(args: list[str]) -> object:
-            if args[:2] == ["pr", "list"]:
-                return [
-                    {
-                        "number": 338,
-                        "title": "Code Mower app check",
-                        "url": "https://github.com/owner/repo/pull/338",
-                        "headRefName": "feature/test",
-                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
-                        "author": {"login": "developer"},
-                        "isDraft": False,
-                        "mergeStateStatus": "CLEAN",
-                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
-                        "labels": [],
-                        "statusCheckRollup": [
-                            {
-                                "__typename": "CheckRun",
-                                "name": "gate",
-                                "app": {"slug": "code-mower"},
-                                "conclusion": "SUCCESS",
-                            }
-                        ],
-                    }
-                ]
-            if args[:2] == ["run", "list"]:
-                return []
-            if args[0] == "api" and "/comments?" in args[1]:
-                raise lane_status.LaneStatusUnavailable("history unavailable")
-            raise lane_status.LaneStatusUnavailable("unexpected gh call")
-
-        report = lane_status.collect_status(
-            lineage_config=policy(),
-            repo="owner/repo",
-            gh_json_runner=gh_json,
-            command_runner=lambda _args: _completed(""),
-            now=NOW,
+    def test_exact_app_identity_controls_provenance_claim(self) -> None:
+        cases = (
+            ({"slug": "code-mower"}, "unavailable"),
+            ({"name": "Code Mower"}, "unavailable"),
+            ({"slug": "CODE_MOWER", "name": "Code Mower"}, "unavailable"),
+            ({"slug": "not-code-mower"}, "unmanaged"),
+            ({"slug": "code-mower-simulator"}, "unmanaged"),
+            ({"slug": "github-actions", "name": "GitHub Actions"}, "unmanaged"),
+            ({"slug": "github-actions", "name": "Code Mower"}, "unknown"),
         )
 
-        pr = report["remote"]["pull_requests"][0]
-        self.assertEqual(pr["lineage"]["status"], "unavailable")
-        self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable")
-        self.assertEqual(pr["next_action"], "restore readable lineage metadata and rerun status")
+        for app, expected_status in cases:
+            with self.subTest(app=app):
+                def gh_json(args: list[str], app: dict[str, object] = app) -> object:
+                    if args[:2] == ["pr", "list"]:
+                        return [
+                            {
+                                "number": 338,
+                                "title": "App identity check",
+                                "url": "https://github.com/owner/repo/pull/338",
+                                "headRefName": "feature/test",
+                                "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                                "author": {"login": "developer"},
+                                "isDraft": False,
+                                "mergeStateStatus": "CLEAN",
+                                "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                                "labels": [],
+                                "statusCheckRollup": [
+                                    {
+                                        "__typename": "CheckRun",
+                                        "name": "gate",
+                                        "app": app,
+                                        "conclusion": "SUCCESS",
+                                    }
+                                ],
+                            }
+                        ]
+                    if args[:2] == ["run", "list"]:
+                        return []
+                    if args[0] == "api" and "/comments?" in args[1]:
+                        raise lane_status.LaneStatusUnavailable("history unavailable")
+                    raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+                report = lane_status.collect_status(
+                    lineage_config=policy(),
+                    repo="owner/repo",
+                    gh_json_runner=gh_json,
+                    command_runner=lambda _args: _completed(""),
+                    now=NOW,
+                )
+
+                pr = report["remote"]["pull_requests"][0]
+                self.assertEqual(pr["lineage"]["status"], expected_status)
+                self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable" if expected_status != "unmanaged" else "no_code_mower_provenance")
+
+    def test_malformed_comment_history_stays_unknown_and_actionable(self) -> None:
+        malformed_pages = (
+            {"comments": []},
+            [None],
+            [{"body": None, "user": {"login": "developer"}}],
+            [{"body": "", "user": "developer"}],
+            [{"body": "", "user": {"login": 123}}],
+            [{
+                "body": "",
+                "user": {"login": "developer"},
+                "author": {"login": "other-developer"},
+            }],
+        )
+
+        for malformed_page in malformed_pages:
+            with self.subTest(malformed_page=malformed_page):
+                def gh_json(args: list[str], malformed_page: object = malformed_page) -> object:
+                    if args[:2] == ["pr", "list"]:
+                        return [
+                            {
+                                "number": 339,
+                                "title": "Malformed comment history",
+                                "url": "https://github.com/owner/repo/pull/339",
+                                "headRefName": "feature/test",
+                                "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                                "author": {"login": "developer"},
+                                "isDraft": False,
+                                "mergeStateStatus": "CLEAN",
+                                "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                                "labels": [],
+                                "statusCheckRollup": [],
+                            }
+                        ]
+                    if args[:2] == ["run", "list"]:
+                        return []
+                    if args[0] == "api" and "/comments?" in args[1]:
+                        return malformed_page
+                    raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+                report = lane_status.collect_status(
+                    lineage_config=policy(),
+                    repo="owner/repo",
+                    gh_json_runner=gh_json,
+                    command_runner=lambda _args: _completed(""),
+                    now=NOW,
+                )
+
+                pr = report["remote"]["pull_requests"][0]
+                self.assertEqual(pr["lineage"]["status"], "unknown")
+                self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable")
+                self.assertEqual(pr["next_action"], "owner action required")
