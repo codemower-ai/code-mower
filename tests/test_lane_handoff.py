@@ -281,7 +281,7 @@ exec(sys.argv[-1])
         plan = initialization.render_init_plan(config.load_config(ROOT / "code-mower.yml"), package_mode=True)
         entry = next(row for row in plan.data["generated_files"]
                      if row["path"] == initialization.LANE_MAC_RUNNER_SCRIPT_PATH)
-        template = (ROOT / initialization.LANE_MAC_RUNNER_SCRIPT_TEMPLATE).read_text()
+        template = (ROOT / "src/code_mower" / initialization.LANE_MAC_RUNNER_SCRIPT_TEMPLATE).read_text()
         self.assertEqual((ROOT / "tools/lanes/run_mac_lane.sh").read_text(),
                          initialization._render_workflow_template(template, entry))
         prefixes = json.loads(entry["lane_mac_runner_branch_prefixes_json"])
