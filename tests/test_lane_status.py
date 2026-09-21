@@ -1690,3 +1690,90 @@ class ListenerInventoryAvailabilityTests(TestCase):
         pr = report["remote"]["pull_requests"][0]
         self.assertEqual(pr["lineage"]["status"], "unknown")
         self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable")
+
+    def test_pr_with_malformed_labels_or_branch_remains_actionable(self) -> None:
+        base_pr = {
+            "number": 334,
+            "title": "PR with malformed identity metadata",
+            "url": "https://github.com/owner/repo/pull/334",
+            "headRefName": "feature/test",
+            "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+            "author": {"login": "developer"},
+            "isDraft": False,
+            "mergeStateStatus": "CLEAN",
+            "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+            "labels": [],
+            "statusCheckRollup": [],
+        }
+
+        for field, malformed in (("labels", {"name": "not-a-list"}), ("headRefName", 123)):
+            with self.subTest(field=field):
+                raw_pr = {**base_pr, field: malformed}
+
+                def gh_json(args: list[str], raw_pr: dict[str, object] = raw_pr) -> object:
+                    if args[:2] == ["pr", "list"]:
+                        return [raw_pr]
+                    if args[:2] == ["run", "list"]:
+                        return []
+                    if args[0] == "api" and "/comments?" in args[1]:
+                        return []
+                    raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+                report = lane_status.collect_status(
+                    lineage_config=policy(),
+                    repo="owner/repo",
+                    gh_json_runner=gh_json,
+                    command_runner=lambda _args: _completed(""),
+                    now=NOW,
+                )
+
+                pr = report["remote"]["pull_requests"][0]
+                self.assertEqual(pr["lineage"]["status"], "unknown")
+                self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable")
+                self.assertEqual(pr["next_action"], "owner action required")
+
+    def test_code_mower_claim_uses_all_raw_checks_not_bounded_projection(self) -> None:
+        unrelated_checks = [
+            {"__typename": "CheckRun", "name": f"package / shard-{index}", "conclusion": "SUCCESS"}
+            for index in range(8)
+        ]
+
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 335,
+                        "title": "Claim after display limit",
+                        "url": "https://github.com/owner/repo/pull/335",
+                        "headRefName": "feature/test",
+                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                        "author": {"login": "developer"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [],
+                        "statusCheckRollup": [
+                            *unrelated_checks,
+                            {"__typename": "CheckRun", "name": "code-mower/gate", "conclusion": "SUCCESS"},
+                        ],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            if args[0] == "api" and "/comments?" in args[1]:
+                raise lane_status.LaneStatusUnavailable("history unavailable")
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        report = lane_status.collect_status(
+            lineage_config=policy(),
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        self.assertEqual(len(pr["checks"]), 8)
+        self.assertNotIn("code-mower/gate", {check["name"] for check in pr["checks"]})
+        self.assertEqual(pr["lineage"]["status"], "unavailable")
+        self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable")

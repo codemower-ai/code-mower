@@ -558,7 +558,14 @@ def _pr_decision(
 
 
 def _select_pr(prs: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
-    return sorted(prs, key=_pr_priority)[0] if prs else None
+    managed = [
+        pr for pr in prs
+        if not (
+            isinstance(pr.get("lineage"), Mapping)
+            and pr["lineage"].get("status") == "unmanaged"
+        )
+    ]
+    return sorted(managed, key=_pr_priority)[0] if managed else None
 
 
 def _queue_metrics(

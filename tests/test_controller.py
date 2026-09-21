@@ -207,6 +207,38 @@ def test_ready_issue_selects_one_builder_dispatch_without_mutation() -> None:
     assert report["decision"]["would_mutate"] is False
 
 
+def test_unmanaged_pr_does_not_preempt_ready_issue_dispatch() -> None:
+    unmanaged = _pr(number=41)
+    unmanaged["lineage"] = {
+        "status": "unmanaged",
+        "reason": "no_code_mower_provenance",
+        "current_writer": None,
+        "contributors": [],
+        "admitted_reviewers": [],
+    }
+
+    report = _evaluate(
+        [unmanaged],
+        ready_issues=[
+            {
+                "number": 7,
+                "url": "https://github.com/owner/repo/issues/7",
+                "author": "owner",
+                "updated_at": NOW,
+                "labels": ["tier:R", "builder:codex"],
+                "builder_lane": "codex",
+                "assigned": False,
+                "dispatched": False,
+                "owner_action": False,
+            }
+        ],
+    )
+
+    assert report["decision"]["decision_state"] == "dispatch_builder"
+    assert report["decision"]["issue_number"] == 7
+    assert report["queue"]["metrics"]["open_pr_count"] == 1
+
+
 def test_blocked_audit_stops_controller() -> None:
     report = _evaluate([_pr(blocked=["claude-audit-blocked"])])
 

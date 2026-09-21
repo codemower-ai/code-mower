@@ -235,6 +235,28 @@ def _checks(raw: Any) -> list[dict[str, str]]:
     return (major or checks)[:8]
 
 
+def _has_code_mower_check_claim(raw: Any) -> bool:
+    """Inspect every readable raw check identity for Code Mower provenance.
+
+    The operator-facing check projection is intentionally bounded.  Provenance
+    classification must not inherit that display limit, because a real Code
+    Mower check can appear after any number of unrelated checks.
+    """
+    if not isinstance(raw, list):
+        return False
+    for check in raw:
+        if not isinstance(check, Mapping):
+            continue
+        for field in ("name", "context", "workflowName"):
+            value = check.get(field)
+            if not isinstance(value, str):
+                continue
+            check_name = value.strip().casefold()
+            if "code-mower" in check_name or check_name.startswith("code_mower"):
+                return True
+    return False
+
+
 def _has_state(checks: Sequence[Mapping[str, str]], states: set[str]) -> bool:
     return any(check.get("state", "") in states for check in checks)
 
@@ -371,7 +393,7 @@ def _has_code_mower_claim(
     labels: Sequence[str],
     author: str,
     branch: str,
-    checks: Sequence[Mapping[str, str]],
+    has_code_mower_check: bool,
     identity: Any,
     has_lineage_markers: bool,
     lineage_config: Mapping[str, Any] | None = None,
@@ -391,10 +413,8 @@ def _has_code_mower_claim(
     if label_set & configured_labels:
         return True
 
-    for check in checks:
-        check_name = _text(check.get("name")).lower()
-        if "code-mower" in check_name or check_name.startswith("code_mower"):
-            return True
+    if has_code_mower_check:
+        return True
 
     if identity:
         identity_authors = getattr(identity, "authors", ())
@@ -524,23 +544,25 @@ def _remote(
         identity = None
         has_lineage_markers = False
         prerequisites_validated = False
-        raw_labels = raw_pr.get("labels") if isinstance(raw_pr.get("labels"), list) else []
-        label_names = [item.get("name", "") for item in raw_labels if isinstance(item, Mapping)]
+        raw_labels = raw_pr.get("labels")
+        label_names = [item.get("name", "") for item in raw_labels if isinstance(item, Mapping)] if isinstance(raw_labels, list) else []
         raw_author = raw_pr.get("author")
         author_login = raw_author.get("login", "") if isinstance(raw_author, Mapping) else ""
-        branch = _text(raw_pr.get("headRefName"))
-        checks = _checks(raw_pr.get("statusCheckRollup"))
+        raw_branch = raw_pr.get("headRefName")
+        branch = raw_branch if isinstance(raw_branch, str) else ""
+        has_code_mower_check = _has_code_mower_check_claim(raw_pr.get("statusCheckRollup"))
 
         try:
             if policy_config.validate_config(lineage_config):
                 raise ContractError("Trusted validated status policy required")
             identity = lineage_identity(lineage_config)
             authority = lineage_authorities(lineage_config)
-            target = Target(repo, raw_pr.get("number"), branch, raw_pr.get("headRefOid"))
             if (not isinstance(raw_labels, list)
                     or any(not isinstance(item, Mapping) or not isinstance(item.get("name"), str) for item in raw_labels)
-                    or not isinstance(raw_author, Mapping) or not isinstance(raw_author.get("login"), str)):
-                raise ContractError("Exact readable labels and author required")
+                    or not isinstance(raw_author, Mapping) or not isinstance(raw_author.get("login"), str)
+                    or not isinstance(raw_branch, str)):
+                raise ContractError("Exact readable labels, author, and branch required")
+            target = Target(repo, raw_pr.get("number"), raw_branch, raw_pr.get("headRefOid"))
             prerequisites_validated = True
             def page(number, size, target=target):
                 nonlocal budget
@@ -571,7 +593,7 @@ def _remote(
                     labels=label_names,
                     author=author_login,
                     branch=branch,
-                    checks=checks,
+                    has_code_mower_check=has_code_mower_check,
                     identity=identity,
                     has_lineage_markers=has_lineage_markers,
                     lineage_config=lineage_config,
@@ -584,7 +606,7 @@ def _remote(
                 labels=label_names,
                 author=author_login,
                 branch=branch,
-                checks=checks,
+                has_code_mower_check=has_code_mower_check,
                 identity=identity,
                 has_lineage_markers=has_lineage_markers,
                 lineage_config=lineage_config,
@@ -610,7 +632,7 @@ def _remote(
                     labels=label_names,
                     author=author_login,
                     branch=branch,
-                    checks=checks,
+                    has_code_mower_check=has_code_mower_check,
                     identity=identity,
                     has_lineage_markers=has_lineage_markers,
                     lineage_config=lineage_config,
