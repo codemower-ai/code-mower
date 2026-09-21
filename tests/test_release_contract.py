@@ -333,6 +333,14 @@ class WorkflowBindingTests(unittest.TestCase):
                 run[field] = value
 
     def test_publication_requires_verified_artifacts_and_named_rehearsal_before_copy(self):
+        steps = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())["jobs"]["build-distributions"]["steps"]
+        names = [step.get("name", "") for step in steps]
+        dependency_step = steps[names.index("Install candidate verification dependencies")]
+        verify_step = names.index("Retrieve and verify the qualified candidate without rebuilding")
+        self.assertLess(names.index("Install candidate verification dependencies"), verify_step)
+        self.assertIn("python -m pip install", dependency_step["run"])
+        self.assertIn("PyYAML>=6.0", dependency_step["run"])
+        self.assertIn("packaging>=23.2", dependency_step["run"])
         self.assertNotIn("code_mower-1.5.2-py3-none-any.whl", self.publish)
         self.assertNotIn("python -m build", self.publish)
         verification = self.publish.index("python scripts/release_candidate.py verify")

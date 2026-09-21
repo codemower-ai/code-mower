@@ -17,6 +17,7 @@ Documentation ownership, maintained user journeys, release identity, and package
 - Consolidate installation, first use, upgrades, Board operation, and troubleshooting into one maintained journey while removing copied setup blocks (#1075).
 - Drive release identity, candidate construction, documentation rendering, and qualification from `release.yml` (#1076).
 - Author package templates only in `src/code_mower/templates/`, project consumer paths during materialization, and verify fresh-package byte parity (#1077).
+- Install the release-manifest parser dependencies before publication verifies the retained candidate on a clean runner (#1080).
 
 ## 1.5.1 — release
 

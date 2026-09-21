@@ -25,6 +25,10 @@ Slack UX remain planned for v1.6.0.
   authored template tree. Consumer-facing projections are produced during
   package materialization, required source files fail clearly when absent, and
   a fresh-package parity check detects drift.
+- **Publication verification is self-contained.** The release workflow installs
+  the manifest parser's declared dependencies before it verifies and reuses the
+  retained candidate, so a clean trusted-publishing runner does not rely on
+  undeclared runner packages.
 
 The changes remove thousands of mirrored lines and make routine release and
 documentation updates deterministic. They do not add a service dependency,
