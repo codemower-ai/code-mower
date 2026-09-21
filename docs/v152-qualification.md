@@ -18,14 +18,14 @@ not edit qualified source to insert later results or private data.
 
 | Boundary | Acceptance |
 | --- | --- |
-| Source | #1074, #1075, #1076, and #1077 are ancestors; release text is final; privacy, documentation lifecycle, package inventory, Python 3.12–3.14, wheel rehearsal, independent exact-head review, and gate pass |
+| Source | #1074, #1075, #1076, #1077, and #1080 are ancestors; release text is final; privacy, documentation lifecycle, package inventory, Python 3.12–3.14, wheel rehearsal, independent exact-head review, and gate pass |
 | Documentation | Every Markdown file is classified; canonical subjects are unique; frozen hashes, local links, generated index, current-release regions, and supporting-document pin rules pass |
 | Package templates | Every declared source exists; a fresh package projects the canonical template tree byte-for-byte; retired mirrors and embedded fallbacks are absent |
 | Fresh install | The exact wheel installs in a disposable Python 3.12 environment with no product state or Slack service created by default and reports `code-mower 1.5.2` |
 | Upgrade and rollback | A canonical v1.5.1 wheel upgrades to the exact candidate and can be restored in disposable state while preserving synthetic operator state |
 | Graphify | The installed reader accepts the qualified synthetic generation, excludes `doc_ref` from code, and returns bounded completeness/readiness results |
 | Slack | Offline setup, manifest permissions, disabled-state reporting, and no-live-readiness rules pass. Slack telemetry remains deferred to v1.6.0 |
-| Publish and reinstall | The unchanged candidate is verified before tag, publication does not rebuild, GitHub assets match byte-for-byte, release-event publication jobs stay disabled, and a clean canonical reinstall matches the release identity |
+| Publish and reinstall | A no-publish run installs the manifest parser dependencies and verifies the unchanged candidate before publication; publication does not rebuild; GitHub assets match byte-for-byte; release-event publication jobs stay disabled; and a clean canonical reinstall matches the release identity |
 
 The runtime and hosted-service boundary is unchanged from v1.5.1. A new paid
 provider canary, Slack reinstall, or metadata-only cloud upload is unnecessary

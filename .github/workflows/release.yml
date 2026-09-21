@@ -91,6 +91,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install candidate verification dependencies
+        run: python -m pip install 'PyYAML>=6.0' 'packaging>=23.2'
+
       - name: Retrieve and verify the qualified candidate without rebuilding
         env:
           GH_TOKEN: ${{ github.token }}
