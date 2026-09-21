@@ -26,6 +26,7 @@ SAFE_EVENT_TYPES = {
     "board_snapshot",
     "builder_run",
     "calibration_run",
+    "control_surface_session_summary",
     "controller_decision",
     "dogfood_upload",
     "lane_policy_snapshot",

@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from code_mower import __version__
+from code_mower.control_surface_summary import (
+    EVENT_TYPE as CONTROL_SURFACE_SUMMARY_EVENT_TYPE,
+    validate_control_surface_summary,
+)
 from code_mower.participants import PARTICIPANTS
 from code_mower.provider_registry import REFERENCE_PROVIDERS
 from code_mower.providers import (
@@ -417,6 +421,8 @@ def validate_cloud_event(value: Any) -> dict[str, Any]:
         validate_adoption_run_payload(value)
     if value["event_type"] == REVIEWER_FINDING_OUTCOME_EVENT_TYPE:
         validate_reviewer_finding_outcome_payload(value)
+    if value["event_type"] == CONTROL_SURFACE_SUMMARY_EVENT_TYPE:
+        validate_control_surface_summary(value)
     validate_work_type_metadata(value["dimensions"], value["event_type"], value["tool"])
     return value
 
@@ -928,6 +934,7 @@ def normalize_event(value: dict[str, Any], event_type: str) -> dict[str, Any]:
         PR_OUTCOME_EVENT_TYPE,
         PRODUCTIVITY_EVENT_TYPE,
         REVIEWER_FINDING_OUTCOME_EVENT_TYPE,
+        CONTROL_SURFACE_SUMMARY_EVENT_TYPE,
         "value_report_snapshot",
     }:
         normalized["tool"] = build_code_mower_tool_provenance(

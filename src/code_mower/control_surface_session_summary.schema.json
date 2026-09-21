@@ -1,0 +1,989 @@
+{
+  "$defs": {
+    "capability": {
+      "additionalProperties": false,
+      "properties": {
+        "accepting": {
+          "type": "boolean"
+        },
+        "capability_version": {
+          "const": 1
+        },
+        "fixture_manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "schema": {
+          "const": "code_mower.controlSurfaceSessionSummaryCapability.v1"
+        },
+        "summary_schema": {
+          "const": "code_mower.controlSurfaceSessionSummary.v1"
+        }
+      },
+      "required": [
+        "schema",
+        "summary_schema",
+        "capability_version",
+        "fixture_manifest_sha256",
+        "accepting"
+      ],
+      "type": "object"
+    },
+    "dimensions": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "none"
+            },
+            "owner_action": {
+              "const": "none"
+            },
+            "state": {
+              "const": "archived"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "result_not_ready"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "archived"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "none"
+            },
+            "owner_action": {
+              "const": "none"
+            },
+            "state": {
+              "const": "complete"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "result_unavailable"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "complete"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "session_failed"
+            },
+            "owner_action": {
+              "const": "inspect_failure"
+            },
+            "state": {
+              "const": "failed"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "result_not_ready"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "failed"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "none"
+            },
+            "owner_action": {
+              "const": "none"
+            },
+            "state": {
+              "const": "pending"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "result_not_ready"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "pending"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "none"
+            },
+            "owner_action": {
+              "const": "none"
+            },
+            "state": {
+              "const": "running"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "result_not_ready"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "running"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "session_suspended"
+            },
+            "owner_action": {
+              "const": "inspect_failure"
+            },
+            "state": {
+              "const": "suspended"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "result_not_ready"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "suspended"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "none"
+            },
+            "owner_action": {
+              "const": "none"
+            },
+            "state": {
+              "const": "terminated"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "result_not_ready"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "terminated"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "provider_unavailable"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "uncertain"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "reconcile_dispatch"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "uncertain"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "inspect_provider_then_acknowledge"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "uncertain"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "approval_required"
+            },
+            "owner_action": {
+              "const": "respond_to_approval"
+            },
+            "state": {
+              "const": "waiting_for_approval"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "result_not_ready"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "waiting_for_approval"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "user_input_required"
+            },
+            "owner_action": {
+              "const": "answer_question"
+            },
+            "state": {
+              "const": "waiting_for_user"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "result_not_ready"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "waiting_for_user"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        }
+      ],
+      "dependentRequired": {
+        "head_sha": [
+          "pr_number"
+        ],
+        "pr_state": [
+          "pr_number"
+        ]
+      },
+      "properties": {
+        "capability_version": {
+          "const": 1
+        },
+        "control_surface": {
+          "const": "slack"
+        },
+        "head_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "lifecycle_reason": {
+          "enum": [
+            "approval_required",
+            "inspect_provider_then_acknowledge",
+            "none",
+            "provider_unavailable",
+            "reconcile_dispatch",
+            "result_not_ready",
+            "result_unavailable",
+            "session_failed",
+            "session_suspended",
+            "user_input_required"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "unknown",
+            "succeeded",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "owner_action": {
+          "enum": [
+            "none",
+            "answer_question",
+            "respond_to_approval",
+            "inspect_provider",
+            "inspect_failure"
+          ]
+        },
+        "pr_number": {
+          "pattern": "^[1-9][0-9]{0,9}$",
+          "type": "string"
+        },
+        "pr_state": {
+          "enum": [
+            "open",
+            "merged",
+            "closed_unmerged"
+          ]
+        },
+        "privacy_classification": {
+          "const": "metadata_only"
+        },
+        "session": {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "archived",
+            "complete",
+            "failed",
+            "pending",
+            "running",
+            "suspended",
+            "terminated",
+            "uncertain",
+            "waiting_for_approval",
+            "waiting_for_user"
+          ]
+        },
+        "summary_schema": {
+          "const": "code_mower.controlSurfaceSessionSummary.v1"
+        }
+      },
+      "required": [
+        "summary_schema",
+        "capability_version",
+        "control_surface",
+        "session",
+        "privacy_classification",
+        "state",
+        "lifecycle_reason",
+        "outcome",
+        "owner_action"
+      ],
+      "type": "object"
+    },
+    "metrics": {
+      "additionalProperties": false,
+      "properties": {
+        "cancel_count": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "collect_count": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dispatch_count": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "elapsed_seconds": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "message_count": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "summary_count": {
+          "const": 1
+        },
+        "usage_acu": {
+          "minimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "summary_count",
+        "dispatch_count",
+        "message_count",
+        "cancel_count",
+        "collect_count"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "code_mower.controlSurfaceSessionSummary.v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "anyOf": [
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "unknown"
+                },
+                "state": {
+                  "const": "archived"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "archived"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        },
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "succeeded"
+                },
+                "state": {
+                  "const": "complete"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "complete"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        },
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "failed"
+                },
+                "state": {
+                  "const": "failed"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "failed"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        },
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "unknown"
+                },
+                "state": {
+                  "const": "pending"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "pending"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        },
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "unknown"
+                },
+                "state": {
+                  "const": "running"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "running"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        },
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "unknown"
+                },
+                "state": {
+                  "const": "suspended"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "suspended"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        },
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "cancelled"
+                },
+                "state": {
+                  "const": "terminated"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "terminated"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        },
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "unknown"
+                },
+                "state": {
+                  "const": "uncertain"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "uncertain"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        },
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "unknown"
+                },
+                "state": {
+                  "const": "waiting_for_approval"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "waiting_for_approval"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        },
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "unknown"
+                },
+                "state": {
+                  "const": "waiting_for_user"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "waiting_for_user"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        }
+      ]
+    }
+  ],
+  "description": "Closed metadata-only Slack lifecycle event inside code_mower.benchmarkEvent.v1.",
+  "properties": {
+    "created_at": {
+      "format": "date-time",
+      "pattern": "(?:Z|\\+00:00)$",
+      "type": "string"
+    },
+    "dimensions": {
+      "$ref": "#/$defs/dimensions"
+    },
+    "event_id": {
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "event_type": {
+      "const": "control_surface_session_summary"
+    },
+    "install_id": {
+      "const": ""
+    },
+    "lens": {
+      "const": ""
+    },
+    "metrics": {
+      "$ref": "#/$defs/metrics"
+    },
+    "provider": {
+      "oneOf": [
+        {
+          "enum": [
+            "antigravity",
+            "claude",
+            "codex",
+            "cursor",
+            "cursor-bugbot",
+            "devin",
+            "gitar",
+            "greptile",
+            "grok-bot",
+            "muse",
+            "qodo"
+          ]
+        },
+        {
+          "pattern": "^custom:[a-z][a-z0-9-]{0,63}$",
+          "type": "string"
+        }
+      ]
+    },
+    "repo_slug": {
+      "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "type": "string"
+    },
+    "schema": {
+      "const": "code_mower.benchmarkEvent.v1"
+    },
+    "source": {
+      "const": "code-mower slack lifecycle"
+    },
+    "status": {
+      "enum": [
+        "archived",
+        "complete",
+        "failed",
+        "pending",
+        "running",
+        "suspended",
+        "terminated",
+        "uncertain",
+        "waiting_for_approval",
+        "waiting_for_user"
+      ]
+    },
+    "team_id": {
+      "const": ""
+    },
+    "tool": {
+      "additionalProperties": false,
+      "properties": {
+        "integration": {
+          "const": "code-mower slack lifecycle"
+        },
+        "lens": {
+          "const": ""
+        },
+        "model": {
+          "const": ""
+        },
+        "model_source": {
+          "const": "not_applicable"
+        },
+        "model_version_raw": {
+          "const": ""
+        },
+        "prompt_pack_version": {
+          "const": ""
+        },
+        "provider": {
+          "const": "code-mower"
+        },
+        "role": {
+          "const": "reporter"
+        },
+        "runtime_environment": {
+          "enum": [
+            "ci",
+            "github-actions",
+            "local"
+          ]
+        },
+        "schema": {
+          "const": "code_mower.toolProvenance.v1"
+        },
+        "source": {
+          "const": "code-mower slack lifecycle"
+        },
+        "tool_name": {
+          "const": "code-mower"
+        },
+        "tool_version": {
+          "maxLength": 64,
+          "pattern": "^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$",
+          "type": "string"
+        },
+        "version_source": {
+          "const": "package_version"
+        }
+      },
+      "required": [
+        "integration",
+        "lens",
+        "model",
+        "model_source",
+        "model_version_raw",
+        "prompt_pack_version",
+        "provider",
+        "role",
+        "runtime_environment",
+        "schema",
+        "source",
+        "tool_name",
+        "tool_version",
+        "version_source"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema",
+    "event_type",
+    "event_id",
+    "created_at",
+    "repo_slug",
+    "team_id",
+    "install_id",
+    "source",
+    "provider",
+    "lens",
+    "status",
+    "metrics",
+    "dimensions",
+    "tool"
+  ],
+  "title": "Control-surface session summary v1",
+  "type": "object",
+  "x-code-mower-invariants": [
+    "status equals dimensions.state",
+    "complete=>succeeded, failed=>failed, terminated=>cancelled, every other state=>unknown",
+    "dimensions.state, lifecycle_reason, and owner_action must match one exact producer policy triple",
+    "head_sha and pr_state require pr_number",
+    "usage_acu is allowed only for devin and only when already observed"
+  ]
+}

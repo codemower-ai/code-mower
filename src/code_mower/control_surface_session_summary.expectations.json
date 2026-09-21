@@ -1,0 +1,46 @@
+{
+  "contract_schema": "code_mower.controlSurfaceSessionSummary.v1",
+  "expectations": [
+    {
+      "name": "legacy_client",
+      "requirement": "Existing event types remain accepted when the summary event is absent."
+    },
+    {
+      "name": "capability_absent",
+      "requirement": "The client emits no summary unless hosted acceptance names the exact schema, capability version, and fixture-manifest digest."
+    },
+    {
+      "name": "capability_mismatch",
+      "requirement": "A schema, capability-version, or fixture-manifest digest mismatch disables emission and preserves local-only operation."
+    },
+    {
+      "name": "rollback",
+      "requirement": "Client rollback stops new emission and does not delete or reinterpret accepted rows."
+    },
+    {
+      "name": "tenant_isolation",
+      "requirement": "Authenticated tenant binding, not payload routing fields, scopes repository identity; equal repo slugs in two tenants remain isolated."
+    },
+    {
+      "name": "export",
+      "requirement": "Export returns each accepted summary once and contains none of the forbidden fields represented by rejected fixtures."
+    },
+    {
+      "name": "deletion",
+      "requirement": "Deletion removes the summary, its aggregate contribution, and its export representation."
+    },
+    {
+      "name": "retention",
+      "requirement": "Retention removes only expired rows and recomputes aggregate counts and freshness."
+    },
+    {
+      "name": "token_revocation",
+      "requirement": "Token revocation prevents new ingest while authenticated export and deletion continue to control existing rows."
+    },
+    {
+      "name": "aggregate_reconciliation",
+      "requirement": "Aggregate counts and freshness reconcile with the accepted canary local Board projection."
+    }
+  ],
+  "schema": "code_mower.controlSurfaceSessionSummaryExpectations.v1"
+}
