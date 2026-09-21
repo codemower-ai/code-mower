@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.resources
 import json
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest import TestCase, mock
@@ -15,6 +16,8 @@ from code_mower.control_surface_summary import (
     CAPABILITY_SCHEMA,
     CAPABILITY_VERSION,
     EVENT_TYPE,
+    LIFECYCLE_POLICY,
+    OUTCOME_BY_STATE,
     SUMMARY_SCHEMA,
     build_control_surface_summary,
     capability_accepts_summary,
@@ -26,6 +29,7 @@ from code_mower.control_surface_summary import (
     slack_board_run,
     validate_control_surface_summary,
 )
+from code_mower.remote_session import FakeProvider, RemoteSessions, _key
 from code_mower.package_manifest import PACKAGE_FILES
 
 
@@ -42,7 +46,7 @@ class ControlSurfaceSummaryTests(TestCase):
     def test_all_canonical_accepted_events_satisfy_specialized_and_cloud_boundaries(self) -> None:
         rows = _fixture("accepted")["events"]
 
-        assert len(rows) == 10
+        assert len(rows) == 21
         assert {row["event"]["dimensions"]["state"] for row in rows} == {
             "archived",
             "complete",
@@ -63,7 +67,7 @@ class ControlSurfaceSummaryTests(TestCase):
     def test_all_canonical_rejected_events_fail_closed(self) -> None:
         rows = _fixture("rejected")["events"]
 
-        assert len(rows) == 17
+        assert len(rows) == 19
         for row in rows:
             with self.assertRaises(CloudBundleError):
                 validate_control_surface_summary(row["event"])
@@ -223,9 +227,105 @@ class ControlSurfaceSummaryTests(TestCase):
         )
 
         assert event["dimensions"]["state"] == "archived"
+        assert event["dimensions"]["lifecycle_reason"] == "result_not_ready"
         assert event["dimensions"]["owner_action"] == "inspect_provider"
         validate_control_surface_summary(event)
         assert validate_cloud_event(event) == event
+
+
+    def test_real_collect_lifecycles_cover_every_result_availability_state(self) -> None:
+        cases = (
+            ("pending", "", "pending", "result_not_ready"),
+            ("running", "", "running", "result_not_ready"),
+            ("owner_action", "waiting_for_owner", "waiting_for_user", "result_not_ready"),
+            ("owner_action", "approval_required", "waiting_for_approval", "result_not_ready"),
+            ("complete", "", "complete", "result_unavailable"),
+            ("failed", "", "failed", "result_not_ready"),
+            ("suspended", "", "suspended", "result_not_ready"),
+            ("terminated", "", "terminated", "result_not_ready"),
+            ("archived", "", "archived", "result_not_ready"),
+        )
+        for raw_state, raw_reason, state, reason in cases:
+            with self.subTest(raw_state=raw_state, raw_reason=raw_reason), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                provider = FakeProvider(root / "provider")
+                sessions = RemoteSessions(root / "sessions", provider)
+                logical_session = "summary-matrix"
+                sessions.run(
+                    "dispatch",
+                    logical_session,
+                    prose="metadata-only lifecycle test",
+                    repo="example/project",
+                    apply=True,
+                )
+                record = sessions.store.read_only(_key(logical_session))
+                provider.set_state(record["binding"], raw_state, reason=raw_reason)
+
+                lifecycle = sessions.run("collect", logical_session, apply=True)
+                event = build_control_surface_summary(
+                    logical_session=logical_session,
+                    repo_slug="example/project",
+                    provider="codex",
+                    lifecycle=lifecycle,
+                    observed_at=datetime(2026, 9, 21, 7, 0, tzinfo=UTC),
+                )
+
+                assert (lifecycle["state"], lifecycle["reason"]) == (state, reason)
+                assert event["dimensions"]["lifecycle_reason"] == reason
+                assert event["dimensions"]["owner_action"] == "inspect_provider"
+                assert validate_cloud_event(event) == event
+
+
+    def test_schema_and_semantic_validators_enforce_the_exact_lifecycle_policy_matrix(self) -> None:
+        schema = _fixture("schema")
+        schema_policy = {
+            (
+                row["properties"]["state"]["const"],
+                row["properties"]["lifecycle_reason"]["const"],
+                row["properties"]["owner_action"]["const"],
+            )
+            for row in schema["$defs"]["dimensions"]["anyOf"]
+        }
+        semantic_policy = {
+            (state, reason, action)
+            for state, reasons in LIFECYCLE_POLICY.items()
+            for reason, action in reasons.items()
+        }
+        assert schema_policy == semantic_policy
+        base = next(
+            row["event"]
+            for row in _fixture("accepted")["events"]
+            if row["event"]["provider"] == "codex"
+        )
+        reasons = sorted({reason for policy in LIFECYCLE_POLICY.values() for reason in policy})
+        actions = (
+            "none",
+            "answer_question",
+            "respond_to_approval",
+            "inspect_provider",
+            "inspect_failure",
+        )
+        for state in sorted(LIFECYCLE_POLICY):
+            for reason in reasons:
+                for action in actions:
+                    with self.subTest(state=state, reason=reason, action=action):
+                        event = json.loads(json.dumps(base))
+                        event["status"] = state
+                        event["dimensions"].update(
+                            state=state,
+                            lifecycle_reason=reason,
+                            outcome=OUTCOME_BY_STATE.get(state, "unknown"),
+                            owner_action=action,
+                        )
+                        expected = LIFECYCLE_POLICY[state].get(reason) == action
+                        if expected:
+                            validate_control_surface_summary(event)
+                            assert validate_cloud_event(event) == event
+                        else:
+                            with self.assertRaises(CloudBundleError):
+                                validate_control_surface_summary(event)
+                            with self.assertRaises(CloudBundleError):
+                                validate_cloud_event(event)
 
 
     def test_tool_provenance_is_closed_and_rejects_forbidden_nested_content(self) -> None:

@@ -21,10 +21,20 @@ packaged schema and fixtures are the normative machine-readable contract:
 
 The summary allows an opaque Code Mower correlation key, repository slug,
 categorical provider, lifecycle state and outcome, observation time, operation
-counts, bounded owner action, optional pull-request metadata, and already
-available elapsed-time or Devin ACU measurements. The producer hashes its
-local logical session into a 32-character key before building the event. It
-never forwards a Slack identity or provider session reference.
+counts, closed lifecycle reason, bounded owner action, optional pull-request
+metadata, and already available elapsed-time or Devin ACU measurements. The
+producer hashes its local logical session into a 32-character key before
+building the event. It never forwards a Slack identity or provider session
+reference.
+
+The lifecycle state, reason, and owner action form one closed policy triple.
+Routine status observations use `none`; owner waits use `answer_question` or
+`respond_to_approval`; failures and suspensions use `inspect_failure`.
+`collect` observations with `result_not_ready` or `result_unavailable` use
+`inspect_provider` regardless of whether the provider is still pending,
+running, owner-waiting, or terminal. This preserves both facts: the provider
+state remains truthful, and the missing result remains visible as the current
+owner action. Unsupported combinations fail closed.
 
 The closed validator rejects unknown root, dimension, metric, and tool
 provenance fields. Tool provenance is limited to the fixed Code Mower reporter

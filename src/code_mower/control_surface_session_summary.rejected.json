@@ -6,6 +6,7 @@
         "dimensions": {
           "capability_version": 1,
           "control_surface": "slack",
+          "lifecycle_reason": "none",
           "outcome": "unknown",
           "owner_action": "none",
           "privacy_classification": "metadata_only",
@@ -57,6 +58,7 @@
           "capability_version": 1,
           "control_surface": "slack",
           "extra": "x",
+          "lifecycle_reason": "none",
           "outcome": "unknown",
           "owner_action": "none",
           "privacy_classification": "metadata_only",
@@ -106,6 +108,7 @@
         "dimensions": {
           "capability_version": 1,
           "control_surface": "slack",
+          "lifecycle_reason": "none",
           "outcome": "unknown",
           "owner_action": "none",
           "privacy_classification": "metadata_only",
@@ -156,6 +159,7 @@
         "dimensions": {
           "capability_version": 1,
           "control_surface": "slack",
+          "lifecycle_reason": "none",
           "outcome": "unknown",
           "owner_action": "none",
           "privacy_classification": "metadata_only",
@@ -212,6 +216,7 @@
         "dimensions": {
           "capability_version": 1,
           "control_surface": "slack",
+          "lifecycle_reason": "none",
           "outcome": "unknown",
           "owner_action": "none",
           "privacy_classification": "metadata_only",
@@ -274,6 +279,7 @@
         "dimensions": {
           "capability_version": 1,
           "control_surface": "slack",
+          "lifecycle_reason": "none",
           "outcome": "unknown",
           "owner_action": "none",
           "privacy_classification": "metadata_only",
@@ -323,6 +329,7 @@
         "dimensions": {
           "capability_version": 1,
           "control_surface": "slack",
+          "lifecycle_reason": "none",
           "outcome": "unknown",
           "owner_action": "none",
           "privacy_classification": "metadata_only",
@@ -372,6 +379,7 @@
         "dimensions": {
           "capability_version": 1,
           "control_surface": "slack",
+          "lifecycle_reason": "none",
           "outcome": "unknown",
           "owner_action": "none",
           "privacy_classification": "metadata_only",
@@ -421,6 +429,7 @@
         "dimensions": {
           "capability_version": 1,
           "control_surface": "email",
+          "lifecycle_reason": "none",
           "outcome": "unknown",
           "owner_action": "none",
           "privacy_classification": "metadata_only",
@@ -470,6 +479,7 @@
         "dimensions": {
           "capability_version": 1,
           "control_surface": "slack",
+          "lifecycle_reason": "none",
           "outcome": "unknown",
           "owner_action": "none",
           "privacy_classification": "metadata_only",
@@ -519,6 +529,7 @@
         "dimensions": {
           "capability_version": 1,
           "control_surface": "slack",
+          "lifecycle_reason": "none",
           "outcome": "unknown",
           "owner_action": "none",
           "privacy_classification": "metadata_only",
@@ -568,6 +579,7 @@
         "dimensions": {
           "capability_version": 1,
           "control_surface": "slack",
+          "lifecycle_reason": "none",
           "outcome": "unknown",
           "owner_action": "none",
           "privacy_classification": "metadata_only",
@@ -617,6 +629,7 @@
         "dimensions": {
           "capability_version": 1,
           "control_surface": "slack",
+          "lifecycle_reason": "none",
           "outcome": "unknown",
           "owner_action": "answer_question",
           "privacy_classification": "metadata_only",
@@ -666,6 +679,7 @@
         "dimensions": {
           "capability_version": 1,
           "control_surface": "slack",
+          "lifecycle_reason": "none",
           "outcome": "unknown",
           "owner_action": "none",
           "privacy_classification": "metadata_only",
@@ -716,6 +730,7 @@
           "capability_version": 1,
           "control_surface": "slack",
           "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "lifecycle_reason": "none",
           "outcome": "unknown",
           "owner_action": "none",
           "privacy_classification": "metadata_only",
@@ -765,6 +780,7 @@
         "dimensions": {
           "capability_version": 1,
           "control_surface": "slack",
+          "lifecycle_reason": "none",
           "outcome": "unknown",
           "owner_action": "none",
           "privacy_classification": "metadata_only",
@@ -814,6 +830,7 @@
         "dimensions": {
           "capability_version": 1,
           "control_surface": "slack",
+          "lifecycle_reason": "none",
           "outcome": "unknown",
           "owner_action": "none",
           "privacy_classification": "metadata_only",
@@ -863,6 +880,105 @@
         }
       },
       "name": "forbidden_nested_tool_content"
+    },
+    {
+      "event": {
+        "created_at": "2026-09-20T12:02:00Z",
+        "dimensions": {
+          "capability_version": 1,
+          "control_surface": "slack",
+          "lifecycle_reason": "session_failed",
+          "outcome": "unknown",
+          "owner_action": "none",
+          "privacy_classification": "metadata_only",
+          "session": "00000000000000000000000000000002",
+          "state": "running",
+          "summary_schema": "code_mower.controlSurfaceSessionSummary.v1"
+        },
+        "event_id": "00000000-0000-4000-8000-000000000002",
+        "event_type": "control_surface_session_summary",
+        "install_id": "",
+        "lens": "",
+        "metrics": {
+          "cancel_count": 0,
+          "collect_count": 0,
+          "dispatch_count": 1,
+          "message_count": 0,
+          "summary_count": 1
+        },
+        "provider": "codex",
+        "repo_slug": "example/project",
+        "schema": "code_mower.benchmarkEvent.v1",
+        "source": "code-mower slack lifecycle",
+        "status": "running",
+        "team_id": "",
+        "tool": {
+          "integration": "code-mower slack lifecycle",
+          "lens": "",
+          "model": "",
+          "model_source": "not_applicable",
+          "model_version_raw": "",
+          "prompt_pack_version": "",
+          "provider": "code-mower",
+          "role": "reporter",
+          "runtime_environment": "local",
+          "schema": "code_mower.toolProvenance.v1",
+          "source": "code-mower slack lifecycle",
+          "tool_name": "code-mower",
+          "tool_version": "1.6.0",
+          "version_source": "package_version"
+        }
+      },
+      "name": "lifecycle_reason_state_mismatch"
+    },
+    {
+      "event": {
+        "created_at": "2026-09-20T12:02:00Z",
+        "dimensions": {
+          "capability_version": 1,
+          "control_surface": "slack",
+          "outcome": "unknown",
+          "owner_action": "none",
+          "privacy_classification": "metadata_only",
+          "session": "00000000000000000000000000000002",
+          "state": "running",
+          "summary_schema": "code_mower.controlSurfaceSessionSummary.v1"
+        },
+        "event_id": "00000000-0000-4000-8000-000000000002",
+        "event_type": "control_surface_session_summary",
+        "install_id": "",
+        "lens": "",
+        "metrics": {
+          "cancel_count": 0,
+          "collect_count": 0,
+          "dispatch_count": 1,
+          "message_count": 0,
+          "summary_count": 1
+        },
+        "provider": "codex",
+        "repo_slug": "example/project",
+        "schema": "code_mower.benchmarkEvent.v1",
+        "source": "code-mower slack lifecycle",
+        "status": "running",
+        "team_id": "",
+        "tool": {
+          "integration": "code-mower slack lifecycle",
+          "lens": "",
+          "model": "",
+          "model_source": "not_applicable",
+          "model_version_raw": "",
+          "prompt_pack_version": "",
+          "provider": "code-mower",
+          "role": "reporter",
+          "runtime_environment": "local",
+          "schema": "code_mower.toolProvenance.v1",
+          "source": "code-mower slack lifecycle",
+          "tool_name": "code-mower",
+          "tool_version": "1.6.0",
+          "version_source": "package_version"
+        }
+      },
+      "name": "missing_lifecycle_reason"
     }
   ],
   "schema": "code_mower.controlSurfaceSessionSummaryRejectedFixtures.v1"

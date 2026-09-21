@@ -48,6 +48,7 @@ DIMENSION_FIELDS = frozenset(
         "session",
         "privacy_classification",
         "state",
+        "lifecycle_reason",
         "outcome",
         "owner_action",
         "pr_number",
@@ -63,6 +64,7 @@ REQUIRED_DIMENSION_FIELDS = frozenset(
         "session",
         "privacy_classification",
         "state",
+        "lifecycle_reason",
         "outcome",
         "owner_action",
     }
@@ -106,13 +108,33 @@ OUTCOME_BY_STATE = {
     "failed": "failed",
     "terminated": "cancelled",
 }
-OWNER_ACTIONS_BY_STATE = {
-    "archived": frozenset({"none", "inspect_provider"}),
-    "waiting_for_user": frozenset({"answer_question"}),
-    "waiting_for_approval": frozenset({"respond_to_approval"}),
-    "uncertain": frozenset({"inspect_provider"}),
-    "failed": frozenset({"inspect_failure"}),
-    "suspended": frozenset({"inspect_failure"}),
+LIFECYCLE_POLICY = {
+    "archived": {"none": "none", "result_not_ready": "inspect_provider"},
+    "complete": {"none": "none", "result_unavailable": "inspect_provider"},
+    "failed": {
+        "session_failed": "inspect_failure",
+        "result_not_ready": "inspect_provider",
+    },
+    "pending": {"none": "none", "result_not_ready": "inspect_provider"},
+    "running": {"none": "none", "result_not_ready": "inspect_provider"},
+    "suspended": {
+        "session_suspended": "inspect_failure",
+        "result_not_ready": "inspect_provider",
+    },
+    "terminated": {"none": "none", "result_not_ready": "inspect_provider"},
+    "uncertain": {
+        "provider_unavailable": "inspect_provider",
+        "reconcile_dispatch": "inspect_provider",
+        "inspect_provider_then_acknowledge": "inspect_provider",
+    },
+    "waiting_for_approval": {
+        "approval_required": "respond_to_approval",
+        "result_not_ready": "inspect_provider",
+    },
+    "waiting_for_user": {
+        "user_input_required": "answer_question",
+        "result_not_ready": "inspect_provider",
+    },
 }
 TOOL_FIELDS = frozenset(
     {
@@ -304,9 +326,12 @@ def validate_control_surface_summary(value: Mapping[str, Any]) -> None:
     expected_outcome = OUTCOME_BY_STATE.get(state, "unknown")
     if dimensions.get("outcome") != expected_outcome:
         raise _error("outcome is inconsistent with lifecycle state")
-    allowed_actions = OWNER_ACTIONS_BY_STATE.get(state, frozenset({"none"}))
-    if dimensions.get("owner_action") not in allowed_actions:
-        raise _error("owner_action is inconsistent with lifecycle state")
+    reason = dimensions.get("lifecycle_reason")
+    expected_action = LIFECYCLE_POLICY[state].get(reason)
+    if expected_action is None:
+        raise _error("lifecycle_reason is inconsistent with lifecycle state")
+    if dimensions.get("owner_action") != expected_action:
+        raise _error("owner_action is inconsistent with lifecycle state and reason")
 
     pr_fields = {"pr_number", "head_sha", "pr_state"} & set(dimensions)
     if pr_fields and "pr_number" not in pr_fields:
@@ -392,19 +417,11 @@ def _stamp(value: dt.datetime) -> str:
 
 
 def _owner_action(lifecycle: Mapping[str, Any]) -> str:
-    reason = lifecycle["reason"]
-    return {
-        "user_input_required": "answer_question",
-        "approval_required": "respond_to_approval",
-        "provider_unavailable": "inspect_provider",
-        "reconcile_dispatch": "inspect_provider",
-        "inspect_provider_then_acknowledge": "inspect_provider",
-        "result_not_ready": "inspect_provider",
-        "result_unavailable": "inspect_provider",
-        "session_failed": "inspect_failure",
-        "session_suspended": "inspect_failure",
-        "none": "none",
-    }[reason]
+    state, reason = lifecycle["state"], lifecycle["reason"]
+    try:
+        return LIFECYCLE_POLICY[state][reason]
+    except KeyError:
+        raise _error("lifecycle state and reason are not a supported producer pair") from None
 
 
 def build_control_surface_summary(
@@ -437,6 +454,7 @@ def build_control_surface_summary(
         "session": opaque_session(logical_session),
         "privacy_classification": PRIVACY_CLASSIFICATION,
         "state": state,
+        "lifecycle_reason": projected["reason"],
         "outcome": OUTCOME_BY_STATE.get(state, "unknown"),
         "owner_action": _owner_action(projected),
     }
@@ -504,6 +522,7 @@ def _transition_identity(value: Mapping[str, Any]) -> tuple[Any, ...]:
             for key in (
                 "session",
                 "state",
+                "lifecycle_reason",
                 "outcome",
                 "owner_action",
                 "pr_number",

@@ -31,6 +31,394 @@
     },
     "dimensions": {
       "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "none"
+            },
+            "owner_action": {
+              "const": "none"
+            },
+            "state": {
+              "const": "archived"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "result_not_ready"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "archived"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "none"
+            },
+            "owner_action": {
+              "const": "none"
+            },
+            "state": {
+              "const": "complete"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "result_unavailable"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "complete"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "session_failed"
+            },
+            "owner_action": {
+              "const": "inspect_failure"
+            },
+            "state": {
+              "const": "failed"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "result_not_ready"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "failed"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "none"
+            },
+            "owner_action": {
+              "const": "none"
+            },
+            "state": {
+              "const": "pending"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "result_not_ready"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "pending"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "none"
+            },
+            "owner_action": {
+              "const": "none"
+            },
+            "state": {
+              "const": "running"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "result_not_ready"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "running"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "session_suspended"
+            },
+            "owner_action": {
+              "const": "inspect_failure"
+            },
+            "state": {
+              "const": "suspended"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "result_not_ready"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "suspended"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "none"
+            },
+            "owner_action": {
+              "const": "none"
+            },
+            "state": {
+              "const": "terminated"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "result_not_ready"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "terminated"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "provider_unavailable"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "uncertain"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "reconcile_dispatch"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "uncertain"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "inspect_provider_then_acknowledge"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "uncertain"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "approval_required"
+            },
+            "owner_action": {
+              "const": "respond_to_approval"
+            },
+            "state": {
+              "const": "waiting_for_approval"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "result_not_ready"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "waiting_for_approval"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "user_input_required"
+            },
+            "owner_action": {
+              "const": "answer_question"
+            },
+            "state": {
+              "const": "waiting_for_user"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        },
+        {
+          "properties": {
+            "lifecycle_reason": {
+              "const": "result_not_ready"
+            },
+            "owner_action": {
+              "const": "inspect_provider"
+            },
+            "state": {
+              "const": "waiting_for_user"
+            }
+          },
+          "required": [
+            "state",
+            "lifecycle_reason",
+            "owner_action"
+          ]
+        }
+      ],
+      "dependentRequired": {
+        "head_sha": [
+          "pr_number"
+        ],
+        "pr_state": [
+          "pr_number"
+        ]
+      },
       "properties": {
         "capability_version": {
           "const": 1
@@ -41,6 +429,20 @@
         "head_sha": {
           "pattern": "^[0-9a-f]{40}$",
           "type": "string"
+        },
+        "lifecycle_reason": {
+          "enum": [
+            "approval_required",
+            "inspect_provider_then_acknowledge",
+            "none",
+            "provider_unavailable",
+            "reconcile_dispatch",
+            "result_not_ready",
+            "result_unavailable",
+            "session_failed",
+            "session_suspended",
+            "user_input_required"
+          ]
         },
         "outcome": {
           "enum": [
@@ -102,6 +504,7 @@
         "session",
         "privacy_classification",
         "state",
+        "lifecycle_reason",
         "outcome",
         "owner_action"
       ],
@@ -155,10 +558,267 @@
   "$id": "code_mower.controlSurfaceSessionSummary.v1",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "allOf": [
+    {
+      "anyOf": [
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "unknown"
+                },
+                "state": {
+                  "const": "archived"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "archived"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        },
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "succeeded"
+                },
+                "state": {
+                  "const": "complete"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "complete"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        },
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "failed"
+                },
+                "state": {
+                  "const": "failed"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "failed"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        },
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "unknown"
+                },
+                "state": {
+                  "const": "pending"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "pending"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        },
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "unknown"
+                },
+                "state": {
+                  "const": "running"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "running"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        },
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "unknown"
+                },
+                "state": {
+                  "const": "suspended"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "suspended"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        },
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "cancelled"
+                },
+                "state": {
+                  "const": "terminated"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "terminated"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        },
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "unknown"
+                },
+                "state": {
+                  "const": "uncertain"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "uncertain"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        },
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "unknown"
+                },
+                "state": {
+                  "const": "waiting_for_approval"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "waiting_for_approval"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        },
+        {
+          "properties": {
+            "dimensions": {
+              "properties": {
+                "outcome": {
+                  "const": "unknown"
+                },
+                "state": {
+                  "const": "waiting_for_user"
+                }
+              },
+              "required": [
+                "state",
+                "outcome"
+              ]
+            },
+            "status": {
+              "const": "waiting_for_user"
+            }
+          },
+          "required": [
+            "status",
+            "dimensions"
+          ]
+        }
+      ]
+    }
+  ],
   "description": "Closed metadata-only Slack lifecycle event inside code_mower.benchmarkEvent.v1.",
   "properties": {
     "created_at": {
       "format": "date-time",
+      "pattern": "(?:Z|\\+00:00)$",
       "type": "string"
     },
     "dimensions": {
@@ -322,7 +982,7 @@
   "x-code-mower-invariants": [
     "status equals dimensions.state",
     "complete=>succeeded, failed=>failed, terminated=>cancelled, every other state=>unknown",
-    "owner_action is derived from the validated local lifecycle reason; archived may require inspect_provider when result is not ready",
+    "dimensions.state, lifecycle_reason, and owner_action must match one exact producer policy triple",
     "head_sha and pr_state require pr_number",
     "usage_acu is allowed only for devin and only when already observed"
   ]
