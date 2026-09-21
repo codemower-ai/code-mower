@@ -980,6 +980,39 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertNotIn(self.spec().label, self.host.loaded)
         self.assertFalse((self.root / f"{self.spec().label}.plist").exists())
 
+    def test_persistent_runtime_error_returns_unresolved_recovery_instead_of_raising(self) -> None:
+        class LoadsThenRuntimeQueriesAlwaysFail(board_service.LaunchdProvider):
+            runtime_unavailable = False
+
+            def bootstrap(self, label: str) -> tuple[bool, str]:
+                super().bootstrap(label)
+                self.runtime_unavailable = True
+                return False, "Bootstrap timed out after launchd accepted the definition"
+
+            def runtime_state(self, label: str) -> tuple[str, int | None]:
+                if self.runtime_unavailable:
+                    raise PermissionError("launchd state remains unreadable")
+                return super().runtime_state(label)
+
+        payload = self._restart_with(
+            LoadsThenRuntimeQueriesAlwaysFail(
+                command_runner=self.host.run,
+                root=self.root,
+                uid=self.host.uid,
+                platform="darwin",
+            ),
+            self.spec(),
+        )
+
+        self.assertEqual(payload["status"], "rollback_failed")
+        self.assertEqual(payload["reconciliation"]["state"], "unresolved")
+        self.assertEqual(payload["reconciliation"]["job_state"], board_service.JOB_UNKNOWN)
+        self.assertFalse(payload["reconciliation"]["job_absent"])
+        self.assertFalse(payload["reconciliation"]["definition_absent"])
+        self.assertIn("job state could not be read", payload["reconciliation"]["detail"])
+        self.assertIn("recovery", payload["reconciliation"])
+        self.assertTrue((self.root / f"{self.spec().label}.plist").exists())
+
     def test_a_failed_first_install_that_cannot_be_cleaned_up_is_a_failed_rollback(self) -> None:
         # Nothing was installed before, so rolling back means leaving nothing
         # behind. A definition that survives its failed apply starts the service
