@@ -11765,6 +11765,8 @@ def main():
         self.assertIn("docs/upgrade-existing-repo.md", prompt_pack)
         self.assertIn("--orchestrator-only", prompt_pack)
         self.assertIn("--hosted-builders", prompt_pack)
+        self.assertIn("--share-safe", prompt_pack)
+        self.assertIn("--include-local-paths", prompt_pack)
         self.assertIn("docs/install.md", build_loop_30)
         self.assertIn("docs/upgrade-existing-repo.md", build_loop_30)
         self.assertIn("Keep one writer per PR branch", prompt_pack)

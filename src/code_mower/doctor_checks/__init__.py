@@ -113,6 +113,13 @@ from .self_hosted_runner import (
     check_runner_workflow_labels,
     check_self_hosted_runner,
 )
+from .share_safe import (
+    LOCAL_PATH_REDACTION,
+    doctor_report_payload,
+    redact_local_path_text,
+    redact_local_paths,
+    share_safe_doctor_report,
+)
 from .runner import run_doctor
 
 __all__ = [
@@ -130,6 +137,7 @@ __all__ = [
     "DoctorCheckGroup",
     "DoctorCheckStage",
     "DoctorReport",
+    "LOCAL_PATH_REDACTION",
     "STATUS_FAIL",
     "STATUS_PASS",
     "STATUS_SKIP",
@@ -182,6 +190,7 @@ __all__ = [
     "detect_repo_slug",
     "doctor_check_group_id",
     "doctor_output_group",
+    "doctor_report_payload",
     "effective_lane",
     "evaluate_json_probe",
     "gate_automerge_token_config",
@@ -192,6 +201,8 @@ __all__ = [
     "local_cli_probe_remediation",
     "normalize_repo_slug",
     "provider_template_coverage",
+    "redact_local_path_text",
+    "redact_local_paths",
     "render_doctor_summary",
     "render_doctor_text",
     "resolve_doctor_config_path",
@@ -200,5 +211,6 @@ __all__ = [
     "repo_slug_from_remote",
     "run_doctor",
     "selected_lanes",
+    "share_safe_doctor_report",
     "token_file_mentions_cloud_token",
 ]

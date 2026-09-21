@@ -14,7 +14,7 @@ setup behavior from drifting.
    ```bash
    code-mower init --easy
    code-mower init --easy --apply --output-dir .code-mower.generated
-   code-mower doctor --adoption --repo OWNER/REPO --json
+   code-mower doctor --adoption --repo OWNER/REPO --json --share-safe
    ```
 
 4. Open the setup pull request and request independent Claude and Codex audits
