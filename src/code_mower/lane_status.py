@@ -343,8 +343,8 @@ def _has_code_mower_claim(
         return True
 
     label_set = set(_text(label).lower() for label in labels)
-    
-    audit_patterns = {"dispatched:codex", "dispatched:claude", "dispatched:cursor", 
+
+    audit_patterns = {"dispatched:codex", "dispatched:claude", "dispatched:cursor",
                       "dispatched:devin", "dispatched:gitar", "dispatched:muse"}
     if label_set & audit_patterns:
         return True
@@ -359,25 +359,26 @@ def _has_code_mower_claim(
         if any(term in check_name for term in CHECK_TERMS):
             return True
 
-    if identity and getattr(identity, "enabled", False):
+    if identity:
         identity_labels = getattr(identity, "labels", ())
         if identity_labels:
             configured_labels = {_text(label).lower() for label, _ in identity_labels}
             if label_set & configured_labels:
                 return True
 
-        identity_authors = getattr(identity, "authors", ())
-        if identity_authors:
-            author_lower = _text(author).lower()
-            configured_authors = {_text(account).lower() for account, _ in identity_authors}
-            if author_lower in configured_authors:
-                return True
+        if getattr(identity, "enabled", False):
+            identity_authors = getattr(identity, "authors", ())
+            if identity_authors:
+                author_lower = _text(author).lower()
+                configured_authors = {_text(account).lower() for account, _ in identity_authors}
+                if author_lower in configured_authors:
+                    return True
 
-        identity_prefixes = getattr(identity, "branch_prefixes", ())
-        if identity_prefixes:
-            branch_lower = _text(branch).lower()
-            if any(branch_lower.startswith(_text(prefix).lower()) for prefix, _ in identity_prefixes):
-                return True
+            identity_prefixes = getattr(identity, "branch_prefixes", ())
+            if identity_prefixes:
+                branch_lower = _text(branch).lower()
+                if any(branch_lower.startswith(_text(prefix).lower()) for prefix, _ in identity_prefixes):
+                    return True
 
     return False
 
@@ -498,7 +499,7 @@ def _remote(
         author_login = raw_author.get("login", "") if isinstance(raw_author, Mapping) else ""
         branch = _text(raw_pr.get("headRefName"))
         checks = _checks(raw_pr.get("statusCheckRollup"))
-        
+
         try:
             if policy_config.validate_config(lineage_config):
                 raise ContractError("Trusted validated status policy required")
@@ -541,14 +542,26 @@ def _remote(
                     pr["lineage"] = {"status": "unmanaged", "reason": "no_code_mower_provenance",
                                      "current_writer": None, "contributors": [], "admitted_reviewers": []}
         except LaneStatusUnavailable:
-            pr["lineage"] = {
-                "status": "unavailable",
-                "reason": "lineage_unreadable",
-                "current_writer": None,
-                "contributors": [],
-                "admitted_reviewers": [],
-                "next_action": "restore readable lineage metadata and rerun status",
-            }
+            has_claim = _has_code_mower_claim(
+                labels=label_names,
+                author=author_login,
+                branch=branch,
+                checks=checks,
+                identity=identity,
+                has_lineage_markers=has_lineage_markers,
+            )
+            if has_claim:
+                pr["lineage"] = {
+                    "status": "unavailable",
+                    "reason": "lineage_unreadable",
+                    "current_writer": None,
+                    "contributors": [],
+                    "admitted_reviewers": [],
+                    "next_action": "restore readable lineage metadata and rerun status",
+                }
+            else:
+                pr["lineage"] = {"status": "unmanaged", "reason": "no_code_mower_provenance",
+                                 "current_writer": None, "contributors": [], "admitted_reviewers": []}
         except (ValueError, KeyError, TypeError, RuntimeError):
             has_claim = _has_code_mower_claim(
                 labels=label_names,
