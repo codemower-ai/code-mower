@@ -523,6 +523,7 @@ def _remote(
             continue
         identity = None
         has_lineage_markers = False
+        prerequisites_validated = False
         raw_labels = raw_pr.get("labels") if isinstance(raw_pr.get("labels"), list) else []
         label_names = [item.get("name", "") for item in raw_labels if isinstance(item, Mapping)]
         raw_author = raw_pr.get("author")
@@ -540,6 +541,7 @@ def _remote(
                     or any(not isinstance(item, Mapping) or not isinstance(item.get("name"), str) for item in raw_labels)
                     or not isinstance(raw_author, Mapping) or not isinstance(raw_author.get("login"), str)):
                 raise ContractError("Exact readable labels and author required")
+            prerequisites_validated = True
             def page(number, size, target=target):
                 nonlocal budget
                 if budget <= 0:
@@ -549,7 +551,7 @@ def _remote(
             history = lineage_history(page)
 
             for comment in history.comments:
-                if "CODE_MOWER_BUILDER_LINEAGE" in comment.body:
+                if comment.account in authority.accounts and "CODE_MOWER_BUILDER_LINEAGE" in comment.body:
                     has_lineage_markers = True
                     break
 
@@ -600,21 +602,25 @@ def _remote(
                 pr["lineage"] = {"status": "unmanaged", "reason": "no_code_mower_provenance",
                                  "current_writer": None, "contributors": [], "admitted_reviewers": []}
         except (ValueError, KeyError, TypeError, RuntimeError):
-            has_claim = _has_code_mower_claim(
-                labels=label_names,
-                author=author_login,
-                branch=branch,
-                checks=checks,
-                identity=identity,
-                has_lineage_markers=has_lineage_markers,
-                lineage_config=lineage_config,
-            )
-            if has_claim:
+            if not prerequisites_validated:
                 pr["lineage"] = {"status": "unknown", "reason": "lineage_unreadable",
                                  "current_writer": None, "contributors": [], "admitted_reviewers": []}
             else:
-                pr["lineage"] = {"status": "unmanaged", "reason": "no_code_mower_provenance",
-                                 "current_writer": None, "contributors": [], "admitted_reviewers": []}
+                has_claim = _has_code_mower_claim(
+                    labels=label_names,
+                    author=author_login,
+                    branch=branch,
+                    checks=checks,
+                    identity=identity,
+                    has_lineage_markers=has_lineage_markers,
+                    lineage_config=lineage_config,
+                )
+                if has_claim:
+                    pr["lineage"] = {"status": "unknown", "reason": "lineage_unreadable",
+                                     "current_writer": None, "contributors": [], "admitted_reviewers": []}
+                else:
+                    pr["lineage"] = {"status": "unmanaged", "reason": "no_code_mower_provenance",
+                                     "current_writer": None, "contributors": [], "admitted_reviewers": []}
         if pr["lineage"]["status"] == "unavailable":
             pr["next_action"] = str(pr["lineage"]["next_action"])
             pr["next_detail"] = "lineage unavailable: " + pr["lineage"]["reason"]
