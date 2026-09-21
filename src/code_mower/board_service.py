@@ -1898,6 +1898,76 @@ def _ownership_conflict(
     )
 
 
+def _recovery_instruction(spec: ServiceSpec, *, show_local_paths: bool) -> dict[str, Any]:
+    """One copyable command that converges an unresolved binding on `spec`.
+
+    The command uses ``--repo-path .`` so the payload can remain publishable.
+    ``cwd`` names the exact checkout locally (or carries the normal redaction),
+    and is part of the instruction rather than being interpolated into shell
+    text where a private path would leak through JSON or text output.
+    """
+
+    command = (
+        "code-mower board service restart "
+        f"--repo {spec.repo} --repo-path . --host {spec.host} --port {spec.port} --replace"
+    )
+    if "--record-events" not in spec.arguments:
+        command += " --no-record-events"
+    return {
+        "cwd": redact_path(str(spec.repo_path), show_local_paths=show_local_paths),
+        "cwd_redacted": not show_local_paths,
+        "command": command,
+    }
+
+
+def _final_binding_read(
+    spec: ServiceSpec,
+    *,
+    provider: Any,
+    command_runner: lane_status.CommandRunner,
+    identity_probe: Callable[[str, int], Mapping[str, Any]] | None,
+    show_local_paths: bool,
+    expected_digest: str | None = None,
+    expected_arguments: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Re-read every fact that can make an applied service truthful.
+
+    This deliberately does not reuse a delayed-health result. A terminal
+    result is based on one fresh read of the installed bytes, launchd's current
+    pid and argv, the pid's cwd and supervisor, every listener on the port, and
+    the Board identity/version response.
+    """
+
+    return validate_binding(
+        spec,
+        provider=provider,
+        command_runner=command_runner,
+        identity_probe=identity_probe,
+        show_local_paths=show_local_paths,
+        expected_digest=expected_digest,
+        expected_arguments=expected_arguments,
+    )
+
+
+def _reconciliation(
+    target: str,
+    binding: Mapping[str, Any],
+    *,
+    spec: ServiceSpec,
+    show_local_paths: bool,
+) -> dict[str, Any]:
+    verified = binding.get("status") == "pass"
+    result: dict[str, Any] = {
+        "state": target if verified else "unresolved",
+        "verified": verified,
+        "target": target,
+        "binding": dict(binding),
+    }
+    if not verified:
+        result["recovery"] = _recovery_instruction(spec, show_local_paths=show_local_paths)
+    return result
+
+
 def _apply(
     spec: ServiceSpec,
     *,
@@ -1974,6 +2044,32 @@ def _apply(
         if not unloaded:
             still_loaded, _pid = _job_load_state(provider, spec.label)
             if still_loaded:
+                if previous.readable:
+                    previous_spec = spec_from_service(previous)
+                    previous_binding = _final_binding_read(
+                        previous_spec,
+                        provider=provider,
+                        command_runner=command_runner,
+                        identity_probe=identity_probe,
+                        show_local_paths=show_local_paths,
+                        expected_digest=previous.digest,
+                        expected_arguments=previous.arguments,
+                    )
+                    reconciled = _reconciliation(
+                        "previous",
+                        previous_binding,
+                        spec=spec,
+                        show_local_paths=show_local_paths,
+                    )
+                else:
+                    reconciled = {
+                        "state": "unresolved",
+                        "verified": False,
+                        "target": "previous",
+                        "recovery": _recovery_instruction(
+                            spec, show_local_paths=show_local_paths
+                        ),
+                    }
                 return _operation_payload(
                     "unload_failed",
                     (
@@ -1986,6 +2082,7 @@ def _apply(
                     expected,
                     show_local_paths=show_local_paths,
                     known_paths=_provider_known_paths(provider, spec.label),
+                    reconciliation=reconciled,
                 )
     try:
         provider.write_definition(spec.label, rendered)
@@ -1998,6 +2095,55 @@ def _apply(
         # The previous service was already booted out, so failing here without
         # reloading it would leave a Board that was working stopped.
         restore = _restore_unwritten(provider, spec)
+        if not previous.readable:
+            reconciled = {
+                "state": "unresolved",
+                "verified": False,
+                "target": "previous",
+                "recovery": _recovery_instruction(spec, show_local_paths=show_local_paths),
+            }
+            return _operation_payload(
+                "rollback_failed",
+                f"{detail}; the unreadable previous binding could not be verified after reload",
+                spec,
+                expected,
+                show_local_paths=show_local_paths,
+                known_paths=_provider_known_paths(provider, spec.label),
+                rollback=restore,
+                reconciliation=reconciled,
+            )
+        previous_spec = spec_from_service(previous)
+        restore_health = delayed_health(
+            previous_spec,
+            provider=provider,
+            command_runner=command_runner,
+            identity_probe=identity_probe,
+            settle_seconds=settle_seconds,
+            refresh_seconds=refresh_seconds,
+            timeout_seconds=timeout_seconds,
+            show_local_paths=show_local_paths,
+            sleeper=sleeper,
+            clock=clock,
+        )
+        previous_binding = _final_binding_read(
+            previous_spec,
+            provider=provider,
+            command_runner=command_runner,
+            identity_probe=identity_probe,
+            show_local_paths=show_local_paths,
+            expected_digest=previous.digest,
+            expected_arguments=previous.arguments,
+        )
+        reconciled = _reconciliation(
+            "previous", previous_binding, spec=spec, show_local_paths=show_local_paths
+        )
+        restore["ok"] = bool(reconciled["verified"])
+        restore["restored"] = bool(reconciled["verified"])
+        restore["delayed_health"] = restore_health
+        if reconciled["verified"]:
+            restore["detail"] = (
+                "reloaded and independently verified the untouched previous definition"
+            )
         return _operation_payload(
             "apply_failed" if restore["ok"] else "rollback_failed",
             detail if restore["ok"] else f"{detail}; rollback also failed: {restore['detail']}",
@@ -2006,12 +2152,108 @@ def _apply(
             show_local_paths=show_local_paths,
             known_paths=_provider_known_paths(provider, spec.label),
             rollback=restore,
+            reconciliation=reconciled,
         )
     ok, detail = provider.bootstrap(spec.label)
     if not ok:
+        # `launchctl bootstrap` can register and start the job, then return a
+        # failure. The provider result is therefore not the outcome. If the
+        # replacement clears the complete serving gate, keep it instead of
+        # beginning a rollback that can create a definition/process split.
+        load_state, _pid = provider.runtime_state(spec.label)
+        if load_state == JOB_LOADED:
+            applied_health = delayed_health(
+                spec,
+                provider=provider,
+                command_runner=command_runner,
+                identity_probe=identity_probe,
+                settle_seconds=settle_seconds,
+                refresh_seconds=refresh_seconds,
+                timeout_seconds=timeout_seconds,
+                show_local_paths=show_local_paths,
+                sleeper=sleeper,
+                clock=clock,
+            )
+            applied_binding = _final_binding_read(
+                spec,
+                provider=provider,
+                command_runner=command_runner,
+                identity_probe=identity_probe,
+                show_local_paths=show_local_paths,
+                expected_digest=expected,
+                expected_arguments=spec.arguments,
+            )
+            applied = _reconciliation(
+                "new", applied_binding, spec=spec, show_local_paths=show_local_paths
+            )
+            if applied["verified"]:
+                return _operation_payload(
+                    succeeded_status,
+                    (
+                        f"{succeeded_message}; launchd reported bootstrap failure, but the "
+                        "replacement definition and serving process were independently verified"
+                    ),
+                    spec,
+                    expected,
+                    delayed=applied_health if applied_health["state"] == "pass" else None,
+                    show_local_paths=show_local_paths,
+                    reconciliation=applied,
+                    provider_detail=detail,
+                )
         rollback = _rollback(provider, spec, previous_text)
-        status = "rollback_failed" if not rollback["ok"] else "apply_failed"
-        message = detail if rollback["ok"] else f"{detail}; rollback also failed: {rollback['detail']}"
+        if previous is not None and previous.readable:
+            previous_spec = spec_from_service(previous)
+            rollback_health = delayed_health(
+                previous_spec,
+                provider=provider,
+                command_runner=command_runner,
+                identity_probe=identity_probe,
+                settle_seconds=settle_seconds,
+                refresh_seconds=refresh_seconds,
+                timeout_seconds=timeout_seconds,
+                show_local_paths=show_local_paths,
+                sleeper=sleeper,
+                clock=clock,
+            )
+            previous_binding = _final_binding_read(
+                previous_spec,
+                provider=provider,
+                command_runner=command_runner,
+                identity_probe=identity_probe,
+                show_local_paths=show_local_paths,
+                expected_digest=previous.digest,
+                expected_arguments=previous.arguments,
+            )
+            restored = _reconciliation(
+                "previous", previous_binding, spec=spec, show_local_paths=show_local_paths
+            )
+            # A restoring bootstrap can report failure after loading the old
+            # job. State wins over that return code too.
+            rollback["ok"] = bool(restored["verified"])
+            rollback["restored"] = bool(restored["verified"])
+            rollback["delayed_health"] = rollback_health
+            rollback["detail"] = (
+                "restored and independently verified the previous definition and serving process"
+                if restored["verified"]
+                else rollback.get("detail") or "the previous binding could not be verified"
+            )
+        else:
+            absent = provider.read_service(spec.label) is None
+            restored = {
+                "state": "absent" if absent and rollback.get("ok") else "unresolved",
+                "verified": bool(absent and rollback.get("ok")),
+                "target": "absent",
+            }
+            if not restored["verified"]:
+                restored["recovery"] = _recovery_instruction(
+                    spec, show_local_paths=show_local_paths
+                )
+        status = "apply_failed" if restored["verified"] else "rollback_failed"
+        message = (
+            f"{detail}; the previous service was restored and verified"
+            if restored["verified"]
+            else f"{detail}; rollback also failed to reach a verified state"
+        )
         return _operation_payload(
             status,
             message,
@@ -2020,6 +2262,7 @@ def _apply(
             show_local_paths=show_local_paths,
             known_paths=_provider_known_paths(provider, spec.label),
             rollback=rollback,
+            reconciliation=restored,
         )
 
     health = delayed_health(
@@ -2035,6 +2278,12 @@ def _apply(
         clock=clock,
     )
     if health["state"] != "pass":
+        reconciled = _reconciliation(
+            "new",
+            health.get("binding") if isinstance(health.get("binding"), Mapping) else {},
+            spec=spec,
+            show_local_paths=show_local_paths,
+        )
         return _operation_payload(
             "delayed_health_failed",
             "the service applied but its binding did not validate within the delayed health window",
@@ -2042,6 +2291,27 @@ def _apply(
             expected,
             delayed=health,
             show_local_paths=show_local_paths,
+            reconciliation=reconciled,
+        )
+    final_binding = _final_binding_read(
+        spec,
+        provider=provider,
+        command_runner=command_runner,
+        identity_probe=identity_probe,
+        show_local_paths=show_local_paths,
+        expected_digest=expected,
+        expected_arguments=spec.arguments,
+    )
+    reconciled = _reconciliation("new", final_binding, spec=spec, show_local_paths=show_local_paths)
+    if not reconciled["verified"]:
+        return _operation_payload(
+            "delayed_health_failed",
+            "the service passed delayed health but its final binding re-read did not validate",
+            spec,
+            expected,
+            delayed=health,
+            show_local_paths=show_local_paths,
+            reconciliation=reconciled,
         )
     return _operation_payload(
         succeeded_status,
@@ -2050,6 +2320,7 @@ def _apply(
         expected,
         delayed=health,
         show_local_paths=show_local_paths,
+        reconciliation=reconciled,
     )
 
 
@@ -2291,7 +2562,30 @@ def restart_service(
             if health["state"] == "pass"
             else "the service restarted but its binding did not validate within the delayed health window"
         )
-        return _operation_payload(status, message, spec, expected, delayed=health, show_local_paths=show_local_paths)
+        final_binding = _final_binding_read(
+            spec,
+            provider=provider,
+            command_runner=command_runner,
+            identity_probe=identity_probe,
+            show_local_paths=show_local_paths,
+            expected_digest=expected,
+            expected_arguments=spec.arguments,
+        )
+        reconciled = _reconciliation(
+            "new", final_binding, spec=spec, show_local_paths=show_local_paths
+        )
+        if status == "restarted" and not reconciled["verified"]:
+            status = "delayed_health_failed"
+            message = "the service passed delayed health but its final binding re-read did not validate"
+        return _operation_payload(
+            status,
+            message,
+            spec,
+            expected,
+            delayed=health,
+            show_local_paths=show_local_paths,
+            reconciliation=reconciled,
+        )
     return _apply(
         spec,
         provider=provider,
@@ -2735,6 +3029,24 @@ def render_operation_text(payload: Mapping[str, Any]) -> str:
     rollback = payload.get("rollback") if isinstance(payload.get("rollback"), Mapping) else {}
     if rollback:
         lines.append(f"Rollback: {'ok' if rollback.get('ok') else 'failed'} - {rollback.get('detail')}")
+    reconciliation = (
+        payload.get("reconciliation")
+        if isinstance(payload.get("reconciliation"), Mapping)
+        else {}
+    )
+    if reconciliation:
+        lines.append(
+            f"Reconciliation: {reconciliation.get('state') or 'unresolved'} "
+            f"({'verified' if reconciliation.get('verified') else 'not verified'})"
+        )
+        recovery = (
+            reconciliation.get("recovery")
+            if isinstance(reconciliation.get("recovery"), Mapping)
+            else {}
+        )
+        if recovery:
+            lines.append(f"Recovery cwd: {recovery.get('cwd')}")
+            lines.append(f"Recovery command: {recovery.get('command')}")
     return "\n".join(line for line in lines if line) + "\n"
 
 

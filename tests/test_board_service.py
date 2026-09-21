@@ -943,7 +943,15 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertFalse(payload["rollback"]["deleted"])
         self.assertIn("next login", payload["rollback"]["detail"])
         self.assertTrue((self.root / "ai.codemower.board.5332.plist").exists())
+        recovery = payload["reconciliation"]["recovery"]
+        self.assertEqual(recovery["cwd"], lane_status.LOCAL_PATH_REDACTION)
+        self.assertEqual(
+            recovery["command"],
+            "code-mower board service restart --repo codemower-ai/code-mower "
+            "--repo-path . --host 127.0.0.1 --port 5332 --replace",
+        )
         self.assertIn("Rollback: failed", board_service.render_operation_text(payload))
+        self.assertIn("Recovery command:", board_service.render_operation_text(payload))
 
     def test_a_failed_apply_reports_why_without_publishing_the_definition_path(self) -> None:
         # The failure reason is the actionable part and stays; the definition
@@ -1717,12 +1725,11 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertIn("write_definition", mutations)
         self.assertIn("ai.codemower.board.5332", self.host.loaded)
 
-    def test_a_partially_registered_replacement_is_unloaded_before_restoring(self) -> None:
-        # A bootstrap can register the job and *then* give up waiting for it.
-        # Restoring the previous definition on top of a replacement launchd
-        # still holds would leave launchd supervising the replacement while the
-        # definition on disk describes the service it replaced, and the
-        # restoring bootstrap would fail because the label is already loaded.
+    def test_a_bootstrap_failure_that_loaded_the_replacement_is_reconciled_as_new(self) -> None:
+        # A bootstrap can register the job and *then* report a permission or
+        # timeout failure. The provider result is ambiguous; the installed
+        # bytes, pid, argv, port owner, repository identity and served versions
+        # prove that the replacement actually won.
         self.install(self.spec())
         before = (self.root / "ai.codemower.board.5332.plist").read_text(encoding="utf-8")
         drifted = self.spec(repo="codemower-ai/private-repo", repo_path=self.other_checkout, port=5332)
@@ -1734,7 +1741,7 @@ class BoardServiceLifecycleTest(ServiceHarness):
                 ok, detail = super().bootstrap(label)
                 if not self.gave_up:
                     self.gave_up = True
-                    return False, "timed out waiting for the job to answer"
+                    return False, "Bootstrap failed: 5: Operation not permitted"
                 return ok, detail
 
         payload = self._restart_with(
@@ -1745,20 +1752,109 @@ class BoardServiceLifecycleTest(ServiceHarness):
             replace=True,
         )
 
+        self.assertEqual(payload["status"], "restarted")
+        self.assertEqual(payload["reconciliation"]["state"], "new")
+        self.assertTrue(payload["reconciliation"]["verified"])
+        self.assertNotIn("rollback", payload)
+        self.assertNotEqual(
+            (self.root / "ai.codemower.board.5332.plist").read_text(encoding="utf-8"), before
+        )
+        self.assertEqual(self.host.identities[5332]["repo"], "codemower-ai/private-repo")
+        self.assertEqual(payload["reconciliation"]["binding"]["failing_checks"], [])
+        self.assertEqual(
+            tuple(check["id"] for check in payload["reconciliation"]["binding"]["checks"]),
+            board_service.BINDING_CHECK_IDS,
+        )
+
+    def test_a_restoring_bootstrap_failure_is_reconciled_from_the_old_binding(self) -> None:
+        # The replacement never loads, while the restoring bootstrap loads the
+        # previous job and then returns a failure. The final state read makes
+        # this one verified rollback, without claiming replacement success.
+        original = self.spec()
+        self.install(original)
+        before = (self.root / f"{original.label}.plist").read_text(encoding="utf-8")
+        drifted = self.spec(
+            repo="codemower-ai/private-repo", repo_path=self.other_checkout, port=5332
+        )
+
+        class RestoreLoadsThenReportsFailure(board_service.LaunchdProvider):
+            bootstraps = 0
+
+            def bootstrap(self, label: str) -> tuple[bool, str]:
+                self.bootstraps += 1
+                if self.bootstraps == 1:
+                    return False, "Bootstrap failed: 5: Operation not permitted"
+                super().bootstrap(label)
+                return False, "Bootstrap failed after registering the restored job"
+
+        payload = self._restart_with(
+            RestoreLoadsThenReportsFailure(
+                command_runner=self.host.run,
+                root=self.root,
+                uid=self.host.uid,
+                platform="darwin",
+            ),
+            drifted,
+            replace=True,
+        )
+
         self.assertEqual(payload["status"], "apply_failed")
+        self.assertEqual(payload["reconciliation"]["state"], "previous")
         self.assertTrue(payload["rollback"]["ok"])
         self.assertTrue(payload["rollback"]["restored"])
-        # On disk and in launchd, what is left is the previous service -- not a
-        # replacement running against a definition that no longer describes it.
-        self.assertEqual((self.root / "ai.codemower.board.5332.plist").read_text(encoding="utf-8"), before)
-        self.assertIn("ai.codemower.board.5332", self.host.loaded)
+        self.assertEqual(
+            (self.root / f"{original.label}.plist").read_text(encoding="utf-8"), before
+        )
         self.assertEqual(self.host.identities[5332]["repo"], "codemower-ai/code-mower")
 
-    def test_a_replacement_that_cannot_be_unloaded_leaves_the_definition_alone(self) -> None:
-        # The other half: if the replacement cannot be confirmed unloaded, the
-        # previous definition is not written under it. Overwriting the
-        # definition of a job launchd still supervises would leave neither the
-        # replacement nor the previous service described by what is on disk.
+    def test_an_unreconciled_partial_replacement_has_one_exact_recovery_command(self) -> None:
+        self.install(self.spec())
+        drifted = self.spec(
+            repo="codemower-ai/private-repo", repo_path=self.other_checkout, port=5332
+        )
+        host = self.host
+
+        class LoadsWrongIdentityAndCannotRollBack(board_service.LaunchdProvider):
+            booted_out = False
+
+            def bootstrap(self, label: str) -> tuple[bool, str]:
+                super().bootstrap(label)
+                host.identities[5332]["repo"] = "codemower-ai/code-mower"
+                return False, "Bootstrap failed: 5: Operation not permitted"
+
+            def bootout(self, label: str) -> tuple[bool, str]:
+                if self.booted_out:
+                    return False, "Bootout failed: 125: Operation not permitted"
+                self.booted_out = True
+                return super().bootout(label)
+
+        payload = self._restart_with(
+            LoadsWrongIdentityAndCannotRollBack(
+                command_runner=self.host.run,
+                root=self.root,
+                uid=self.host.uid,
+                platform="darwin",
+            ),
+            drifted,
+            replace=True,
+        )
+
+        self.assertEqual(payload["status"], "rollback_failed")
+        self.assertEqual(payload["reconciliation"]["state"], "unresolved")
+        recovery = payload["reconciliation"]["recovery"]
+        self.assertEqual(
+            recovery["command"],
+            "code-mower board service restart --repo codemower-ai/private-repo "
+            "--repo-path . --host 127.0.0.1 --port 5332 --replace",
+        )
+        rendered = board_service.render_operation_text(payload)
+        self.assertEqual(rendered.count("Recovery command:"), 1)
+        self.assertNotIn("Reconciliation: new (verified)", rendered)
+
+    def test_a_verified_replacement_is_kept_without_attempting_a_failing_rollback(self) -> None:
+        # Reconciliation happens before rollback. Even a provider that would
+        # refuse the rollback bootout cannot turn a verified new binding into a
+        # split old-definition/new-process state.
         self.install(self.spec())
         drifted = self.spec(repo="codemower-ai/private-repo", repo_path=self.other_checkout, port=5332)
         replacement_text = board_service.render_definition(drifted)
@@ -1786,24 +1882,19 @@ class BoardServiceLifecycleTest(ServiceHarness):
             replace=True,
         )
 
-        self.assertEqual(payload["status"], "rollback_failed")
-        self.assertFalse(payload["rollback"]["ok"])
-        self.assertFalse(payload["rollback"]["restored"])
-        self.assertIn("could not be unloaded", payload["rollback"]["detail"])
+        self.assertEqual(payload["status"], "restarted")
+        self.assertTrue(payload["reconciliation"]["verified"])
+        self.assertNotIn("rollback", payload)
         self.assertEqual(
             (self.root / "ai.codemower.board.5332.plist").read_text(encoding="utf-8"),
             replacement_text,
         )
-        self.assertIn("Rollback: failed", board_service.render_operation_text(payload))
+        self.assertIn("Reconciliation: new (verified)", board_service.render_operation_text(payload))
 
-    def test_a_rollback_that_cannot_unload_the_job_keeps_its_definition(self) -> None:
-        # launchd registered the job and then bootstrap gave up waiting for it,
-        # so the apply failed with a job still supervised -- and the rollback's
-        # bootout failed too. The definition is the only handle `board service
-        # status`, `remove` and the `board stop` keepalive guard have on that
-        # job, because all three discover services by scanning definitions.
-        # Deleting it would strand a running, self-restarting Board outside the
-        # inventory entirely, so it is kept until the job is confirmed gone.
+    def test_a_first_install_bootstrap_failure_is_truthful_when_the_job_is_serving(self) -> None:
+        # launchd registered the job and then bootstrap gave up waiting for it.
+        # A complete binding read proves the install succeeded before the
+        # rollback path can mistake the provider error for the machine state.
         class StrandsTheJob(board_service.LaunchdProvider):
             def bootstrap(self, label: str) -> tuple[bool, str]:
                 super().bootstrap(label)
@@ -1825,10 +1916,10 @@ class BoardServiceLifecycleTest(ServiceHarness):
             sleeper=self.sleeper,
         )
 
-        self.assertEqual(payload["status"], "rollback_failed")
-        self.assertFalse(payload["rollback"]["ok"])
-        self.assertFalse(payload["rollback"]["deleted"])
-        self.assertIn("still-loaded job stays discoverable", payload["rollback"]["detail"])
+        self.assertEqual(payload["status"], "installed")
+        self.assertEqual(payload["reconciliation"]["state"], "new")
+        self.assertTrue(payload["reconciliation"]["verified"])
+        self.assertNotIn("rollback", payload)
         self.assertIn("ai.codemower.board.5332", self.host.loaded)
         self.assertTrue((self.root / "ai.codemower.board.5332.plist").exists())
         # The point of keeping it: the stranded job is still manageable.
@@ -1836,7 +1927,9 @@ class BoardServiceLifecycleTest(ServiceHarness):
             [item.label for item in self.host.provider().list_services()],
             ["ai.codemower.board.5332"],
         )
-        self.assertIn("Rollback: failed", board_service.render_operation_text(payload))
+        rendered = board_service.render_operation_text(payload)
+        self.assertIn("Reconciliation: new (verified)", rendered)
+        self.assertNotIn("Rollback:", rendered)
 
     def test_an_identity_probe_brackets_an_ipv6_address(self) -> None:
         # `http://::1:5332/api/identity` names something other than the service

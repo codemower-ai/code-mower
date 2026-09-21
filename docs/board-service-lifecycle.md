@@ -144,18 +144,32 @@ and the `board stop` keepalive guard could no longer see it. That case reports
 `remove_incomplete` and leaves the definition in place.
 
 `--replace` is the only way to take over an existing definition for a port, and
-the replacement is atomic: the definition file is swapped with `os.replace`, and
-a failed bootstrap restores exactly the previous definition or reports
-`rollback_failed`. The swap is also the point at which the original contents
-stop existing, so it happens only once the old job is established as unloaded --
-a `bootout` that succeeded, or the same positively-confirmed absence `remove`
-requires. Writing over a job launchd still holds would fail the bootstrap anyway
-(launchd will not accept a label its domain already holds) and the rollback
-would then preserve the replacement rather than an original that is by then
-gone, so that case refuses as `unload_failed` and changes nothing. A write that fails outright leaves the previous definition on
-disk untouched, so recovery there is to load it again rather than to restore it;
-either way the payload's `rollback` field says whether the previous service came
-back.
+the replacement is atomic: the definition file is swapped with `os.replace`,
+then the terminal result is decided from the host state rather than from a
+`launchctl` return code. The final reconciliation re-reads the definition,
+launchd's running pid and argument vector, the process checkout and supervisor,
+exclusive port ownership, repository identity, installed version and serving
+version. Success means those reads prove the new definition and new process. A
+failed apply means the same reads prove the restored definition and restored
+process. JSON carries that evidence in `reconciliation`; text prints exactly one
+verified state.
+
+This matters because `launchctl bootstrap` can register and start a job before
+reporting a timeout or permission-boundary failure. When the new binding passes
+the whole serving gate, replacement succeeded and no rollback is attempted. If
+it does not pass, rollback unloads it before restoring the backup and performs
+the same complete read against the previous binding. A result never calls both
+replacement and rollback successful. If neither binding can be verified, the
+operation reports `rollback_failed` with one recovery command and the checkout
+where that command must run.
+
+The swap is the point at which the original contents stop existing, so it
+happens only once the old job is established as unloaded -- a `bootout` that
+succeeded, or the same positively-confirmed absence `remove` requires. Writing
+over a job launchd still holds would fail the bootstrap anyway (launchd will not
+accept a label its domain already holds), so that case refuses as
+`unload_failed`. A write that fails outright leaves the previous definition on
+disk untouched; recovery loads and verifies that definition again.
 
 The backup that rollback restores is read before any of that -- before a log
 directory is created, before the old job is booted out, before a byte is
@@ -200,6 +214,22 @@ fallback therefore names its module search path in the definition, as
 whatever the installing shell happened to have. If the package cannot be located
 on a canonical path, the request is refused before anything is applied. A
 console-script definition carries no `PYTHONPATH` at all.
+
+### Recording and the supported argument surface
+
+`board serve` is an interactive process and does not record events unless
+`--record-events` is passed. A managed `board service` is intended to preserve
+local history while it stays open, so `service render`, `service install` and
+`service restart` enable recording by default; pass `--no-record-events` to all
+three when the managed Board should remain read-only. That choice is part of the
+rendered argument vector, so changing it requires `restart --replace`.
+
+The service commands accept the durable binding options they can reproduce:
+`--repo`, `--repo-path`, `--host`, `--port`, and the recording choice. Options
+that tune one interactive `board serve` process, such as custom store paths,
+limits, refresh intervals, retention, or `--open`, are not `board service`
+arguments. Review the exact supported service argv with `service render`; do not
+copy an arbitrary `board serve` command after the `service` subcommand.
 
 ### Logs
 
