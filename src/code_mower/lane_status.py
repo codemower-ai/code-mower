@@ -254,6 +254,15 @@ def _has_code_mower_check_claim(raw: Any) -> bool:
             check_name = value.strip().casefold()
             if "code-mower" in check_name or check_name.startswith("code_mower"):
                 return True
+        app = check.get("app")
+        if isinstance(app, Mapping):
+            for field in ("slug", "name"):
+                value = app.get(field)
+                if not isinstance(value, str):
+                    continue
+                app_identity = re.sub(r"[\s_]+", "-", value.strip().casefold())
+                if "code-mower" in app_identity:
+                    return True
     return False
 
 
@@ -283,14 +292,25 @@ def _status_check_rollup_is_readable(raw: Any) -> bool:
 
         name = check.get("name")
         context = check.get("context")
-        if typename == "CheckRun" and not (isinstance(name, str) and name.strip()):
+        has_name = isinstance(name, str) and bool(name.strip())
+        has_context = isinstance(context, str) and bool(context.strip())
+        if typename == "CheckRun" and (not has_name or has_context):
             return False
-        if typename == "StatusContext" and not (isinstance(context, str) and context.strip()):
+        if typename == "StatusContext" and (not has_context or has_name):
             return False
-        if typename is None and not (
-            (isinstance(name, str) and name.strip())
-            or (isinstance(context, str) and context.strip())
-        ):
+        if typename is None and has_name == has_context:
+            return False
+        variant = typename or ("CheckRun" if has_name else "StatusContext")
+
+        # Reject known fields from the other side of the GraphQL union.  Empty
+        # nullable compatibility values carry no identity, but two populated
+        # variant shapes must never be guessed into one.
+        cross_variant_fields = (
+            ("context", "targetUrl", "state")
+            if variant == "CheckRun"
+            else ("name", "workflowName", "detailsUrl", "conclusion", "status", "completedAt")
+        )
+        if any(check.get(field) not in (None, "") for field in cross_variant_fields):
             return False
 
         for field in (
@@ -302,16 +322,25 @@ def _status_check_rollup_is_readable(raw: Any) -> bool:
 
         app = check.get("app")
         if app is not None:
+            if variant != "CheckRun":
+                return False
             if not isinstance(app, Mapping):
                 return False
+            recognized_identity = False
             for field in ("slug", "name"):
-                if field in app and app[field] is not None and not isinstance(app[field], str):
+                if field in app:
+                    if not isinstance(app[field], str) or not app[field].strip():
+                        return False
+                    recognized_identity = True
+            if "databaseId" in app:
+                database_id = app["databaseId"]
+                if not (
+                    (isinstance(database_id, str) and bool(database_id.strip()))
+                    or (type(database_id) is int and database_id > 0)
+                ):
                     return False
-            database_id = app.get("databaseId")
-            if database_id is not None and not (
-                isinstance(database_id, str)
-                or (type(database_id) is int and database_id >= 0)
-            ):
+                recognized_identity = True
+            if not recognized_identity:
                 return False
     return True
 
@@ -610,7 +639,8 @@ def _remote(
         raw_branch = raw_pr.get("headRefName")
         branch = raw_branch if isinstance(raw_branch, str) else ""
         raw_checks = raw_pr.get("statusCheckRollup")
-        has_code_mower_check = _has_code_mower_check_claim(raw_checks)
+        checks_readable = _status_check_rollup_is_readable(raw_checks)
+        has_code_mower_check = checks_readable and _has_code_mower_check_claim(raw_checks)
 
         try:
             if policy_config.validate_config(lineage_config):
@@ -625,7 +655,7 @@ def _remote(
                     or not isinstance(raw_author.get("login"), str)
                     or not raw_author["login"].strip()
                     or not isinstance(raw_branch, str)
-                    or not _status_check_rollup_is_readable(raw_checks)):
+                    or not checks_readable):
                 raise ContractError("Exact readable labels, author, branch, and checks required")
             target = Target(repo, raw_pr.get("number"), raw_branch, raw_pr.get("headRefOid"))
             prerequisites_validated = True

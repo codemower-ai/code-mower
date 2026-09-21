@@ -1794,6 +1794,10 @@ class ListenerInventoryAvailabilityTests(TestCase):
             [{"__typename": "StatusContext", "context": 123, "state": "SUCCESS"}],
             [{"__typename": "UnknownCheck", "name": "package", "conclusion": "SUCCESS"}],
             [{"__typename": "CheckRun", "name": "package", "app": "github-actions"}],
+            [{"name": "package", "context": "external-ci"}],
+            [{"__typename": "CheckRun", "name": "package", "app": {}}],
+            [{"__typename": "CheckRun", "name": "package", "app": {"slug": ""}}],
+            [{"__typename": "CheckRun", "name": "package", "app": {"owner": 42}}],
         )
 
         for raw_checks in malformed_rollups:
@@ -1895,3 +1899,89 @@ class ListenerInventoryAvailabilityTests(TestCase):
                 pr = report["remote"]["pull_requests"][0]
                 self.assertEqual(pr["lineage"]["status"], "unmanaged")
                 self.assertEqual(pr["lineage"]["reason"], "no_code_mower_provenance")
+
+    def test_status_check_union_and_app_identity_matrix(self) -> None:
+        valid_rollups = (
+            [],
+            [{"__typename": "CheckRun", "name": "package"}],
+            [{"__typename": "StatusContext", "context": "external-ci"}],
+            [{"name": "package"}],
+            [{"context": "external-ci"}],
+            [{"__typename": "CheckRun", "name": "gate", "app": {"slug": "code-mower"}}],
+            [{"__typename": "CheckRun", "name": "gate", "app": {"name": "Code Mower"}}],
+            [{"__typename": "CheckRun", "name": "package", "app": {"databaseId": 15368}}],
+        )
+        invalid_rollups = (
+            None,
+            {},
+            [None],
+            [{"name": "package", "context": "external-ci"}],
+            [{"__typename": "CheckRun", "name": "package", "context": "external-ci"}],
+            [{"__typename": "CheckRun", "context": "external-ci"}],
+            [{"__typename": "CheckRun", "name": "package", "targetUrl": "https://ci.example.test"}],
+            [{"__typename": "CheckRun", "name": "package", "state": "SUCCESS"}],
+            [{"__typename": "StatusContext", "name": "package"}],
+            [{"__typename": "StatusContext", "name": "package", "context": "external-ci"}],
+            [{"__typename": "StatusContext", "context": "external-ci", "workflowName": "quality"}],
+            [{"__typename": "StatusContext", "context": "external-ci", "detailsUrl": "https://ci.example.test"}],
+            [{"__typename": "StatusContext", "context": "external-ci", "app": {"slug": "code-mower"}}],
+            [{"context": "external-ci", "workflowName": "quality"}],
+            [{"__typename": "Other", "name": "package"}],
+            [{"__typename": "CheckRun", "name": "package", "app": {}}],
+            [{"__typename": "CheckRun", "name": "package", "app": {"owner": 42}}],
+            [{"__typename": "CheckRun", "name": "package", "app": {"slug": ""}}],
+            [{"__typename": "CheckRun", "name": "package", "app": {"name": None}}],
+            [{"__typename": "CheckRun", "name": "package", "app": {"databaseId": 0}}],
+            [{"__typename": "CheckRun", "name": "package", "app": {"databaseId": False}}],
+        )
+
+        for rollup in valid_rollups:
+            with self.subTest(valid=rollup):
+                self.assertTrue(lane_status._status_check_rollup_is_readable(rollup))
+        for rollup in invalid_rollups:
+            with self.subTest(invalid=rollup):
+                self.assertFalse(lane_status._status_check_rollup_is_readable(rollup))
+
+    def test_valid_code_mower_app_identity_claims_pr_when_history_is_unavailable(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 338,
+                        "title": "Code Mower app check",
+                        "url": "https://github.com/owner/repo/pull/338",
+                        "headRefName": "feature/test",
+                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                        "author": {"login": "developer"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [],
+                        "statusCheckRollup": [
+                            {
+                                "__typename": "CheckRun",
+                                "name": "gate",
+                                "app": {"slug": "code-mower"},
+                                "conclusion": "SUCCESS",
+                            }
+                        ],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            if args[0] == "api" and "/comments?" in args[1]:
+                raise lane_status.LaneStatusUnavailable("history unavailable")
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        report = lane_status.collect_status(
+            lineage_config=policy(),
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        self.assertEqual(pr["lineage"]["status"], "unavailable")
+        self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable")
+        self.assertEqual(pr["next_action"], "restore readable lineage metadata and rerun status")
