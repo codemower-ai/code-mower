@@ -494,7 +494,9 @@
       "name": "takeover_reconciles_unknown_without_redispatch",
       "contract_schema": "operator_state_v1.schema.json",
       "semantic_context": {
-        "current_work_generation": 4
+        "current_work_generation": 4,
+        "current_lease_epoch": 9,
+        "current_fence_token": "9999999999999999999999999999999999999999999999999999999999999999"
       },
       "document": {
         "schema": "code_mower.operatorActionIntent.v1",
@@ -1152,6 +1154,66 @@
         "status": "stale",
         "decision": "denied",
         "reason": "evidence_stale"
+      }
+    },
+    {
+      "name": "failed_evidence_must_retain_record",
+      "contract_schema": "operator_policy_v1.schema.json",
+      "expected_violation": "evidence_failed status requires the failed evidence record",
+      "semantic_context": {
+        "now": 2000000100
+      },
+      "document": {
+        "schema": "code_mower.operatorQualification.v1",
+        "provider_id": "devin",
+        "transport_id": "devin_service",
+        "role": "builder",
+        "required_capabilities": [
+          "create_session",
+          "write_branch",
+          "open_pull_request",
+          "structured_result"
+        ],
+        "declared_capabilities": [
+          "create_session",
+          "write_branch",
+          "open_pull_request",
+          "structured_result"
+        ],
+        "evidence": null,
+        "status": "failed",
+        "decision": "denied",
+        "reason": "evidence_failed"
+      }
+    },
+    {
+      "name": "capability_missing_requires_an_actual_gap",
+      "contract_schema": "operator_policy_v1.schema.json",
+      "expected_violation": "capability_missing status requires a required capability absent from the declaration",
+      "semantic_context": {
+        "now": 2000000100
+      },
+      "document": {
+        "schema": "code_mower.operatorQualification.v1",
+        "provider_id": "devin",
+        "transport_id": "devin_service",
+        "role": "builder",
+        "required_capabilities": [
+          "create_session",
+          "write_branch",
+          "open_pull_request",
+          "structured_result"
+        ],
+        "declared_capabilities": [
+          "create_session",
+          "write_branch",
+          "open_pull_request",
+          "structured_result"
+        ],
+        "evidence": null,
+        "status": "failed",
+        "decision": "denied",
+        "reason": "capability_missing"
       }
     }
   ],

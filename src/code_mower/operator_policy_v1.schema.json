@@ -774,6 +774,29 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "failed"
+              },
+              "reason": {
+                "const": "evidence_failed"
+              }
+            },
+            "required": [
+              "status",
+              "reason"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence": {
+                "$ref": "#/$defs/evidence"
+              }
+            }
+          }
         }
       ]
     }
