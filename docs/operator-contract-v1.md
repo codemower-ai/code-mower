@@ -59,6 +59,8 @@ The canonical path is illustrative; only edges listed by the schema are legal.
 are terminal and cannot re-enter active work. Each write atomically records the
 new state, allowed transition, reason, generation, and timestamps. A
 generation mismatch rejects the write rather than overwriting newer state.
+The work record also carries cumulative `elapsed_seconds` and `spend_usd`;
+neither may move backwards across a transition or exceed owner policy.
 
 The Operator stops in `awaiting_owner` for required approval, exhausted budget,
 missing or stale qualification, unavailable credentials, policy denial,
@@ -78,10 +80,12 @@ acquisition or takeover increments `epoch` and produces a new `fence_token`.
 Renewal retains both. A holder stops starting work before `renew_by` if renewal
 does not succeed, and it has no authority after `expires_at`.
 
-Every mutation intent binds the work generation, dispatch lease epoch, and
-dispatch fencing token. The durable store and each mutation adapter compare
-the generation and fence with current durable state immediately before
-dispatch. A stale holder cannot dispatch, retry, or overwrite the new holder's
+Every mutation intent binds the work generation, lease identity, dispatch lease
+epoch, and dispatch fencing token. The durable store and each mutation adapter compare
+the generation, tenant and repository scope, original epoch and token, exact
+head, and a live independently read lease immediately before dispatch, retry,
+and result commit. Stored `fence_status` and `head_status` labels never prove
+authority. A stale holder cannot dispatch, retry, or overwrite the new holder's
 state. A prepared, never-dispatched intent whose generation, fence, or target
 head is stale is abandoned. An already-dispatched unknown intent retains its
 immutable original dispatch fence and stays unknown. The new holder records a
@@ -94,6 +98,9 @@ replacement intent merely because the previous process disappeared.
 Lease time is an availability mechanism. Fencing is the correctness mechanism.
 Clock skew, delayed workers, and a process resuming after expiry must therefore
 fail the fencing comparison even when they locally believe the lease is valid.
+Lease chronology is `acquired_at <= renew_by < expires_at`; active authority
+ends at `renew_by` unless a compare-and-swap renewal advances both deadlines.
+The policy binding check also verifies the configured TTL/renewal cadence.
 
 ## Durable intent, certainty, and reconciliation
 
@@ -137,6 +144,13 @@ renewal cadence. Counters are cumulative across retries, restarts, and lease
 takeovers. Reservation and increment happen atomically before dispatch. A
 failure to reserve a unit is a stop, not permission to run and account later.
 Only an owner can install a new policy with larger limits.
+
+The normative `policy_binding_errors` API binds every state record to the
+owner policy. It checks the tenant, repository allowlist, authorized mutation,
+action attempts/reconciliations/time/spend, work time/spend/escalations, and
+lease cadence. Concurrent reservation still belongs to the durable-store
+transaction, while each persisted record must independently remain within
+these ceilings.
 
 Failures have these required outcomes:
 
@@ -219,8 +233,9 @@ same metadata-only boundary.
 
 The canonical accepted and rejected fixtures are executable examples of these
 rules. Each recovery fixture contains schema-valid before, required-after, and
-forbidden-after record sequences; `recovery_transition_errors` verifies their
-counter, identity, fencing, and certainty invariants. Dependent implementations
-must consume them without weakening a rejected case, and must add
-implementation-specific failure injection without changing the meaning of the
-v1 records.
+named forbidden-after record sequences; `recovery_transition_errors` verifies
+tenant, repository, Operator-lease identity, lease chronology, timestamps,
+every cumulative integer counter, decimal spend, fencing, and certainty.
+Dependent implementations must consume them without weakening a rejected case,
+and must add implementation-specific failure injection without changing the
+meaning of the v1 records.
