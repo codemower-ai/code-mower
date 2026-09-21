@@ -482,6 +482,33 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
             )
             self.assertNotIn("secret-token", str(check.detail))
 
+    def test_hosted_devin_transport_warning_keeps_readiness_in_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checks = check_adoption_campaign_readiness(
+                config={"lanes": {"devin": {"enabled": True}}},
+                repo_root=Path(tmp),
+                repo_slug="owner/repo",
+                adoption_posture="hosted-builders",
+                env={
+                    "DEVIN_API_KEY": "secret-token",
+                    "DEVIN_ORG_ID": "org-test",
+                },
+                providers=["devin"],
+            )
+
+        transport = next(
+            check for check in checks if check.name == "doctor.campaign.transport"
+        )
+        self.assertEqual(transport.status, STATUS_WARN)
+        self.assertTrue(transport.detail.get("owner_action"))
+        self.assertEqual(transport.detail.get("dispatch_blockers"), ["installation"])
+        readiness = next(
+            check for check in checks if check.name == "doctor.campaign.readiness"
+        )
+        self.assertEqual(readiness.status, STATUS_WARN)
+        self.assertIn("devin", readiness.detail.get("actionable_providers", []))
+        self.assertNotIn("out of scope", readiness.message)
+
     def test_campaign_credentials_warns_when_missing_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)

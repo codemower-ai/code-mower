@@ -41,6 +41,7 @@ _CAMPAIGN_PROVIDER_CHECK_NAMES = frozenset(
         "doctor.campaign.adapter",
         "doctor.campaign.runtime",
         "doctor.campaign.credentials",
+        "doctor.campaign.transport",
         CAMPAIGN_AUTH_CHECK_NAME,
         "doctor.campaign.structured_result",
     }
