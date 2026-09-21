@@ -339,20 +339,11 @@ def _has_code_mower_claim(
     author, a configured branch prefix, Code Mower checks, or readable lineage
     markers. Returns False for ordinary PRs with no Code Mower involvement.
     """
-    if not identity or not getattr(identity, "enabled", False):
-        return False
-
     if has_lineage_markers:
         return True
 
     label_set = set(_text(label).lower() for label in labels)
     
-    identity_labels = getattr(identity, "labels", ())
-    if identity_labels:
-        configured_labels = {_text(label).lower() for label, _ in identity_labels}
-        if label_set & configured_labels:
-            return True
-
     audit_patterns = {"dispatched:codex", "dispatched:claude", "dispatched:cursor", 
                       "dispatched:devin", "dispatched:gitar", "dispatched:muse"}
     if label_set & audit_patterns:
@@ -363,21 +354,30 @@ def _has_code_mower_claim(
            label.endswith("-audit-done") or label.endswith("-audit-blocked"):
             return True
 
-    identity_authors = getattr(identity, "authors", ())
-    if identity_authors:
-        author_lower = _text(author).lower()
-        configured_authors = {_text(account).lower() for account, _ in identity_authors}
-        if author_lower in configured_authors:
+    for check in checks:
+        check_name = _text(check.get("name")).lower()
+        if any(term in check_name for term in CHECK_TERMS):
             return True
 
-    identity_prefixes = getattr(identity, "branch_prefixes", ())
-    if identity_prefixes:
-        branch_lower = _text(branch).lower()
-        if any(branch_lower.startswith(_text(prefix).lower()) for prefix, _ in identity_prefixes):
-            return True
+    if identity and getattr(identity, "enabled", False):
+        identity_labels = getattr(identity, "labels", ())
+        if identity_labels:
+            configured_labels = {_text(label).lower() for label, _ in identity_labels}
+            if label_set & configured_labels:
+                return True
 
-    if checks and any(any(term in check.get("name", "").lower() for term in CHECK_TERMS) for check in checks):
-        return True
+        identity_authors = getattr(identity, "authors", ())
+        if identity_authors:
+            author_lower = _text(author).lower()
+            configured_authors = {_text(account).lower() for account, _ in identity_authors}
+            if author_lower in configured_authors:
+                return True
+
+        identity_prefixes = getattr(identity, "branch_prefixes", ())
+        if identity_prefixes:
+            branch_lower = _text(branch).lower()
+            if any(branch_lower.startswith(_text(prefix).lower()) for prefix, _ in identity_prefixes):
+                return True
 
     return False
 
