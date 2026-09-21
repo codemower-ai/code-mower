@@ -257,6 +257,65 @@ def _has_code_mower_check_claim(raw: Any) -> bool:
     return False
 
 
+def _status_check_rollup_is_readable(raw: Any) -> bool:
+    """Validate the GitHub union records used as check identities.
+
+    `gh pr --json statusCheckRollup` returns CheckRun and StatusContext union
+    variants.  Tests and older gh versions may omit ``__typename``, so the
+    primary ``name``/``context`` field also identifies the variant.  Optional
+    fields may be absent or null, but a present value must retain its source
+    type; stringifying malformed identity data would make an incomplete list
+    look like trustworthy evidence that no Code Mower check exists.
+    """
+    if not isinstance(raw, list):
+        return False
+    for check in raw:
+        if not isinstance(check, Mapping):
+            return False
+
+        typename = check.get("__typename")
+        if typename is not None and typename not in {"CheckRun", "StatusContext"}:
+            return False
+
+        for field in ("name", "context", "workflowName"):
+            if field in check and check[field] is not None and not isinstance(check[field], str):
+                return False
+
+        name = check.get("name")
+        context = check.get("context")
+        if typename == "CheckRun" and not (isinstance(name, str) and name.strip()):
+            return False
+        if typename == "StatusContext" and not (isinstance(context, str) and context.strip()):
+            return False
+        if typename is None and not (
+            (isinstance(name, str) and name.strip())
+            or (isinstance(context, str) and context.strip())
+        ):
+            return False
+
+        for field in (
+            "detailsUrl", "targetUrl", "startedAt", "createdAt", "completedAt",
+            "conclusion", "state", "status",
+        ):
+            if field in check and check[field] is not None and not isinstance(check[field], str):
+                return False
+
+        app = check.get("app")
+        if app is not None:
+            if not isinstance(app, Mapping):
+                return False
+            for field in ("slug", "name"):
+                if field in app and app[field] is not None and not isinstance(app[field], str):
+                    return False
+            database_id = app.get("databaseId")
+            if database_id is not None and not (
+                isinstance(database_id, str)
+                or (type(database_id) is int and database_id >= 0)
+            ):
+                return False
+    return True
+
+
 def _has_state(checks: Sequence[Mapping[str, str]], states: set[str]) -> bool:
     return any(check.get("state", "") in states for check in checks)
 
@@ -550,7 +609,8 @@ def _remote(
         author_login = raw_author.get("login", "") if isinstance(raw_author, Mapping) else ""
         raw_branch = raw_pr.get("headRefName")
         branch = raw_branch if isinstance(raw_branch, str) else ""
-        has_code_mower_check = _has_code_mower_check_claim(raw_pr.get("statusCheckRollup"))
+        raw_checks = raw_pr.get("statusCheckRollup")
+        has_code_mower_check = _has_code_mower_check_claim(raw_checks)
 
         try:
             if policy_config.validate_config(lineage_config):
@@ -558,10 +618,15 @@ def _remote(
             identity = lineage_identity(lineage_config)
             authority = lineage_authorities(lineage_config)
             if (not isinstance(raw_labels, list)
-                    or any(not isinstance(item, Mapping) or not isinstance(item.get("name"), str) for item in raw_labels)
-                    or not isinstance(raw_author, Mapping) or not isinstance(raw_author.get("login"), str)
-                    or not isinstance(raw_branch, str)):
-                raise ContractError("Exact readable labels, author, and branch required")
+                    or any(not isinstance(item, Mapping)
+                           or not isinstance(item.get("name"), str)
+                           or not item["name"].strip() for item in raw_labels)
+                    or not isinstance(raw_author, Mapping)
+                    or not isinstance(raw_author.get("login"), str)
+                    or not raw_author["login"].strip()
+                    or not isinstance(raw_branch, str)
+                    or not _status_check_rollup_is_readable(raw_checks)):
+                raise ContractError("Exact readable labels, author, branch, and checks required")
             target = Target(repo, raw_pr.get("number"), raw_branch, raw_pr.get("headRefOid"))
             prerequisites_validated = True
             def page(number, size, target=target):

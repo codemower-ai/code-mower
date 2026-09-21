@@ -108,7 +108,8 @@ class ProjectionConsumers(unittest.TestCase):
         def gh(args):
             if args[:2] == ['pr', 'list']:
                 return [{'number': i, 'headRefName': 'codex/topic', 'headRefOid': HEAD,
-                    'author': {'login': 'human'}, 'labels': [{'name': 'builder:codex'}]} for i in range(1, 11)]
+                    'author': {'login': 'human'}, 'labels': [{'name': 'builder:codex'}],
+                    'statusCheckRollup': []} for i in range(1, 11)]
             if args[0] == 'api':
                 calls.append(args)
                 return [{}]*100
