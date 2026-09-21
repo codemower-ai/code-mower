@@ -127,6 +127,33 @@ class DoctorShareSafeTests(TestCase):
             with self.subTest(value=public_value):
                 self.assertEqual(redact_local_path_text(public_value), public_value)
 
+    def test_text_redaction_preserves_diagnostics_after_an_embedded_path(self) -> None:
+        text = redact_local_path_text(
+            "workflow at .github/workflows/private-audit.yml failed after validation"
+        )
+
+        self.assertEqual(
+            text,
+            f"workflow at {LOCAL_PATH_REDACTION} failed after validation",
+        )
+
+    def test_space_containing_paths_are_hidden_without_truncating_following_text(self) -> None:
+        unquoted = redact_local_path_text(
+            f"failed at {_local_root()}/repo/config.yml because it was unreadable"
+        )
+        quoted = redact_local_path_text(
+            f"checkout '{_local_root()}' is unavailable"
+        )
+
+        for redacted in (unquoted, quoted):
+            self.assertNotIn("example-person", redacted)
+            self.assertNotIn("Private Project", redacted)
+        self.assertIn("because it was unreadable", unquoted)
+        self.assertEqual(
+            quoted,
+            f"checkout {LOCAL_PATH_REDACTION} is unavailable",
+        )
+
     def test_every_report_text_surface_uses_the_complete_path_matrix(self) -> None:
         report = DoctorReport(
             config_path="code-mower.yml",
@@ -167,6 +194,8 @@ class DoctorShareSafeTests(TestCase):
             self.assertNotIn(private_fragment, rendered)
         self.assertIn("OWNER/REPO", rendered)
         self.assertIn("https://example.test/a/b", rendered)
+        self.assertIn("workflow at", rendered)
+        self.assertIn("failed", rendered)
 
     def test_adoption_json_defaults_to_share_safe_and_has_debug_opt_in(self) -> None:
         def run(extra: list[str]) -> dict[str, object]:

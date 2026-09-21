@@ -31,10 +31,19 @@ _RELATIVE_PATH = re.compile(
     r"[^\s'\":/\\]+[\\/][^\s'\"/\\]*\.[^\s'\"/\\]+"
     r")"
 )
+_QUOTED_LOCAL_PATH = re.compile(
+    r"(?P<quote>['\"`])(?:"
+    r"file:|"
+    r"[A-Za-z]:(?:[\\/]|[^'\"`\n\\/]+[\\/])|"
+    r"\\\\|\\|"
+    r"~[\w.-]*[\\/]|/|"
+    r"\.\.?[\\/]"
+    r")[^'\"`\n]+(?P=quote)",
+    re.IGNORECASE,
+)
 _NONLOCAL_URI = re.compile(
     r"(?i)(?<![\w])(?!file://)[a-z][a-z0-9+.-]*://[^\s'\"]+"
 )
-_PATH_TERMINATORS = (":", ";", ",", ")", "]", ">")
 _PATH_VALUE_KEYS = {
     "cwd",
     "directory",
@@ -69,12 +78,6 @@ def _redact_matches(line: str, pattern: re.Pattern[str]) -> str:
         pieces.append(line[position : match.start()])
         pieces.append(LOCAL_PATH_REDACTION)
         position = match.end()
-        tail = line[position:]
-        # A whitespace boundary can be the first space in an unknown path.
-        # Keep the useful prefix, but withhold the ambiguous suffix rather than
-        # guessing where a private path ended.
-        if tail[:1].isspace() and not match.group(0).endswith(_PATH_TERMINATORS):
-            return "".join(pieces)
     pieces.append(line[position:])
     return "".join(pieces)
 
@@ -91,12 +94,24 @@ def redact_local_path_text(value: str) -> str:
         # and apply the filesystem recognizers only to the text around it.
         for uri in _NONLOCAL_URI.finditer(line):
             current = line[position : uri.start()]
-            for pattern in (_FILE_URI, _WINDOWS_PATH, _POSIX_PATH, _RELATIVE_PATH):
+            for pattern in (
+                _QUOTED_LOCAL_PATH,
+                _FILE_URI,
+                _WINDOWS_PATH,
+                _POSIX_PATH,
+                _RELATIVE_PATH,
+            ):
                 current = _redact_matches(current, pattern)
             pieces.extend((current, uri.group(0)))
             position = uri.end()
         current = line[position:]
-        for pattern in (_FILE_URI, _WINDOWS_PATH, _POSIX_PATH, _RELATIVE_PATH):
+        for pattern in (
+            _QUOTED_LOCAL_PATH,
+            _FILE_URI,
+            _WINDOWS_PATH,
+            _POSIX_PATH,
+            _RELATIVE_PATH,
+        ):
             current = _redact_matches(current, pattern)
         pieces.append(current)
         redacted.append("".join(pieces))
