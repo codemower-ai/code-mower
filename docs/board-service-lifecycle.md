@@ -62,14 +62,13 @@ comes back with stale arguments, fails the gate instead of passing on a single
 early probe. The payload reports `delayed_health` with its state, the settle and
 refresh windows, and how many refreshes it took.
 
-When that window closes without a validating binding, the operation reports
-`delayed_health_failed`: the service applied but its binding never validated.
-This is the one failure that is *not* in the fail-closed table below, and the
-difference matters. The refusals below are decided before anything is applied
-and leave no local state behind; `delayed_health_failed` is decided after
-launchd already holds the job, so the definition stays installed and
-`board service status` keeps reporting the failing binding until you repair or
-remove it.
+When that window closes without a validating binding, an in-place restart or an
+unchanged install reports `delayed_health_failed`, because no definition was
+replaced. A new apply is different: a fresh install is removed again, while a
+replacement restores and verifies the previous binding. Those operations report
+`apply_failed` when the pre-operation state is verified and `rollback_failed`
+with a recovery command when neither state can be verified. The payload keeps
+the failed `delayed_health` evidence alongside the reconciliation result.
 
 ## Fail-closed refusals
 
@@ -144,18 +143,50 @@ and the `board stop` keepalive guard could no longer see it. That case reports
 `remove_incomplete` and leaves the definition in place.
 
 `--replace` is the only way to take over an existing definition for a port, and
-the replacement is atomic: the definition file is swapped with `os.replace`, and
-a failed bootstrap restores exactly the previous definition or reports
-`rollback_failed`. The swap is also the point at which the original contents
-stop existing, so it happens only once the old job is established as unloaded --
-a `bootout` that succeeded, or the same positively-confirmed absence `remove`
-requires. Writing over a job launchd still holds would fail the bootstrap anyway
-(launchd will not accept a label its domain already holds) and the rollback
-would then preserve the replacement rather than an original that is by then
-gone, so that case refuses as `unload_failed` and changes nothing. A write that fails outright leaves the previous definition on
-disk untouched, so recovery there is to load it again rather than to restore it;
-either way the payload's `rollback` field says whether the previous service came
-back.
+the replacement is atomic: the definition file is swapped with `os.replace`,
+then the terminal result is decided from the host state rather than from a
+`launchctl` return code. The final reconciliation re-reads the definition,
+launchd's running pid and argument vector, the process checkout and supervisor,
+exclusive port ownership, repository identity, installed version and serving
+version. Success means those reads prove the new definition and new process. A
+failed apply means the same reads prove the restored definition and restored
+process. JSON carries that evidence in `reconciliation`; text prints exactly one
+verified state.
+
+This matters because `launchctl bootstrap` can register and start a job before
+reporting a timeout or permission-boundary failure. When the new binding passes
+the whole serving gate, replacement succeeded and no rollback is attempted. If
+it does not pass, rollback unloads it before restoring the backup and performs
+the same complete read against the previous binding. A result never calls both
+replacement and rollback successful. If neither binding can be verified, the
+operation reports `rollback_failed` with one recovery command and the checkout
+where that command must run.
+
+A failed first install has absence as its rollback target. That result re-reads
+the definition, launchd job and unfiltered listener inventory after cleanup;
+only no definition, no job and an available inventory with zero listeners on
+the target port is verified absence. An unavailable inventory or any surviving
+listener is unresolved `rollback_failed`, with the same exact recovery command.
+
+Rollback version checks use the identity/version evidence captured from the old
+Board before it is stopped. A byte-for-byte restored older Board therefore
+validates as the previous state even when the command performing the replacement
+comes from a newer installation. A readable definition whose job was already
+unloaded has no running version to capture; after restoration, its complete
+binding is checked against the normal current-version contract. Missing version
+evidence remains unresolved when a prior job was loaded or its state was unknown.
+If the prior definition was unreadable,
+`--replace` knowingly discarded bytes that could not be backed up; removing a
+failed replacement is then reported as unresolved cleanup, never as a restored
+previous service.
+
+The swap is the point at which the original contents stop existing, so it
+happens only once the old job is established as unloaded -- a `bootout` that
+succeeded, or the same positively-confirmed absence `remove` requires. Writing
+over a job launchd still holds would fail the bootstrap anyway (launchd will not
+accept a label its domain already holds), so that case refuses as
+`unload_failed`. A write that fails outright leaves the previous definition on
+disk untouched; recovery loads and verifies that definition again.
 
 The backup that rollback restores is read before any of that -- before a log
 directory is created, before the old job is booted out, before a byte is
@@ -200,6 +231,22 @@ fallback therefore names its module search path in the definition, as
 whatever the installing shell happened to have. If the package cannot be located
 on a canonical path, the request is refused before anything is applied. A
 console-script definition carries no `PYTHONPATH` at all.
+
+### Recording and the supported argument surface
+
+`board serve` is an interactive process and does not record events unless
+`--record-events` is passed. A managed `board service` is intended to preserve
+local history while it stays open, so `service render`, `service install` and
+`service restart` enable recording by default; pass `--no-record-events` to all
+three when the managed Board should remain read-only. That choice is part of the
+rendered argument vector, so changing it requires `restart --replace`.
+
+The service commands accept the durable binding options they can reproduce:
+`--repo`, `--repo-path`, `--host`, `--port`, and the recording choice. Options
+that tune one interactive `board serve` process, such as custom store paths,
+limits, refresh intervals, retention, or `--open`, are not `board service`
+arguments. Review the exact supported service argv with `service render`; do not
+copy an arbitrary `board serve` command after the `service` subcommand.
 
 ### Logs
 

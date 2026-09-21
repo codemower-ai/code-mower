@@ -27,6 +27,7 @@ import json
 import os
 import plistlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1332,6 +1333,7 @@ def validate_binding(
     show_local_paths: bool = False,
     expected_digest: str | None = None,
     expected_arguments: Sequence[str] | None = None,
+    expected_version: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The serving gate.
 
@@ -1519,16 +1521,27 @@ def validate_binding(
     # distribution metadata on either side, so the Board reports an empty
     # installed version and the honest expectation is that it stays empty --
     # demanding the imported version there would fail a healthy service forever.
-    expected_installed = installed_distribution_version()
     reported_installed = _text(version.get("installed_version"))
-    if expected_installed is None:
+    if expected_version is not None:
+        expected_installed = _text(expected_version.get("installed_version"))
+        installed_ok = reported_installed == expected_installed
+        installed_message = (
+            "the served installed version matches the pre-replacement binding"
+            if installed_ok
+            else "the served installed version does not match the pre-replacement binding"
+        )
+        source_checkout = expected_installed == ""
+    else:
+        expected_installed = installed_distribution_version()
+        source_checkout = expected_installed is None
+    if expected_version is None and expected_installed is None:
         installed_ok = reported_installed == ""
         installed_message = (
             "neither side has distribution metadata, as expected for a source checkout"
             if installed_ok
             else "the served Board reports an installed distribution this checkout does not have"
         )
-    else:
+    elif expected_version is None:
         installed_ok = reported_installed == expected_installed
         installed_message = (
             "the served installed version matches this installation"
@@ -1542,7 +1555,7 @@ def validate_binding(
             installed_message,
             installed_version=reported_installed,
             expected_installed_version=expected_installed or "",
-            source_checkout=expected_installed is None,
+            source_checkout=source_checkout,
         )
     )
     # The serving version is the code the process is actually running, and both
@@ -1551,16 +1564,33 @@ def validate_binding(
     # that means the same thing in both modes, and `restart_recommended` still
     # carries the Board's own verdict that it is running behind its install.
     reported_serving = _text(version.get("serving_version"))
-    serving_ok = reported_serving == CODE_MOWER_VERSION and not version.get("restart_recommended")
+    if expected_version is not None:
+        expected_serving = _text(expected_version.get("serving_version"))
+        expected_restart = bool(expected_version.get("restart_recommended"))
+        serving_ok = (
+            reported_serving == expected_serving
+            and bool(version.get("restart_recommended")) == expected_restart
+        )
+        serving_message = (
+            "the serving version matches the pre-replacement binding"
+            if serving_ok
+            else "the serving version does not match the pre-replacement binding"
+        )
+    else:
+        expected_serving = CODE_MOWER_VERSION
+        serving_ok = reported_serving == expected_serving and not version.get("restart_recommended")
+        serving_message = (
+            "the serving version matches this Code Mower"
+            if serving_ok
+            else "the serving version is stale against this Code Mower"
+        )
     checks.append(
         _check(
             "binding.serving_version",
             "pass" if serving_ok else "fail",
-            "the serving version matches this Code Mower"
-            if serving_ok
-            else "the serving version is stale against this Code Mower",
+            serving_message,
             serving_version=reported_serving,
-            expected_serving_version=CODE_MOWER_VERSION,
+            expected_serving_version=expected_serving,
         )
     )
     return _binding_payload(spec, checks, service, show_local_paths=show_local_paths, expected_digest=expected)
@@ -1620,6 +1650,9 @@ def delayed_health(
     refresh_seconds: float = DEFAULT_REFRESH_SECONDS,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     show_local_paths: bool = False,
+    expected_digest: str | None = None,
+    expected_arguments: Sequence[str] | None = None,
+    expected_version: Mapping[str, Any] | None = None,
     sleeper: Sleeper = time.sleep,
     clock: Clock = time.monotonic,
 ) -> dict[str, Any]:
@@ -1645,6 +1678,9 @@ def delayed_health(
             command_runner=command_runner,
             identity_probe=identity_probe,
             show_local_paths=show_local_paths,
+            expected_digest=expected_digest,
+            expected_arguments=expected_arguments,
+            expected_version=expected_version,
         )
         if binding.get("status") == "pass" or clock() >= deadline:
             break
@@ -1658,6 +1694,20 @@ def delayed_health(
         "attempts": attempts,
         "binding": binding,
     }
+
+
+def _health_binding(health: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the final full binding sample from one settled health window.
+
+    ``delayed_health`` exits only after a complete ``validate_binding`` sample
+    passes or its bounded window expires. Reusing that last sample keeps the
+    terminal decision tied to the settled window. A separate unretired probe
+    immediately afterward could overturn a verified pass on one transient
+    listener or HTTP-read failure and cause an unnecessary rollback.
+    """
+
+    binding = health.get("binding")
+    return dict(binding) if isinstance(binding, Mapping) else {}
 
 
 # -- operations -------------------------------------------------------------
@@ -1898,6 +1948,278 @@ def _ownership_conflict(
     )
 
 
+def _recovery_instruction(spec: ServiceSpec, *, show_local_paths: bool) -> dict[str, Any]:
+    """One copyable command that converges an unresolved binding on `spec`.
+
+    The command uses ``--repo-path .`` so the payload can remain publishable.
+    ``cwd`` names the exact checkout locally (or carries the normal redaction),
+    and is part of the instruction rather than being interpolated into shell
+    text where a private path would leak through JSON or text output.
+    """
+
+    command = (
+        "code-mower board service restart "
+        f"--repo {shlex.quote(spec.repo)} --repo-path . "
+        f"--host {shlex.quote(spec.host)} --port {spec.port} --replace"
+    )
+    if "--record-events" not in spec.arguments:
+        command += " --no-record-events"
+    return {
+        "cwd": redact_path(str(spec.repo_path), show_local_paths=show_local_paths),
+        "cwd_redacted": not show_local_paths,
+        "command": command,
+    }
+
+
+def _final_binding_read(
+    spec: ServiceSpec,
+    *,
+    provider: Any,
+    command_runner: lane_status.CommandRunner,
+    identity_probe: Callable[[str, int], Mapping[str, Any]] | None,
+    show_local_paths: bool,
+    expected_digest: str | None = None,
+    expected_arguments: Sequence[str] | None = None,
+    expected_version: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Re-read every fact that can make an applied service truthful.
+
+    This deliberately does not reuse a delayed-health result. A terminal
+    result is based on one fresh read of the installed bytes, launchd's current
+    pid and argv, the pid's cwd and supervisor, every listener on the port, and
+    the Board identity/version response.
+    """
+
+    return validate_binding(
+        spec,
+        provider=provider,
+        command_runner=command_runner,
+        identity_probe=identity_probe,
+        show_local_paths=show_local_paths,
+        expected_digest=expected_digest,
+        expected_arguments=expected_arguments,
+        expected_version=expected_version,
+    )
+
+
+def _reconciliation(
+    target: str,
+    binding: Mapping[str, Any],
+    *,
+    spec: ServiceSpec,
+    show_local_paths: bool,
+) -> dict[str, Any]:
+    verified = binding.get("status") == "pass"
+    result: dict[str, Any] = {
+        "state": target if verified else "unresolved",
+        "verified": verified,
+        "target": target,
+        "binding": dict(binding),
+    }
+    if not verified:
+        result["recovery"] = _recovery_instruction(spec, show_local_paths=show_local_paths)
+    return result
+
+
+def _previous_version_evidence(
+    previous: ManagedService | None,
+    identity_probe: Callable[[str, int], Mapping[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """Capture the old Board's version contract before its process is stopped."""
+
+    if (
+        previous is None
+        or not previous.readable
+        or not previous.port
+        or previous.load_state == JOB_ABSENT
+    ):
+        return None
+    probe = identity_probe or (lambda host, port: probe_identity(host, port))
+    identity = probe(previous.host, previous.port)
+    board = identity.get("board") if isinstance(identity.get("board"), Mapping) else {}
+    version = board.get("version") if isinstance(board.get("version"), Mapping) else {}
+    if not _text(version.get("serving_version")):
+        return None
+    return {
+        "installed_version": _text(version.get("installed_version")),
+        "serving_version": _text(version.get("serving_version")),
+        "restart_recommended": bool(version.get("restart_recommended")),
+    }
+
+
+def _runtime_state_or_unknown(provider: Any, label: str) -> tuple[str, int | None]:
+    """Read provider runtime state without turning uncertainty into absence.
+
+    Reconciliation runs after a provider operation has already returned an
+    ambiguous result. If the follow-up query itself raises, the only truthful
+    answer is `JOB_UNKNOWN`: a missing answer must never prove that a job is
+    absent or let an exception bypass the rollback result.
+    """
+
+    runtime_state = getattr(provider, "runtime_state", None)
+    if runtime_state is None:
+        return JOB_UNKNOWN, None
+    try:
+        return runtime_state(label)
+    except (OSError, subprocess.SubprocessError):
+        return JOB_UNKNOWN, None
+
+
+def _rollback_and_reconcile(
+    spec: ServiceSpec,
+    *,
+    provider: Any,
+    previous: ManagedService | None,
+    previous_text: str,
+    previous_version: Mapping[str, Any] | None,
+    expected: str,
+    failure_detail: str,
+    command_runner: lane_status.CommandRunner,
+    identity_probe: Callable[[str, int], Mapping[str, Any]] | None,
+    settle_seconds: float,
+    refresh_seconds: float,
+    timeout_seconds: float,
+    show_local_paths: bool,
+    sleeper: Sleeper,
+    clock: Clock,
+    attempted_health: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Roll a failed replacement back, then prove the exact state left behind."""
+
+    rollback = _rollback(provider, spec, previous_text)
+    if previous is not None and previous.readable:
+        previous_spec = spec_from_service(previous)
+        rollback_health = delayed_health(
+            previous_spec,
+            provider=provider,
+            command_runner=command_runner,
+            identity_probe=identity_probe,
+            settle_seconds=settle_seconds,
+            refresh_seconds=refresh_seconds,
+            timeout_seconds=timeout_seconds,
+            show_local_paths=show_local_paths,
+            expected_digest=previous.digest,
+            expected_arguments=previous.arguments,
+            expected_version=previous_version,
+            sleeper=sleeper,
+            clock=clock,
+        )
+        previous_binding = _health_binding(rollback_health)
+        restored = _reconciliation(
+            "previous", previous_binding, spec=spec, show_local_paths=show_local_paths
+        )
+        version_evidence_required = previous.load_state != JOB_ABSENT
+        if previous_version is None and version_evidence_required:
+            restored.update(
+                state="unresolved",
+                verified=False,
+                version_evidence_captured=False,
+                version_evidence_required=True,
+                recovery=_recovery_instruction(spec, show_local_paths=show_local_paths),
+            )
+        else:
+            restored["version_evidence_captured"] = previous_version is not None
+            restored["version_evidence_required"] = version_evidence_required
+        rollback["ok"] = bool(restored["verified"])
+        rollback["restored"] = bool(restored["verified"])
+        rollback["delayed_health"] = rollback_health
+        rollback["detail"] = (
+            "restored and independently verified the previous definition and serving process"
+            if restored["verified"]
+            else rollback.get("detail") or "the previous binding could not be verified"
+        )
+        status = "apply_failed" if restored["verified"] else "rollback_failed"
+        message = (
+            f"{failure_detail}; the previous service was restored and verified"
+            if restored["verified"]
+            else f"{failure_detail}; rollback also failed to reach a verified state"
+        )
+    elif previous is not None:
+        # `--replace` explicitly allowed the unreadable definition to be
+        # discarded, but it never made those bytes recoverable. Deleting the
+        # failed replacement is cleanup, not restoration of the prior state.
+        rollback["ok"] = False
+        rollback["restored"] = False
+        rollback["detail"] = (
+            "the failed replacement was removed, but the unreadable prior definition had no "
+            "recoverable backup"
+        )
+        restored = {
+            "state": "unresolved",
+            "verified": False,
+            "target": "previous",
+            "recovery": _recovery_instruction(spec, show_local_paths=show_local_paths),
+        }
+        status = "rollback_failed"
+        message = (
+            f"{failure_detail}; the unreadable prior definition was discarded by the explicit "
+            "takeover and could not be restored"
+        )
+    else:
+        load_state, _pid = _runtime_state_or_unknown(provider, spec.label)
+        installed = provider.read_service(spec.label)
+        inventory = port_listener_inventory(spec.port, command_runner)
+        definition_absent = installed is None
+        job_absent = load_state == JOB_ABSENT
+        port_absent = bool(inventory["available"]) and not inventory["listeners"]
+        absent = (
+            definition_absent
+            and job_absent
+            and port_absent
+            and bool(rollback.get("ok"))
+        )
+        restored = {
+            "state": "absent" if absent else "unresolved",
+            "verified": absent,
+            "target": "absent",
+            "job_state": load_state,
+            "definition_absent": definition_absent,
+            "job_absent": job_absent,
+            "listener_inventory_available": bool(inventory["available"]),
+            "listener_count": len(inventory["listeners"]),
+        }
+        if not absent:
+            restored["recovery"] = _recovery_instruction(
+                spec, show_local_paths=show_local_paths
+            )
+            if load_state == JOB_UNKNOWN:
+                restored["detail"] = (
+                    "the launchd job state could not be read, so job absence could not be verified"
+                )
+            elif not inventory["available"]:
+                restored["detail"] = (
+                    "the local listener inventory could not be read, so target-port absence "
+                    "could not be verified"
+                )
+            elif inventory["listeners"]:
+                restored["detail"] = (
+                    f"port {spec.port} still has {len(inventory['listeners'])} listener(s) "
+                    "after rollback"
+                )
+            else:
+                restored["detail"] = rollback.get("detail") or (
+                    "the definition or launchd job was still present after rollback"
+                )
+        rollback["ok"] = absent
+        status = "apply_failed" if absent else "rollback_failed"
+        message = (
+            f"{failure_detail}; the pre-operation absence was restored and verified"
+            if absent
+            else f"{failure_detail}; rollback also failed to reach a verified state"
+        )
+    return _operation_payload(
+        status,
+        message,
+        spec,
+        expected,
+        delayed=attempted_health,
+        show_local_paths=show_local_paths,
+        known_paths=_provider_known_paths(provider, spec.label),
+        rollback=rollback,
+        reconciliation=restored,
+    )
+
+
 def _apply(
     spec: ServiceSpec,
     *,
@@ -1949,6 +2271,7 @@ def _apply(
     # the two cases where empty is the truth: no definition was installed, or
     # `--replace` is knowingly taking over one that could not be read at all,
     # whose contents were never recoverable and whose refusal said so.
+    previous_version = _previous_version_evidence(previous, identity_probe)
 
     # Before anything is booted out: launchd cannot start a job whose log files
     # it cannot open, and a filesystem failure must not be discovered after the
@@ -1974,6 +2297,33 @@ def _apply(
         if not unloaded:
             still_loaded, _pid = _job_load_state(provider, spec.label)
             if still_loaded:
+                if previous.readable:
+                    previous_spec = spec_from_service(previous)
+                    previous_binding = _final_binding_read(
+                        previous_spec,
+                        provider=provider,
+                        command_runner=command_runner,
+                        identity_probe=identity_probe,
+                        show_local_paths=show_local_paths,
+                        expected_digest=previous.digest,
+                        expected_arguments=previous.arguments,
+                        expected_version=previous_version,
+                    )
+                    reconciled = _reconciliation(
+                        "previous",
+                        previous_binding,
+                        spec=spec,
+                        show_local_paths=show_local_paths,
+                    )
+                else:
+                    reconciled = {
+                        "state": "unresolved",
+                        "verified": False,
+                        "target": "previous",
+                        "recovery": _recovery_instruction(
+                            spec, show_local_paths=show_local_paths
+                        ),
+                    }
                 return _operation_payload(
                     "unload_failed",
                     (
@@ -1986,6 +2336,7 @@ def _apply(
                     expected,
                     show_local_paths=show_local_paths,
                     known_paths=_provider_known_paths(provider, spec.label),
+                    reconciliation=reconciled,
                 )
     try:
         provider.write_definition(spec.label, rendered)
@@ -1998,6 +2349,62 @@ def _apply(
         # The previous service was already booted out, so failing here without
         # reloading it would leave a Board that was working stopped.
         restore = _restore_unwritten(provider, spec)
+        if not previous.readable:
+            reconciled = {
+                "state": "unresolved",
+                "verified": False,
+                "target": "previous",
+                "recovery": _recovery_instruction(spec, show_local_paths=show_local_paths),
+            }
+            return _operation_payload(
+                "rollback_failed",
+                f"{detail}; the unreadable previous binding could not be verified after reload",
+                spec,
+                expected,
+                show_local_paths=show_local_paths,
+                known_paths=_provider_known_paths(provider, spec.label),
+                rollback=restore,
+                reconciliation=reconciled,
+            )
+        previous_spec = spec_from_service(previous)
+        restore_health = delayed_health(
+            previous_spec,
+            provider=provider,
+            command_runner=command_runner,
+            identity_probe=identity_probe,
+            settle_seconds=settle_seconds,
+            refresh_seconds=refresh_seconds,
+            timeout_seconds=timeout_seconds,
+            show_local_paths=show_local_paths,
+            expected_digest=previous.digest,
+            expected_arguments=previous.arguments,
+            expected_version=previous_version,
+            sleeper=sleeper,
+            clock=clock,
+        )
+        previous_binding = _health_binding(restore_health)
+        reconciled = _reconciliation(
+            "previous", previous_binding, spec=spec, show_local_paths=show_local_paths
+        )
+        version_evidence_required = previous.load_state != JOB_ABSENT
+        if previous_version is None and version_evidence_required:
+            reconciled.update(
+                state="unresolved",
+                verified=False,
+                version_evidence_captured=False,
+                version_evidence_required=True,
+                recovery=_recovery_instruction(spec, show_local_paths=show_local_paths),
+            )
+        else:
+            reconciled["version_evidence_captured"] = previous_version is not None
+            reconciled["version_evidence_required"] = version_evidence_required
+        restore["ok"] = bool(reconciled["verified"])
+        restore["restored"] = bool(reconciled["verified"])
+        restore["delayed_health"] = restore_health
+        if reconciled["verified"]:
+            restore["detail"] = (
+                "reloaded and independently verified the untouched previous definition"
+            )
         return _operation_payload(
             "apply_failed" if restore["ok"] else "rollback_failed",
             detail if restore["ok"] else f"{detail}; rollback also failed: {restore['detail']}",
@@ -2006,20 +2413,66 @@ def _apply(
             show_local_paths=show_local_paths,
             known_paths=_provider_known_paths(provider, spec.label),
             rollback=restore,
+            reconciliation=reconciled,
         )
     ok, detail = provider.bootstrap(spec.label)
     if not ok:
-        rollback = _rollback(provider, spec, previous_text)
-        status = "rollback_failed" if not rollback["ok"] else "apply_failed"
-        message = detail if rollback["ok"] else f"{detail}; rollback also failed: {rollback['detail']}"
-        return _operation_payload(
-            status,
-            message,
+        # `launchctl bootstrap` can register and start the job, then return a
+        # failure. The provider result is therefore not the outcome. If the
+        # replacement clears the complete serving gate, keep it instead of
+        # beginning a rollback that can create a definition/process split.
+        load_state, _pid = _runtime_state_or_unknown(provider, spec.label)
+        attempted_health: Mapping[str, Any] | None = None
+        if load_state == JOB_LOADED:
+            applied_health = delayed_health(
+                spec,
+                provider=provider,
+                command_runner=command_runner,
+                identity_probe=identity_probe,
+                settle_seconds=settle_seconds,
+                refresh_seconds=refresh_seconds,
+                timeout_seconds=timeout_seconds,
+                show_local_paths=show_local_paths,
+                sleeper=sleeper,
+                clock=clock,
+            )
+            attempted_health = applied_health
+            applied_binding = _health_binding(applied_health)
+            applied = _reconciliation(
+                "new", applied_binding, spec=spec, show_local_paths=show_local_paths
+            )
+            if applied_health["state"] == "pass" and applied["verified"]:
+                return _operation_payload(
+                    succeeded_status,
+                    (
+                        f"{succeeded_message}; launchd reported bootstrap failure, but the "
+                        "replacement definition and serving process were independently verified"
+                    ),
+                    spec,
+                    expected,
+                    delayed=applied_health,
+                    show_local_paths=show_local_paths,
+                    known_paths=_provider_known_paths(provider, spec.label),
+                    reconciliation=applied,
+                    provider_detail=detail,
+                )
+        return _rollback_and_reconcile(
             spec,
-            expected,
+            provider=provider,
+            previous=previous,
+            previous_text=previous_text,
+            previous_version=previous_version,
+            expected=expected,
+            failure_detail=detail,
+            command_runner=command_runner,
+            identity_probe=identity_probe,
+            settle_seconds=settle_seconds,
+            refresh_seconds=refresh_seconds,
+            timeout_seconds=timeout_seconds,
             show_local_paths=show_local_paths,
-            known_paths=_provider_known_paths(provider, spec.label),
-            rollback=rollback,
+            sleeper=sleeper,
+            clock=clock,
+            attempted_health=attempted_health,
         )
 
     health = delayed_health(
@@ -2035,13 +2488,47 @@ def _apply(
         clock=clock,
     )
     if health["state"] != "pass":
-        return _operation_payload(
-            "delayed_health_failed",
-            "the service applied but its binding did not validate within the delayed health window",
+        return _rollback_and_reconcile(
             spec,
-            expected,
-            delayed=health,
+            provider=provider,
+            previous=previous,
+            previous_text=previous_text,
+            previous_version=previous_version,
+            expected=expected,
+            failure_detail=(
+                "the replacement loaded but its binding did not validate within the delayed "
+                "health window"
+            ),
+            command_runner=command_runner,
+            identity_probe=identity_probe,
+            settle_seconds=settle_seconds,
+            refresh_seconds=refresh_seconds,
+            timeout_seconds=timeout_seconds,
             show_local_paths=show_local_paths,
+            sleeper=sleeper,
+            clock=clock,
+            attempted_health=health,
+        )
+    final_binding = _health_binding(health)
+    reconciled = _reconciliation("new", final_binding, spec=spec, show_local_paths=show_local_paths)
+    if not reconciled["verified"]:
+        return _rollback_and_reconcile(
+            spec,
+            provider=provider,
+            previous=previous,
+            previous_text=previous_text,
+            previous_version=previous_version,
+            expected=expected,
+            failure_detail="the replacement health window did not retain a verified binding",
+            command_runner=command_runner,
+            identity_probe=identity_probe,
+            settle_seconds=settle_seconds,
+            refresh_seconds=refresh_seconds,
+            timeout_seconds=timeout_seconds,
+            show_local_paths=show_local_paths,
+            sleeper=sleeper,
+            clock=clock,
+            attempted_health=health,
         )
     return _operation_payload(
         succeeded_status,
@@ -2050,6 +2537,7 @@ def _apply(
         expected,
         delayed=health,
         show_local_paths=show_local_paths,
+        reconciliation=reconciled,
     )
 
 
@@ -2259,20 +2747,19 @@ def restart_service(
         # after a logout, or a manual `launchctl bootout` -- is recovered by
         # bootstrapping it, which is what the runbook's restart has to do.
         if existing.loaded:
+            pre_action_pid = existing.pid
             ok, detail = provider.kickstart(spec.label)
+            action = "kickstart"
             restarted_message = "restarted the managed Board service in place and validated its binding"
         else:
+            pre_action_pid = None
             ok, detail = provider.bootstrap(spec.label)
+            action = "bootstrap"
             restarted_message = "loaded the installed definition, which was not running, and validated its binding"
-        if not ok:
-            return _operation_payload(
-                "apply_failed",
-                detail,
-                spec,
-                expected,
-                show_local_paths=show_local_paths,
-                known_paths=_provider_known_paths(provider, spec.label),
-            )
+        # Both launchd operations can complete before their command reports a
+        # timeout or permission-boundary failure. The provider return is not a
+        # terminal host state: re-read the complete binding before deciding
+        # whether this unchanged definition is healthy or unresolved.
         health = delayed_health(
             spec,
             provider=provider,
@@ -2285,13 +2772,84 @@ def restart_service(
             sleeper=sleeper,
             clock=clock,
         )
-        status = "restarted" if health["state"] == "pass" else "delayed_health_failed"
-        message = (
-            restarted_message
-            if health["state"] == "pass"
-            else "the service restarted but its binding did not validate within the delayed health window"
+        final_binding = _health_binding(health)
+        reconciled = _reconciliation(
+            "new", final_binding, spec=spec, show_local_paths=show_local_paths
         )
-        return _operation_payload(status, message, spec, expected, delayed=health, show_local_paths=show_local_paths)
+        final_pid = final_binding.get("pid")
+        pid_transition_required = action == "kickstart" and not ok
+        pid_transition_verified = bool(
+            pre_action_pid and final_pid and final_pid != pre_action_pid
+        )
+        binding_healthy = health["state"] == "pass" and bool(reconciled["verified"])
+        reconciled["delayed_health_verified"] = health["state"] == "pass"
+        reconciled["command_succeeded"] = ok
+        reconciled["pre_action_pid"] = pre_action_pid
+        reconciled["final_pid"] = final_pid
+        reconciled["pid_transition_required"] = pid_transition_required
+        reconciled["pid_transition_verified"] = pid_transition_verified
+        if health["state"] != "pass" and reconciled["verified"]:
+            reconciled.update(
+                state="unresolved",
+                verified=False,
+                detail="the binding did not remain valid throughout the delayed health window",
+                recovery=_recovery_instruction(spec, show_local_paths=show_local_paths),
+            )
+        if pid_transition_required and not pid_transition_verified:
+            reconciled.update(
+                state="unresolved",
+                verified=False,
+                detail=(
+                    "kickstart reported failure and the final supervised pid did not prove that "
+                    "the process restarted"
+                ),
+                recovery=_recovery_instruction(spec, show_local_paths=show_local_paths),
+            )
+        restart_verified = binding_healthy and (
+            not pid_transition_required or pid_transition_verified
+        )
+        if restart_verified:
+            status = "restarted"
+            message = restarted_message
+            if not ok:
+                message += (
+                    f"; launchd reported {action} failure, but the installed definition and "
+                    "serving process were independently verified"
+                )
+        elif not ok:
+            status = "apply_failed"
+            if binding_healthy and pid_transition_required and not pid_transition_verified:
+                message = (
+                    (detail or "launchd kickstart failed")
+                    + "; the service is healthy, but its supervised pid did not change, so the "
+                    "requested restart could not be verified"
+                )
+            else:
+                message = (
+                    (detail or f"launchd {action} failed")
+                    + "; the installed binding could not be independently verified"
+                )
+        elif health["state"] != "pass":
+            status = "delayed_health_failed"
+            message = (
+                "the service restarted but its binding did not validate within the delayed "
+                "health window"
+            )
+        else:
+            status = "delayed_health_failed"
+            message = "the delayed health window did not retain a verified final binding"
+        provider_result = {"provider_detail": detail} if not ok else {}
+        return _operation_payload(
+            status,
+            message,
+            spec,
+            expected,
+            delayed=health,
+            show_local_paths=show_local_paths,
+            known_paths=_provider_known_paths(provider, spec.label),
+            reconciliation=reconciled,
+            **provider_result,
+        )
     return _apply(
         spec,
         provider=provider,
@@ -2360,12 +2918,8 @@ def _job_load_state(provider: Any, label: str) -> tuple[bool, int | None]:
     characterises as a missing job, releases the definition.
     """
 
-    runtime_state = getattr(provider, "runtime_state", None)
-    if runtime_state is not None:
-        try:
-            state, pid = runtime_state(label)
-        except (OSError, subprocess.SubprocessError):
-            return True, None
+    if getattr(provider, "runtime_state", None) is not None:
+        state, pid = _runtime_state_or_unknown(provider, label)
         return state != JOB_ABSENT, pid
     runtime = getattr(provider, "runtime", None)
     if runtime is None:
@@ -2735,6 +3289,24 @@ def render_operation_text(payload: Mapping[str, Any]) -> str:
     rollback = payload.get("rollback") if isinstance(payload.get("rollback"), Mapping) else {}
     if rollback:
         lines.append(f"Rollback: {'ok' if rollback.get('ok') else 'failed'} - {rollback.get('detail')}")
+    reconciliation = (
+        payload.get("reconciliation")
+        if isinstance(payload.get("reconciliation"), Mapping)
+        else {}
+    )
+    if reconciliation:
+        lines.append(
+            f"Reconciliation: {reconciliation.get('state') or 'unresolved'} "
+            f"({'verified' if reconciliation.get('verified') else 'not verified'})"
+        )
+        recovery = (
+            reconciliation.get("recovery")
+            if isinstance(reconciliation.get("recovery"), Mapping)
+            else {}
+        )
+        if recovery:
+            lines.append(f"Recovery cwd: {recovery.get('cwd')}")
+            lines.append(f"Recovery command: {recovery.get('command')}")
     return "\n".join(line for line in lines if line) + "\n"
 
 
