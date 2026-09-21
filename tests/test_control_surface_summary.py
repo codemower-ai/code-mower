@@ -5,9 +5,7 @@ import importlib.resources
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest import mock
-
-import pytest
+from unittest import TestCase, mock
 
 from code_mower.cloud_client.errors import CloudBundleError
 from code_mower.cloud_client.events import validate_cloud_event
@@ -40,240 +38,241 @@ def _fixture(name: str) -> dict:
     return json.loads((RESOURCE_ROOT / f"{PREFIX}.{name}.json").read_text())
 
 
-def test_all_canonical_accepted_events_satisfy_specialized_and_cloud_boundaries() -> None:
-    rows = _fixture("accepted")["events"]
+class ControlSurfaceSummaryTests(TestCase):
+    def test_all_canonical_accepted_events_satisfy_specialized_and_cloud_boundaries(self) -> None:
+        rows = _fixture("accepted")["events"]
 
-    assert len(rows) == 10
-    assert {row["event"]["dimensions"]["state"] for row in rows} == {
-        "archived",
-        "complete",
-        "failed",
-        "pending",
-        "running",
-        "suspended",
-        "terminated",
-        "uncertain",
-        "waiting_for_approval",
-        "waiting_for_user",
-    }
-    for row in rows:
-        validate_control_surface_summary(row["event"])
-        assert validate_cloud_event(row["event"]) == row["event"]
-
-
-def test_all_canonical_rejected_events_fail_closed() -> None:
-    rows = _fixture("rejected")["events"]
-
-    assert len(rows) == 16
-    for row in rows:
-        with pytest.raises(CloudBundleError):
-            validate_control_surface_summary(row["event"])
-        with pytest.raises(CloudBundleError):
-            validate_cloud_event(row["event"])
-
-
-def test_fixture_manifest_binds_exact_source_and_installed_resource_bytes() -> None:
-    manifest_path = RESOURCE_ROOT / f"{PREFIX}.fixture-manifest.json"
-    manifest = json.loads(manifest_path.read_text())
-
-    assert manifest["contract_schema"] == SUMMARY_SCHEMA
-    assert manifest["digest_scope"] == "exact_file_bytes"
-    assert [row["path"] for row in manifest["files"]] == sorted(
-        row["path"] for row in manifest["files"]
-    )
-    package_root = importlib.resources.files("code_mower")
-    for row in manifest["files"]:
-        source = (RESOURCE_ROOT / row["path"]).read_bytes()
-        installed = package_root.joinpath(row["path"]).read_bytes()
-        assert installed == source
-        assert len(source) == row["bytes"]
-        assert hashlib.sha256(source).hexdigest() == row["sha256"]
-
-
-def test_contract_resources_are_part_of_materialized_packages() -> None:
-    targets = {target for _source, target, _kind in PACKAGE_FILES}
-    required = {
-        "src/code_mower/control_surface_summary.py",
-        *{
-            f"src/code_mower/{PREFIX}.{suffix}.json"
-            for suffix in (
-                "schema",
-                "accepted",
-                "rejected",
-                "expectations",
-                "fixture-manifest",
-            )
-        },
-    }
-
-    assert required <= targets
-
-
-def test_schema_and_expectations_pin_capability_and_hosted_data_controls() -> None:
-    schema = _fixture("schema")
-    expectations = _fixture("expectations")
-
-    assert schema["$id"] == SUMMARY_SCHEMA
-    assert schema["properties"]["event_type"]["const"] == EVENT_TYPE
-    assert (
-        schema["$defs"]["dimensions"]["properties"]["capability_version"]["const"]
-        == CAPABILITY_VERSION
-    )
-    names = {row["name"] for row in expectations["expectations"]}
-    assert {
-        "capability_absent",
-        "capability_mismatch",
-        "rollback",
-        "tenant_isolation",
-        "export",
-        "deletion",
-        "retention",
-        "token_revocation",
-        "aggregate_reconciliation",
-    } <= names
-
-
-def test_capability_gate_requires_exact_installed_contract_identity() -> None:
-    capability = {
-        "schema": CAPABILITY_SCHEMA,
-        "summary_schema": SUMMARY_SCHEMA,
-        "capability_version": CAPABILITY_VERSION,
-        "fixture_manifest_sha256": fixture_manifest_digest(),
-        "accepting": True,
-    }
-
-    assert capability_accepts_summary(capability)
-    assert capability_from_health(
-        {"capabilities": {EVENT_TYPE: capability}}
-    ) == capability
-    for changed in (
-        {**capability, "accepting": False},
-        {**capability, "capability_version": 2},
-        {**capability, "fixture_manifest_sha256": "0" * 64},
-        {**capability, "unknown": "field"},
-        None,
-    ):
-        assert not capability_accepts_summary(changed)
-        assert capability_from_health({"capabilities": {EVENT_TYPE: changed}}) is None
-
-
-def test_summary_builder_is_retry_stable_and_capability_gated() -> None:
-    lifecycle = {
-        "schema": "code_mower.remote_session.v1",
-        "state": "complete",
-        "reason": "none",
-        "next_action": "none",
-        "counts": {"dispatch": 1, "message": 1, "cancel": 0, "collect": 1},
-    }
-    values = {
-        "logical_session": "private-slack-session-reference",
-        "repo_slug": "example/project",
-        "provider": "devin",
-        "lifecycle": lifecycle,
-        "observed_at": datetime(2026, 9, 21, 7, 0, tzinfo=UTC),
-        "pr_number": 921,
-        "head_sha": "a" * 40,
-        "pr_state": "open",
-        "elapsed_seconds": 60.0,
-        "usage_acu": 0.25,
-    }
-    first = build_control_surface_summary(**values)
-    second = build_control_surface_summary(**values)
-
-    assert first == second
-    assert first["dimensions"]["session"] == opaque_session(values["logical_session"])
-    assert values["logical_session"] not in json.dumps(first)
-    assert gated_control_surface_summary(None, **values) is None
-    capability = {
-        "schema": CAPABILITY_SCHEMA,
-        "summary_schema": SUMMARY_SCHEMA,
-        "capability_version": CAPABILITY_VERSION,
-        "fixture_manifest_sha256": fixture_manifest_digest(),
-        "accepting": True,
-    }
-    assert gated_control_surface_summary(capability, **values) == first
-
-    later = {**values, "observed_at": datetime(2026, 9, 21, 7, 1, tzinfo=UTC)}
-    assert gated_control_surface_transition(capability, first, **later) is None
-    changed = {
-        **later,
-        "lifecycle": {
-            **lifecycle,
-            "counts": {**lifecycle["counts"], "message": 2},
-        },
-    }
-    assert gated_control_surface_transition(capability, first, **changed) is not None
-    assert gated_control_surface_transition(capability, {"invalid": True}, **later) is not None
-
-
-def test_health_probe_exposes_only_the_exact_summary_capability() -> None:
-    capability = {
-        "schema": CAPABILITY_SCHEMA,
-        "summary_schema": SUMMARY_SCHEMA,
-        "capability_version": CAPABILITY_VERSION,
-        "fixture_manifest_sha256": fixture_manifest_digest(),
-        "accepting": True,
-    }
-
-    class FakeResponse:
-        def __init__(self, body: dict[str, object]) -> None:
-            self.body = body
-
-        def __enter__(self) -> "FakeResponse":
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return json.dumps(self.body).encode()
-
-        def getcode(self) -> int:
-            return 200
-
-    accepted = {"capabilities": {EVENT_TYPE: capability}}
-    with mock.patch(
-        "urllib.request.urlopen", return_value=FakeResponse(accepted)
-    ):
-        check = probe_cloud_service("https://codemower.com/api/ingest", timeout=1)
-    assert check["detail"][EVENT_TYPE] == capability
-
-    mismatched = {
-        "capabilities": {
-            EVENT_TYPE: {**capability, "fixture_manifest_sha256": "0" * 64}
+        assert len(rows) == 10
+        assert {row["event"]["dimensions"]["state"] for row in rows} == {
+            "archived",
+            "complete",
+            "failed",
+            "pending",
+            "running",
+            "suspended",
+            "terminated",
+            "uncertain",
+            "waiting_for_approval",
+            "waiting_for_user",
         }
-    }
-    with mock.patch(
-        "urllib.request.urlopen", return_value=FakeResponse(mismatched)
-    ):
-        check = probe_cloud_service("https://codemower.com/api/ingest", timeout=1)
-    assert EVENT_TYPE not in check["detail"]
+        for row in rows:
+            validate_control_surface_summary(row["event"])
+            assert validate_cloud_event(row["event"]) == row["event"]
 
 
-def test_slack_lifecycle_uses_existing_local_board_adapter() -> None:
-    binding = WorkBinding(
-        session_id="a" * 32,
-        work_id="work1",
-        repository="example/project",
-        worktree_id="sha256:" + "b" * 64,
-    )
-    lifecycle = {
-        "schema": "code_mower.remote_session.v1",
-        "state": "waiting_for_user",
-        "reason": "user_input_required",
-        "next_action": "none",
-        "counts": {"dispatch": 1, "message": 0, "cancel": 0, "collect": 0},
-    }
+    def test_all_canonical_rejected_events_fail_closed(self) -> None:
+        rows = _fixture("rejected")["events"]
 
-    run = slack_board_run(
-        logical_session="private-slack-session-reference",
-        binding=binding,
-        provider="codex",
-        observed_at=datetime(2026, 9, 21, 7, 0, tzinfo=UTC),
-        lifecycle=lifecycle,
-    )
+        assert len(rows) == 16
+        for row in rows:
+            with self.assertRaises(CloudBundleError):
+                validate_control_surface_summary(row["event"])
+            with self.assertRaises(CloudBundleError):
+                validate_cloud_event(row["event"])
 
-    assert run.binding == binding
-    assert run.phase == "waiting_for_user"
-    assert run.source_kind == "remote_session"
-    assert run.lifecycle == lifecycle
+
+    def test_fixture_manifest_binds_exact_source_and_installed_resource_bytes(self) -> None:
+        manifest_path = RESOURCE_ROOT / f"{PREFIX}.fixture-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+
+        assert manifest["contract_schema"] == SUMMARY_SCHEMA
+        assert manifest["digest_scope"] == "exact_file_bytes"
+        assert [row["path"] for row in manifest["files"]] == sorted(
+            row["path"] for row in manifest["files"]
+        )
+        package_root = importlib.resources.files("code_mower")
+        for row in manifest["files"]:
+            source = (RESOURCE_ROOT / row["path"]).read_bytes()
+            installed = package_root.joinpath(row["path"]).read_bytes()
+            assert installed == source
+            assert len(source) == row["bytes"]
+            assert hashlib.sha256(source).hexdigest() == row["sha256"]
+
+
+    def test_contract_resources_are_part_of_materialized_packages(self) -> None:
+        targets = {target for _source, target, _kind in PACKAGE_FILES}
+        required = {
+            "src/code_mower/control_surface_summary.py",
+            *{
+                f"src/code_mower/{PREFIX}.{suffix}.json"
+                for suffix in (
+                    "schema",
+                    "accepted",
+                    "rejected",
+                    "expectations",
+                    "fixture-manifest",
+                )
+            },
+        }
+
+        assert required <= targets
+
+
+    def test_schema_and_expectations_pin_capability_and_hosted_data_controls(self) -> None:
+        schema = _fixture("schema")
+        expectations = _fixture("expectations")
+
+        assert schema["$id"] == SUMMARY_SCHEMA
+        assert schema["properties"]["event_type"]["const"] == EVENT_TYPE
+        assert (
+            schema["$defs"]["dimensions"]["properties"]["capability_version"]["const"]
+            == CAPABILITY_VERSION
+        )
+        names = {row["name"] for row in expectations["expectations"]}
+        assert {
+            "capability_absent",
+            "capability_mismatch",
+            "rollback",
+            "tenant_isolation",
+            "export",
+            "deletion",
+            "retention",
+            "token_revocation",
+            "aggregate_reconciliation",
+        } <= names
+
+
+    def test_capability_gate_requires_exact_installed_contract_identity(self) -> None:
+        capability = {
+            "schema": CAPABILITY_SCHEMA,
+            "summary_schema": SUMMARY_SCHEMA,
+            "capability_version": CAPABILITY_VERSION,
+            "fixture_manifest_sha256": fixture_manifest_digest(),
+            "accepting": True,
+        }
+
+        assert capability_accepts_summary(capability)
+        assert capability_from_health(
+            {"capabilities": {EVENT_TYPE: capability}}
+        ) == capability
+        for changed in (
+            {**capability, "accepting": False},
+            {**capability, "capability_version": 2},
+            {**capability, "fixture_manifest_sha256": "0" * 64},
+            {**capability, "unknown": "field"},
+            None,
+        ):
+            assert not capability_accepts_summary(changed)
+            assert capability_from_health({"capabilities": {EVENT_TYPE: changed}}) is None
+
+
+    def test_summary_builder_is_retry_stable_and_capability_gated(self) -> None:
+        lifecycle = {
+            "schema": "code_mower.remote_session.v1",
+            "state": "complete",
+            "reason": "none",
+            "next_action": "none",
+            "counts": {"dispatch": 1, "message": 1, "cancel": 0, "collect": 1},
+        }
+        values = {
+            "logical_session": "private-slack-session-reference",
+            "repo_slug": "example/project",
+            "provider": "devin",
+            "lifecycle": lifecycle,
+            "observed_at": datetime(2026, 9, 21, 7, 0, tzinfo=UTC),
+            "pr_number": 921,
+            "head_sha": "a" * 40,
+            "pr_state": "open",
+            "elapsed_seconds": 60.0,
+            "usage_acu": 0.25,
+        }
+        first = build_control_surface_summary(**values)
+        second = build_control_surface_summary(**values)
+
+        assert first == second
+        assert first["dimensions"]["session"] == opaque_session(values["logical_session"])
+        assert values["logical_session"] not in json.dumps(first)
+        assert gated_control_surface_summary(None, **values) is None
+        capability = {
+            "schema": CAPABILITY_SCHEMA,
+            "summary_schema": SUMMARY_SCHEMA,
+            "capability_version": CAPABILITY_VERSION,
+            "fixture_manifest_sha256": fixture_manifest_digest(),
+            "accepting": True,
+        }
+        assert gated_control_surface_summary(capability, **values) == first
+
+        later = {**values, "observed_at": datetime(2026, 9, 21, 7, 1, tzinfo=UTC)}
+        assert gated_control_surface_transition(capability, first, **later) is None
+        changed = {
+            **later,
+            "lifecycle": {
+                **lifecycle,
+                "counts": {**lifecycle["counts"], "message": 2},
+            },
+        }
+        assert gated_control_surface_transition(capability, first, **changed) is not None
+        assert gated_control_surface_transition(capability, {"invalid": True}, **later) is not None
+
+
+    def test_health_probe_exposes_only_the_exact_summary_capability(self) -> None:
+        capability = {
+            "schema": CAPABILITY_SCHEMA,
+            "summary_schema": SUMMARY_SCHEMA,
+            "capability_version": CAPABILITY_VERSION,
+            "fixture_manifest_sha256": fixture_manifest_digest(),
+            "accepting": True,
+        }
+
+        class FakeResponse:
+            def __init__(self, body: dict[str, object]) -> None:
+                self.body = body
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(self.body).encode()
+
+            def getcode(self) -> int:
+                return 200
+
+        accepted = {"capabilities": {EVENT_TYPE: capability}}
+        with mock.patch(
+            "urllib.request.urlopen", return_value=FakeResponse(accepted)
+        ):
+            check = probe_cloud_service("https://codemower.com/api/ingest", timeout=1)
+        assert check["detail"][EVENT_TYPE] == capability
+
+        mismatched = {
+            "capabilities": {
+                EVENT_TYPE: {**capability, "fixture_manifest_sha256": "0" * 64}
+            }
+        }
+        with mock.patch(
+            "urllib.request.urlopen", return_value=FakeResponse(mismatched)
+        ):
+            check = probe_cloud_service("https://codemower.com/api/ingest", timeout=1)
+        assert EVENT_TYPE not in check["detail"]
+
+
+    def test_slack_lifecycle_uses_existing_local_board_adapter(self) -> None:
+        binding = WorkBinding(
+            session_id="a" * 32,
+            work_id="work1",
+            repository="example/project",
+            worktree_id="sha256:" + "b" * 64,
+        )
+        lifecycle = {
+            "schema": "code_mower.remote_session.v1",
+            "state": "waiting_for_user",
+            "reason": "user_input_required",
+            "next_action": "none",
+            "counts": {"dispatch": 1, "message": 0, "cancel": 0, "collect": 0},
+        }
+
+        run = slack_board_run(
+            logical_session="private-slack-session-reference",
+            binding=binding,
+            provider="codex",
+            observed_at=datetime(2026, 9, 21, 7, 0, tzinfo=UTC),
+            lifecycle=lifecycle,
+        )
+
+        assert run.binding == binding
+        assert run.phase == "waiting_for_user"
+        assert run.source_kind == "remote_session"
+        assert run.lifecycle == lifecycle
