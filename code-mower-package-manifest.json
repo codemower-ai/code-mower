@@ -1214,6 +1214,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/doctor_checks/share_safe.py",
+      "target": "src/code_mower/doctor_checks/share_safe.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor_checks/supervised_pilot.py",
       "target": "src/code_mower/doctor_checks/supervised_pilot.py"
     },

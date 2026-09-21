@@ -13,13 +13,53 @@ from .models import DoctorReport
 LOCAL_PATH_REDACTION = "[local path hidden]"
 
 # Match local filesystem spellings without treating URLs or GitHub's
-# ``owner/repo`` form as paths. The POSIX expression mirrors the conservative
-# Board diagnostic boundary. Windows drive and UNC paths are included because
-# doctor reports can be generated on any supported development host.
-_FILE_URI = re.compile(r"file:///(?:[^\s'\"]+)")
-_WINDOWS_PATH = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z]:[\\/]|\\\\)[^\s'\"]+")
-_POSIX_PATH = re.compile(r"(?<![A-Za-z0-9_:/])(?:~|/)[A-Za-z0-9._~@+/-][^\s'\"]*")
+# ``owner/repo`` form as paths. File URIs may name the local host or a network
+# authority. Windows paths include drive-rooted, rooted, UNC, and relative
+# backslash spellings. Relative POSIX paths require a stronger path signal than
+# one bare slash: a leading dot-directory, two separators, or a filename
+# extension. That keeps ordinary repository slugs readable.
+_FILE_URI = re.compile(r"(?<![\w])file:(?://)?[^\s'\"]+", re.IGNORECASE)
+_WINDOWS_PATH = re.compile(
+    r"(?<![\w\\/])(?:[A-Za-z]:(?:[\\/]|[^\s'\"\\/]+[\\/])|\\\\|\\)[^\s'\"]+"
+)
+_POSIX_PATH = re.compile(r"(?<![\w:/])(?:~[\w.-]*[\\/]|/)[^\s'\"]+")
+_RELATIVE_PATH = re.compile(
+    r"(?<![\w.:/\\])(?:"
+    r"\.\.?[\\/][^\s'\"]+|"
+    r"\.[^\s'\"/\\]+[\\/][^\s'\"]+|"
+    r"(?:[^\s'\":/\\]+[\\/]){2,}[^\s'\"]+|"
+    r"[^\s'\":/\\]+[\\/][^\s'\"/\\]*\.[^\s'\"/\\]+"
+    r")"
+)
+_NONLOCAL_URI = re.compile(
+    r"(?i)(?<![\w])(?!file://)[a-z][a-z0-9+.-]*://[^\s'\"]+"
+)
 _PATH_TERMINATORS = (":", ";", ",", ")", "]", ">")
+_PATH_VALUE_KEYS = {
+    "cwd",
+    "directory",
+    "directories",
+    "executable",
+    "file",
+    "files",
+    "path",
+    "paths",
+    "template",
+    "templates",
+}
+_PATH_VALUE_KEY_SUFFIXES = (
+    "_dir",
+    "_dirs",
+    "_directory",
+    "_directories",
+    "_executable",
+    "_file",
+    "_files",
+    "_path",
+    "_paths",
+    "_template",
+    "_templates",
+)
 
 
 def _redact_matches(line: str, pattern: re.Pattern[str]) -> str:
@@ -44,11 +84,44 @@ def redact_local_path_text(value: str) -> str:
 
     redacted: list[str] = []
     for line in value.split("\n"):
-        current = _redact_matches(line, _FILE_URI)
-        current = _redact_matches(current, _WINDOWS_PATH)
-        current = _redact_matches(current, _POSIX_PATH)
-        redacted.append(current)
+        pieces: list[str] = []
+        position = 0
+        # A URL may itself contain path-looking query values or enough slash
+        # components to resemble a relative path. Keep each non-file URI whole
+        # and apply the filesystem recognizers only to the text around it.
+        for uri in _NONLOCAL_URI.finditer(line):
+            current = line[position : uri.start()]
+            for pattern in (_FILE_URI, _WINDOWS_PATH, _POSIX_PATH, _RELATIVE_PATH):
+                current = _redact_matches(current, pattern)
+            pieces.extend((current, uri.group(0)))
+            position = uri.end()
+        current = line[position:]
+        for pattern in (_FILE_URI, _WINDOWS_PATH, _POSIX_PATH, _RELATIVE_PATH):
+            current = _redact_matches(current, pattern)
+        pieces.append(current)
+        redacted.append("".join(pieces))
     return "\n".join(redacted)
+
+
+def _is_path_value_key(key: object) -> bool:
+    if not isinstance(key, str):
+        return False
+    normalized = key.lower().replace("-", "_")
+    return normalized in _PATH_VALUE_KEYS or normalized.endswith(_PATH_VALUE_KEY_SUFFIXES)
+
+
+def _redact_known_path_value(value: Any) -> Any:
+    """Redact values whose field name supplies the otherwise ambiguous context."""
+
+    if isinstance(value, str):
+        return LOCAL_PATH_REDACTION if value else value
+    if isinstance(value, Mapping):
+        return redact_local_paths(value)
+    if isinstance(value, tuple):
+        return tuple(_redact_known_path_value(item) for item in value)
+    if isinstance(value, list):
+        return [_redact_known_path_value(item) for item in value]
+    return value
 
 
 def redact_local_paths(value: Any) -> Any:
@@ -58,8 +131,10 @@ def redact_local_paths(value: Any) -> Any:
         return redact_local_path_text(value)
     if isinstance(value, Mapping):
         return {
-            (redact_local_path_text(key) if isinstance(key, str) else key): redact_local_paths(
-                item
+            (redact_local_path_text(key) if isinstance(key, str) else key): (
+                _redact_known_path_value(item)
+                if _is_path_value_key(key)
+                else redact_local_paths(item)
             )
             for key, item in value.items()
         }
@@ -92,8 +167,12 @@ def share_safe_doctor_report(report: DoctorReport) -> DoctorReport:
     )
     return replace(
         report,
-        config_path=redact_local_path_text(report.config_path),
-        provider_templates_path=redact_local_path_text(report.provider_templates_path),
+        config_path=LOCAL_PATH_REDACTION if report.config_path else report.config_path,
+        provider_templates_path=(
+            LOCAL_PATH_REDACTION
+            if report.provider_templates_path
+            else report.provider_templates_path
+        ),
         checks=checks,
     )
 

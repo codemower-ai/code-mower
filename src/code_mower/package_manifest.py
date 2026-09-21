@@ -302,6 +302,11 @@ PACKAGE_FILES = (
     ),
     ("src/code_mower/doctor_checks/devin.py", "src/code_mower/doctor_checks/devin.py", "core"),
     ("src/code_mower/doctor_checks/privacy.py", "src/code_mower/doctor_checks/privacy.py", "core"),
+    (
+        "src/code_mower/doctor_checks/share_safe.py",
+        "src/code_mower/doctor_checks/share_safe.py",
+        "core",
+    ),
     ("src/code_mower/doctor_checks/providers.py", "src/code_mower/doctor_checks/providers.py", "core"),
     ("src/code_mower/providers/__init__.py", "src/code_mower/providers/__init__.py", "core"),
     ("src/code_mower/providers/local_cli.py", "src/code_mower/providers/local_cli.py", "core"),

@@ -69,6 +69,7 @@ class DoctorShareSafeTests(TestCase):
         report = _report()
         payload = doctor_report_payload(report, include_local_paths=True)
 
+        self.assertEqual(payload, report.as_dict())
         self.assertNotIn("local_paths", payload)
         self.assertEqual(payload["config_path"], report.config_path)
         self.assertEqual(
@@ -86,6 +87,86 @@ class DoctorShareSafeTests(TestCase):
         self.assertIn("example-org/example-repo", text)
         self.assertIn(LOCAL_PATH_REDACTION, text)
         self.assertNotIn("example-person", text)
+
+    def test_text_redaction_covers_authority_root_and_relative_path_matrix(self) -> None:
+        private_paths = (
+            "file://server/share/private/workflow.yml",
+            "file://localhost/" + "Users/alice/private.yml",
+            "file:///" + "Users/alice/private.yml",
+            "FILE:/" + "Users/alice/private.yml",
+            "confidential/config.yml",
+            "./confidential/config.yml",
+            "../confidential/config.yml",
+            ".github/workflows/private-audit.yml",
+            "private/workflows/audit",
+            r"C:\Users\alice\private.yml",
+            r"C:Users\alice\private.yml",
+            r"\\server\share\private\workflow.yml",
+            r"\Users\alice\private.yml",
+            r"confidential\config.yml",
+            "/秘密/config.yml",
+            "~/confidential/config.yml",
+            "~alice/confidential/config.yml",
+        )
+        for private_path in private_paths:
+            with self.subTest(path=private_path):
+                redacted = redact_local_path_text(f"failed at {private_path}: denied")
+                self.assertIn(LOCAL_PATH_REDACTION, redacted)
+                self.assertNotIn(private_path, redacted)
+
+    def test_text_redaction_preserves_nonlocal_identifiers_and_urls(self) -> None:
+        public_values = (
+            "example-org/example-repo",
+            "OWNER/REPO",
+            "https://example.test/a/b",
+            "http://example.test/a/b?next=/c/d",
+            "ssh://git@example.test/owner/repo",
+            "git@example.test:owner/repo",
+        )
+        for public_value in public_values:
+            with self.subTest(value=public_value):
+                self.assertEqual(redact_local_path_text(public_value), public_value)
+
+    def test_every_report_text_surface_uses_the_complete_path_matrix(self) -> None:
+        report = DoctorReport(
+            config_path="code-mower.yml",
+            provider_templates_path="private/templates",
+            profile="recommended",
+            checks=(
+                DoctorCheck(
+                    name="path.matrix",
+                    status="fail",
+                    message="workflow at .github/workflows/private-audit.yml failed",
+                    detail={
+                        "executable": "bin/private-python",
+                        "workflow_path": "confidential/workflow",
+                        "template_paths": ["private/template"],
+                        "nested": [
+                            {"template": "/秘密/config.yml"},
+                            "file://localhost/" + "Users/alice/private.yml",
+                        ],
+                        "repository": "OWNER/REPO",
+                        "documentation": "https://example.test/a/b",
+                    },
+                    remediation=r"inspect C:\Users\alice\private.log",
+                ),
+            ),
+        )
+
+        payload = doctor_report_payload(report, include_local_paths=False)
+        rendered = json.dumps(payload, ensure_ascii=False)
+
+        for private_fragment in (
+            "confidential",
+            "server",
+            ".github",
+            "alice",
+            "秘密",
+            "file://",
+        ):
+            self.assertNotIn(private_fragment, rendered)
+        self.assertIn("OWNER/REPO", rendered)
+        self.assertIn("https://example.test/a/b", rendered)
 
     def test_adoption_json_defaults_to_share_safe_and_has_debug_opt_in(self) -> None:
         def run(extra: list[str]) -> dict[str, object]:
