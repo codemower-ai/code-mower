@@ -924,6 +924,11 @@
     },
     {
       "kind": "core",
+      "source": "src/code_mower/docs_lifecycle.py",
+      "target": "src/code_mower/docs_lifecycle.py"
+    },
+    {
+      "kind": "core",
       "source": "src/code_mower/doctor.py",
       "target": "src/code_mower/doctor.py"
     },

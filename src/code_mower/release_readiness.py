@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 
 from . import __version__
+from . import docs_lifecycle
 from . import package as package_module
 from .release_identity import check_release_identity
 from . import versioning as code_mower_versioning
@@ -1548,6 +1549,11 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         relative_path: _read_text_if_exists(repo_path / relative_path)
         for relative_path in PUBLIC_HYGIENE_DOC_PATHS
     }
+    docs_lifecycle_report = (
+        docs_lifecycle.validate_manifest(repo_path)
+        if (repo_path / docs_lifecycle.MANIFEST_PATH).is_file()
+        else None
+    )
     init_version = _python_package_version(repo_path)
     pyproject_version = _pyproject_version(repo_path)
     manifest_version = _committed_manifest_version(repo_path)
@@ -1673,7 +1679,20 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         if terms
     }
 
+    documentation_checks = []
+    if docs_lifecycle_report is not None:
+        documentation_checks.append(
+            _release_check(
+                check_id="documentation-lifecycle",
+                title="Documentation inventory, ownership, and immutable history are valid",
+                status=docs_lifecycle_report["status"],
+                evidence=docs_lifecycle.MANIFEST_PATH,
+                detail=docs_lifecycle_report,
+            )
+        )
+
     checks = [
+        *documentation_checks,
         _release_check(
             check_id="release-public-identity",
             title="Selected release identity and immutable public text agree",

@@ -345,6 +345,10 @@ does not need rebuilding. See
 
 ## Documentation
 
+The generated [documentation index](https://github.com/codemower-ai/code-mower/blob/main/docs/README.md)
+identifies the canonical guide for each maintained subject and separates current
+guidance from frozen release evidence.
+
 ### Install And First Use
 
 - [Install And Bootstrap](https://github.com/codemower-ai/code-mower/blob/main/docs/install.md)
