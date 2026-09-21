@@ -235,6 +235,138 @@ def _checks(raw: Any) -> list[dict[str, str]]:
     return (major or checks)[:8]
 
 
+def _has_code_mower_check_claim(raw: Any) -> bool:
+    """Inspect every readable raw check identity for Code Mower provenance.
+
+    The operator-facing check projection is intentionally bounded.  Provenance
+    classification must not inherit that display limit, because a real Code
+    Mower check can appear after any number of unrelated checks.
+    """
+    if not isinstance(raw, list):
+        return False
+    for check in raw:
+        if not isinstance(check, Mapping):
+            continue
+        for field in ("name", "context", "workflowName"):
+            value = check.get(field)
+            if not isinstance(value, str):
+                continue
+            if _is_code_mower_check_identity(value):
+                return True
+        app = check.get("app")
+        if isinstance(app, Mapping):
+            for field in ("slug", "name"):
+                value = app.get(field)
+                if not isinstance(value, str):
+                    continue
+                if _normalized_app_identity(value) == "code-mower":
+                    return True
+    return False
+
+
+def _is_code_mower_check_identity(value: str) -> bool:
+    """Match the normalized Code Mower check namespace at an exact boundary."""
+
+    normalized = re.sub(r"\s+", " ", value.strip().casefold()).replace("_", "-")
+    if normalized.startswith("code mower"):
+        normalized = "code-mower" + normalized.removeprefix("code mower")
+    return (
+        normalized == "code-mower"
+        or normalized.startswith("code-mower/")
+        or normalized.startswith("code-mower ")
+    )
+
+
+def _normalized_app_identity(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", value.strip().casefold()).strip("-")
+
+
+def _status_check_rollup_is_readable(raw: Any) -> bool:
+    """Validate the GitHub union records used as check identities.
+
+    `gh pr --json statusCheckRollup` returns CheckRun and StatusContext union
+    variants.  Tests and older gh versions may omit ``__typename``, so the
+    primary ``name``/``context`` field also identifies the variant.  Optional
+    fields may be absent or null, but a present value must retain its source
+    type; stringifying malformed identity data would make an incomplete list
+    look like trustworthy evidence that no Code Mower check exists.
+    """
+    if not isinstance(raw, list):
+        return False
+    for check in raw:
+        if not isinstance(check, Mapping):
+            return False
+
+        typename = check.get("__typename")
+        if typename is not None and typename not in {"CheckRun", "StatusContext"}:
+            return False
+
+        for field in ("name", "context", "workflowName"):
+            if field in check and check[field] is not None and not isinstance(check[field], str):
+                return False
+
+        name = check.get("name")
+        context = check.get("context")
+        has_name = isinstance(name, str) and bool(name.strip())
+        has_context = isinstance(context, str) and bool(context.strip())
+        if typename == "CheckRun" and (not has_name or has_context):
+            return False
+        if typename == "StatusContext" and (not has_context or has_name):
+            return False
+        if typename is None and has_name == has_context:
+            return False
+        variant = typename or ("CheckRun" if has_name else "StatusContext")
+
+        # Reject known fields from the other side of the GraphQL union.  Empty
+        # nullable compatibility values carry no identity, but two populated
+        # variant shapes must never be guessed into one.
+        cross_variant_fields = (
+            ("context", "targetUrl", "state")
+            if variant == "CheckRun"
+            else ("name", "workflowName", "detailsUrl", "conclusion", "status", "completedAt")
+        )
+        if any(check.get(field) not in (None, "") for field in cross_variant_fields):
+            return False
+
+        for field in (
+            "detailsUrl", "targetUrl", "startedAt", "createdAt", "completedAt",
+            "conclusion", "state", "status",
+        ):
+            if field in check and check[field] is not None and not isinstance(check[field], str):
+                return False
+
+        app = check.get("app")
+        if app is not None:
+            if variant != "CheckRun":
+                return False
+            if not isinstance(app, Mapping):
+                return False
+            recognized_identity = False
+            normalized_text_identities = []
+            for field in ("slug", "name"):
+                if field in app:
+                    if not isinstance(app[field], str) or not app[field].strip():
+                        return False
+                    normalized_identity = _normalized_app_identity(app[field])
+                    if not normalized_identity:
+                        return False
+                    normalized_text_identities.append(normalized_identity)
+                    recognized_identity = True
+            if len(set(normalized_text_identities)) > 1:
+                return False
+            if "databaseId" in app:
+                database_id = app["databaseId"]
+                if not (
+                    (isinstance(database_id, str) and bool(database_id.strip()))
+                    or (type(database_id) is int and database_id > 0)
+                ):
+                    return False
+                recognized_identity = True
+            if not recognized_identity:
+                return False
+    return True
+
+
 def _has_state(checks: Sequence[Mapping[str, str]], states: set[str]) -> bool:
     return any(check.get("state", "") in states for check in checks)
 
@@ -322,6 +454,93 @@ def _stale(
 def _author(pr: Mapping[str, Any]) -> str:
     author = pr.get("author")
     return _text(author.get("login")) if isinstance(author, Mapping) else _text(author)
+
+
+def _extract_code_mower_labels(lineage_config: Mapping[str, Any] | None) -> set[str]:
+    """Extract all configured Code Mower labels from policy.
+
+    Returns builder labels, dispatch labels, and audit labels derived from
+    validated policy. Empty when lineage_config is None or lanes are missing.
+    """
+    if lineage_config is None:
+        return set()
+
+    labels = set()
+
+    builder_identity = lineage_config.get("builder_identity", {})
+    if isinstance(builder_identity, Mapping):
+        builder_labels = builder_identity.get("labels", {})
+        if isinstance(builder_labels, Mapping):
+            labels.update(_text(label).lower() for label in builder_labels.keys())
+
+            for label, lane in builder_labels.items():
+                label_lower = _text(label).lower()
+                if label_lower.startswith("builder:"):
+                    label_suffix = label_lower.removeprefix("builder:")
+                    if label_suffix:
+                        labels.add(f"dispatched:{label_suffix}")
+                    lane_lower = _text(lane).lower()
+                    labels.add(f"dispatched:{lane_lower}")
+
+    lanes = lineage_config.get("lanes", {})
+    if isinstance(lanes, Mapping):
+        for lane_data in lanes.values():
+            if not isinstance(lane_data, Mapping):
+                continue
+
+            lane_labels = lane_data.get("labels", {})
+            if isinstance(lane_labels, Mapping):
+                for label_type in ("needs", "done", "blocked"):
+                    label = lane_labels.get(label_type, "")
+                    if label:
+                        labels.add(_text(label).lower())
+
+    return labels
+
+
+def _has_code_mower_claim(
+    *,
+    labels: Sequence[str],
+    author: str,
+    branch: str,
+    has_code_mower_check: bool,
+    identity: Any,
+    has_lineage_markers: bool,
+    lineage_config: Mapping[str, Any] | None = None,
+) -> bool:
+    """Check if a PR has any Code Mower provenance claim.
+
+    Returns True if the PR has configured builder/dispatch/audit labels, a mapped
+    author, a configured branch prefix, Code Mower checks, or readable lineage
+    markers. Returns False for ordinary PRs with no Code Mower involvement.
+    """
+    if has_lineage_markers:
+        return True
+
+    label_set = set(_text(label).lower() for label in labels)
+
+    configured_labels = _extract_code_mower_labels(lineage_config)
+    if label_set & configured_labels:
+        return True
+
+    if has_code_mower_check:
+        return True
+
+    if identity:
+        identity_authors = getattr(identity, "authors", ())
+        if identity_authors:
+            author_lower = _text(author).lower()
+            configured_authors = {_text(account).lower() for account, _ in identity_authors}
+            if author_lower in configured_authors:
+                return True
+
+        identity_prefixes = getattr(identity, "branch_prefixes", ())
+        if identity_prefixes:
+            branch_lower = _text(branch).lower()
+            if any(branch_lower.startswith(_text(prefix).lower()) for prefix, _ in identity_prefixes):
+                return True
+
+    return False
 
 
 def _summarize_pr(
@@ -432,18 +651,37 @@ def _remote(
                 "next_action": "pass --config code-mower.yml to evaluate lineage",
             }
             continue
+        identity = None
+        has_lineage_markers = False
+        prerequisites_validated = False
+        history_validated = False
+        raw_labels = raw_pr.get("labels")
+        label_names = [item.get("name", "") for item in raw_labels if isinstance(item, Mapping)] if isinstance(raw_labels, list) else []
+        raw_author = raw_pr.get("author")
+        author_login = raw_author.get("login", "") if isinstance(raw_author, Mapping) else ""
+        raw_branch = raw_pr.get("headRefName")
+        branch = raw_branch if isinstance(raw_branch, str) else ""
+        raw_checks = raw_pr.get("statusCheckRollup")
+        checks_readable = _status_check_rollup_is_readable(raw_checks)
+        has_code_mower_check = checks_readable and _has_code_mower_check_claim(raw_checks)
+
         try:
             if policy_config.validate_config(lineage_config):
                 raise ContractError("Trusted validated status policy required")
             identity = lineage_identity(lineage_config)
             authority = lineage_authorities(lineage_config)
-            target = Target(repo, raw_pr.get("number"), raw_pr.get("headRefName"), raw_pr.get("headRefOid"))
-            raw_labels = raw_pr.get("labels")
-            raw_author = raw_pr.get("author")
             if (not isinstance(raw_labels, list)
-                    or any(not isinstance(item, Mapping) or not isinstance(item.get("name"), str) for item in raw_labels)
-                    or not isinstance(raw_author, Mapping) or not isinstance(raw_author.get("login"), str)):
-                raise ContractError("Exact readable labels and author required")
+                    or any(not isinstance(item, Mapping)
+                           or not isinstance(item.get("name"), str)
+                           or not item["name"].strip() for item in raw_labels)
+                    or not isinstance(raw_author, Mapping)
+                    or not isinstance(raw_author.get("login"), str)
+                    or not raw_author["login"].strip()
+                    or not isinstance(raw_branch, str)
+                    or not checks_readable):
+                raise ContractError("Exact readable labels, author, branch, and checks required")
+            target = Target(repo, raw_pr.get("number"), raw_branch, raw_pr.get("headRefOid"))
+            prerequisites_validated = True
             def page(number, size, target=target):
                 nonlocal budget
                 if budget <= 0:
@@ -451,8 +689,15 @@ def _remote(
                 budget -= 1
                 return gh_json_runner(["api", f"repos/{target.repo}/issues/{target.pr_number}/comments?per_page={size}&page={number}"])
             history = lineage_history(page)
-            _, decision = lineage_decision(target, identity, authority, history,
-                author=raw_author["login"], labels=[item["name"] for item in raw_labels])
+            history_validated = True
+
+            for comment in history.comments:
+                if comment.account in authority.accounts and "CODE_MOWER_BUILDER_LINEAGE" in comment.body:
+                    has_lineage_markers = True
+                    break
+
+            chain, decision = lineage_decision(target, identity, authority, history,
+                author=author_login, labels=label_names)
             pr["lineage"] = lineage_projection(decision)
             pr["lineage"]["repo"] = target.repo
             pr["lineage"]["pr_number"] = target.pr_number
@@ -462,21 +707,66 @@ def _remote(
                 str(lane.get("author_lane") or lane.get("trailer_lane") or lane.get("provider") or key)
                 for key, lane in lanes.items() if isinstance(lane, Mapping)
                 and admit(decision, str(lane.get("author_lane") or lane.get("trailer_lane") or lane.get("provider") or key))})
+            if pr["lineage"]["status"] == "ready" and pr["lineage"]["reason"] == "no_identity" and not pr["lineage"]["contributors"]:
+                has_claim = _has_code_mower_claim(
+                    labels=label_names,
+                    author=author_login,
+                    branch=branch,
+                    has_code_mower_check=has_code_mower_check,
+                    identity=identity,
+                    has_lineage_markers=has_lineage_markers,
+                    lineage_config=lineage_config,
+                )
+                if not has_claim:
+                    pr["lineage"] = {"status": "unmanaged", "reason": "no_code_mower_provenance",
+                                     "current_writer": None, "contributors": [], "admitted_reviewers": []}
         except LaneStatusUnavailable:
-            pr["lineage"] = {
-                "status": "unavailable",
-                "reason": "lineage_unreadable",
-                "current_writer": None,
-                "contributors": [],
-                "admitted_reviewers": [],
-                "next_action": "restore readable lineage metadata and rerun status",
-            }
+            has_claim = _has_code_mower_claim(
+                labels=label_names,
+                author=author_login,
+                branch=branch,
+                has_code_mower_check=has_code_mower_check,
+                identity=identity,
+                has_lineage_markers=has_lineage_markers,
+                lineage_config=lineage_config,
+            )
+            if has_claim:
+                pr["lineage"] = {
+                    "status": "unavailable",
+                    "reason": "lineage_unreadable",
+                    "current_writer": None,
+                    "contributors": [],
+                    "admitted_reviewers": [],
+                    "next_action": "restore readable lineage metadata and rerun status",
+                }
+            else:
+                pr["lineage"] = {"status": "unmanaged", "reason": "no_code_mower_provenance",
+                                 "current_writer": None, "contributors": [], "admitted_reviewers": []}
         except (ValueError, KeyError, TypeError, RuntimeError):
-            pr["lineage"] = {"status": "unknown", "reason": "lineage_unreadable",
-                             "current_writer": None, "contributors": [], "admitted_reviewers": []}
+            if not prerequisites_validated or not history_validated:
+                pr["lineage"] = {"status": "unknown", "reason": "lineage_unreadable",
+                                 "current_writer": None, "contributors": [], "admitted_reviewers": []}
+            else:
+                has_claim = _has_code_mower_claim(
+                    labels=label_names,
+                    author=author_login,
+                    branch=branch,
+                    has_code_mower_check=has_code_mower_check,
+                    identity=identity,
+                    has_lineage_markers=has_lineage_markers,
+                    lineage_config=lineage_config,
+                )
+                if has_claim:
+                    pr["lineage"] = {"status": "unknown", "reason": "lineage_unreadable",
+                                     "current_writer": None, "contributors": [], "admitted_reviewers": []}
+                else:
+                    pr["lineage"] = {"status": "unmanaged", "reason": "no_code_mower_provenance",
+                                     "current_writer": None, "contributors": [], "admitted_reviewers": []}
         if pr["lineage"]["status"] == "unavailable":
             pr["next_action"] = str(pr["lineage"]["next_action"])
             pr["next_detail"] = "lineage unavailable: " + pr["lineage"]["reason"]
+        elif pr["lineage"]["status"] == "unmanaged":
+            pass
         elif pr["lineage"]["status"] != "ready":
             pr["next_action"] = "owner action required"
             pr["next_detail"] = "lineage " + pr["lineage"]["status"] + ": " + pr["lineage"]["reason"]
