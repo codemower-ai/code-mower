@@ -914,6 +914,72 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertEqual(payload["status"], "apply_failed")
         self.assertFalse((self.root / "ai.codemower.board.5332.plist").exists())
 
+    def test_first_install_rollback_fails_closed_when_runtime_state_raises(self) -> None:
+        class RuntimeQueryFailsAfterCleanup(board_service.LaunchdProvider):
+            fail_next_runtime_read = False
+
+            def bootstrap(self, label: str) -> tuple[bool, str]:
+                return False, "Bootstrap failed before loading the job"
+
+            def delete_definition(self, label: str) -> bool:
+                deleted = super().delete_definition(label)
+                self.fail_next_runtime_read = True
+                return deleted
+
+            def runtime_state(self, label: str) -> tuple[str, int | None]:
+                if self.fail_next_runtime_read:
+                    self.fail_next_runtime_read = False
+                    raise PermissionError("launchd state became unreadable")
+                return super().runtime_state(label)
+
+        payload = self._restart_with(
+            RuntimeQueryFailsAfterCleanup(
+                command_runner=self.host.run,
+                root=self.root,
+                uid=self.host.uid,
+                platform="darwin",
+            ),
+            self.spec(),
+        )
+
+        self.assertEqual(payload["status"], "rollback_failed")
+        self.assertEqual(payload["reconciliation"]["state"], "unresolved")
+        self.assertEqual(payload["reconciliation"]["job_state"], board_service.JOB_UNKNOWN)
+        self.assertFalse(payload["reconciliation"]["job_absent"])
+        self.assertTrue(payload["reconciliation"]["definition_absent"])
+        self.assertIn("job state could not be read", payload["reconciliation"]["detail"])
+
+    def test_ambiguous_bootstrap_runtime_error_rolls_back_instead_of_raising(self) -> None:
+        class LoadsThenRuntimeQueryTimesOut(board_service.LaunchdProvider):
+            fail_next_runtime_read = False
+
+            def bootstrap(self, label: str) -> tuple[bool, str]:
+                super().bootstrap(label)
+                self.fail_next_runtime_read = True
+                return False, "Bootstrap timed out after launchd accepted the definition"
+
+            def runtime_state(self, label: str) -> tuple[str, int | None]:
+                if self.fail_next_runtime_read:
+                    self.fail_next_runtime_read = False
+                    raise subprocess.TimeoutExpired(["launchctl", "print"], 1.0)
+                return super().runtime_state(label)
+
+        payload = self._restart_with(
+            LoadsThenRuntimeQueryTimesOut(
+                command_runner=self.host.run,
+                root=self.root,
+                uid=self.host.uid,
+                platform="darwin",
+            ),
+            self.spec(),
+        )
+
+        self.assertEqual(payload["status"], "apply_failed")
+        self.assertEqual(payload["reconciliation"]["state"], "absent")
+        self.assertTrue(payload["reconciliation"]["verified"])
+        self.assertNotIn(self.spec().label, self.host.loaded)
+        self.assertFalse((self.root / f"{self.spec().label}.plist").exists())
+
     def test_a_failed_first_install_that_cannot_be_cleaned_up_is_a_failed_rollback(self) -> None:
         # Nothing was installed before, so rolling back means leaving nothing
         # behind. A definition that survives its failed apply starts the service
@@ -2346,7 +2412,11 @@ class BoardServiceLifecycleTest(ServiceHarness):
         class LoadsThenReportsFailure(board_service.LaunchdProvider):
             def bootstrap(self, label: str) -> tuple[bool, str]:
                 super().bootstrap(label)
-                return False, "Bootstrap failed after registering the installed definition"
+                return (
+                    False,
+                    "Bootstrap failed after registering "
+                    f"{self.definition_path(label)}: Operation not permitted",
+                )
 
         payload = self._restart_with(
             LoadsThenReportsFailure(
@@ -2365,6 +2435,10 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertTrue(payload["reconciliation"]["delayed_health_verified"])
         self.assertIn("reported bootstrap failure", payload["message"])
         self.assertIn("Bootstrap failed", payload["provider_detail"])
+        self.assertIn(lane_status.LOCAL_PATH_REDACTION, payload["provider_detail"])
+        self.assertIn("Operation not permitted", payload["provider_detail"])
+        published = json.dumps(payload) + board_service.render_operation_text(payload)
+        self.assertNotIn(str(self.root), published)
         self.assertEqual(
             payload["reconciliation"]["binding"]["failing_checks"], []
         )
@@ -2372,6 +2446,30 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertEqual(
             (self.root / f"{spec.label}.plist").read_text(encoding="utf-8"), definition
         )
+
+    def test_ambiguous_bootstrap_provider_detail_honors_show_local_paths(self) -> None:
+        spec = self.spec()
+        self.install(spec)
+        self.host.provider().bootout(spec.label)
+
+        class LoadsThenReportsPath(board_service.LaunchdProvider):
+            def bootstrap(self, label: str) -> tuple[bool, str]:
+                super().bootstrap(label)
+                return False, f"Bootstrap failed after registering {self.definition_path(label)}"
+
+        payload = self._restart_with(
+            LoadsThenReportsPath(
+                command_runner=self.host.run,
+                root=self.root,
+                uid=self.host.uid,
+                platform="darwin",
+            ),
+            spec,
+            show_local_paths=True,
+        )
+
+        self.assertEqual(payload["status"], "restarted")
+        self.assertIn(str(self.root / f"{spec.label}.plist"), payload["provider_detail"])
 
     def test_restart_reports_an_unresolved_bootstrap_that_left_no_job(self) -> None:
         spec = self.spec()
@@ -2401,7 +2499,11 @@ class BoardServiceLifecycleTest(ServiceHarness):
         class RestartsThenReportsFailure(board_service.LaunchdProvider):
             def kickstart(self, label: str) -> tuple[bool, str]:
                 super().kickstart(label)
-                return False, "Kickstart failed after restarting the installed job"
+                return (
+                    False,
+                    "Kickstart failed after restarting the installed job from "
+                    f"{self.definition_path(label)}: Operation not permitted",
+                )
 
         payload = self._restart_with(
             RestartsThenReportsFailure(
@@ -2424,6 +2526,33 @@ class BoardServiceLifecycleTest(ServiceHarness):
         )
         self.assertTrue(payload["reconciliation"]["pid_transition_required"])
         self.assertTrue(payload["reconciliation"]["pid_transition_verified"])
+        self.assertIn(lane_status.LOCAL_PATH_REDACTION, payload["provider_detail"])
+        self.assertIn("Operation not permitted", payload["provider_detail"])
+        published = json.dumps(payload) + board_service.render_operation_text(payload)
+        self.assertNotIn(str(self.root), published)
+
+    def test_ambiguous_kickstart_provider_detail_honors_show_local_paths(self) -> None:
+        spec = self.spec()
+        self.install(spec)
+
+        class RestartsThenReportsPath(board_service.LaunchdProvider):
+            def kickstart(self, label: str) -> tuple[bool, str]:
+                super().kickstart(label)
+                return False, f"Kickstart failed after reading {self.definition_path(label)}"
+
+        payload = self._restart_with(
+            RestartsThenReportsPath(
+                command_runner=self.host.run,
+                root=self.root,
+                uid=self.host.uid,
+                platform="darwin",
+            ),
+            spec,
+            show_local_paths=True,
+        )
+
+        self.assertEqual(payload["status"], "restarted")
+        self.assertIn(str(self.root / f"{spec.label}.plist"), payload["provider_detail"])
 
     def test_restart_uses_the_settled_health_sample_as_its_terminal_binding(self) -> None:
         spec = self.spec()

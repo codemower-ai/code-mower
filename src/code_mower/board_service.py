@@ -2047,6 +2047,24 @@ def _previous_version_evidence(
     }
 
 
+def _runtime_state_or_unknown(provider: Any, label: str) -> tuple[str, int | None]:
+    """Read provider runtime state without turning uncertainty into absence.
+
+    Reconciliation runs after a provider operation has already returned an
+    ambiguous result. If the follow-up query itself raises, the only truthful
+    answer is `JOB_UNKNOWN`: a missing answer must never prove that a job is
+    absent or let an exception bypass the rollback result.
+    """
+
+    runtime_state = getattr(provider, "runtime_state", None)
+    if runtime_state is None:
+        return JOB_UNKNOWN, None
+    try:
+        return runtime_state(label)
+    except (OSError, subprocess.SubprocessError):
+        return JOB_UNKNOWN, None
+
+
 def _rollback_and_reconcile(
     spec: ServiceSpec,
     *,
@@ -2138,7 +2156,7 @@ def _rollback_and_reconcile(
             "takeover and could not be restored"
         )
     else:
-        load_state, _pid = provider.runtime_state(spec.label)
+        load_state, _pid = _runtime_state_or_unknown(provider, spec.label)
         installed = provider.read_service(spec.label)
         inventory = port_listener_inventory(spec.port, command_runner)
         definition_absent = installed is None
@@ -2154,6 +2172,7 @@ def _rollback_and_reconcile(
             "state": "absent" if absent else "unresolved",
             "verified": absent,
             "target": "absent",
+            "job_state": load_state,
             "definition_absent": definition_absent,
             "job_absent": job_absent,
             "listener_inventory_available": bool(inventory["available"]),
@@ -2163,7 +2182,11 @@ def _rollback_and_reconcile(
             restored["recovery"] = _recovery_instruction(
                 spec, show_local_paths=show_local_paths
             )
-            if not inventory["available"]:
+            if load_state == JOB_UNKNOWN:
+                restored["detail"] = (
+                    "the launchd job state could not be read, so job absence could not be verified"
+                )
+            elif not inventory["available"]:
                 restored["detail"] = (
                     "the local listener inventory could not be read, so target-port absence "
                     "could not be verified"
@@ -2398,7 +2421,7 @@ def _apply(
         # failure. The provider result is therefore not the outcome. If the
         # replacement clears the complete serving gate, keep it instead of
         # beginning a rollback that can create a definition/process split.
-        load_state, _pid = provider.runtime_state(spec.label)
+        load_state, _pid = _runtime_state_or_unknown(provider, spec.label)
         attempted_health: Mapping[str, Any] | None = None
         if load_state == JOB_LOADED:
             applied_health = delayed_health(
@@ -2429,6 +2452,7 @@ def _apply(
                     expected,
                     delayed=applied_health,
                     show_local_paths=show_local_paths,
+                    known_paths=_provider_known_paths(provider, spec.label),
                     reconciliation=applied,
                     provider_detail=detail,
                 )
@@ -2822,6 +2846,7 @@ def restart_service(
             expected,
             delayed=health,
             show_local_paths=show_local_paths,
+            known_paths=_provider_known_paths(provider, spec.label),
             reconciliation=reconciled,
             **provider_result,
         )
@@ -2893,12 +2918,8 @@ def _job_load_state(provider: Any, label: str) -> tuple[bool, int | None]:
     characterises as a missing job, releases the definition.
     """
 
-    runtime_state = getattr(provider, "runtime_state", None)
-    if runtime_state is not None:
-        try:
-            state, pid = runtime_state(label)
-        except (OSError, subprocess.SubprocessError):
-            return True, None
+    if getattr(provider, "runtime_state", None) is not None:
+        state, pid = _runtime_state_or_unknown(provider, label)
         return state != JOB_ABSENT, pid
     runtime = getattr(provider, "runtime", None)
     if runtime is None:
