@@ -70,6 +70,13 @@ package. Never rewrite a published tag to correct the wording.
    release decision, tag or publication. Re-run identity on that exact checkout;
    publish the retained pair with the same SHA and candidate workflow run ID.
 
+For releases after v1.5.1, let the final candidate soak for at least 24 hours
+after its last source or packaged-document change and complete at least two
+independent cold-install or upgrade passes during that window. A candidate
+change restarts the clock. An emergency patch may shorten the soak only when
+the release issue records the reason, risk, independent evidence, and rollback
+plan before the owner publication decision.
+
 Ordinary release-readiness CI invokes the same checker using the source
 version's intended tag, so contradictions are reviewable before tagging. The
 release workflow checks out the exact dispatched tag or published release tag

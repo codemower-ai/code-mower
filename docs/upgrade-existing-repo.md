@@ -21,7 +21,7 @@ universal prompt in [Orchestrator Prompt Pack](orchestrator-prompt-pack.md) so
 it reports the same active command, exact version, posture-specific doctor,
 lanes status, and owner click-list as the primary orchestrator.
 
-## 2. Upgrade The Tool To v1.5.0
+## 2. Upgrade The Tool To v1.5.1
 
 Upgrade the installer that owns the active command before generating or
 comparing setup. Running `setup-drift` under 1.4.2 only compares the repository
@@ -58,30 +58,7 @@ that installer. If it does not, resolve the competing pipx/uv/checkout path
 before changing repository files. This is the tool upgrade; the reviewed
 repository setup upgrade follows below.
 
-## 3. Generate Fresh Setup Output
-
-From a clean repository checkout:
-
-```bash
-code-mower init --easy
-code-mower init code-mower.yml --profile PROFILE --dry-run
-code-mower init code-mower.yml --profile PROFILE --apply \
-  --output-dir .code-mower.generated
-```
-
-Easy mode now detects a root `code-mower.yml` and previews from it. Replace
-`PROFILE` with the profile the repository already uses when you run the explicit
-commands. Both forms preserve participant, lane, and policy choices while
-rendering the installed package's support files. If the repository truly has no
-`code-mower.yml`, use `code-mower init --easy --apply --output-dir
-.code-mower.generated` and review the packaged starter as a new adoption. If a
-root config exists and you intentionally want starter defaults, make that choice
-explicit with `--packaged-starter`.
-
-Treat `.code-mower.generated` as review input. Do not copy it wholesale until
-you have compared it with the existing repository files.
-
-## 4. Inspect Setup Drift
+## 3. Inspect Setup Drift
 
 Run the read-only drift report:
 
@@ -143,6 +120,29 @@ move the pin in the same upgrade PR.
 When builder files are tracked but `--builders` was omitted, the report prints a
 builder hint with the safest inferred `--builders` option. Rerun with that option
 before copying generated setup if those builder lanes are still enabled.
+
+## 4. Generate Fresh Setup Output
+
+From a clean repository checkout:
+
+```bash
+code-mower init --easy
+code-mower init code-mower.yml --profile PROFILE --dry-run
+code-mower init code-mower.yml --profile PROFILE --apply \
+  --output-dir .code-mower.generated
+```
+
+Easy mode now detects a root `code-mower.yml` and previews from it. Replace
+`PROFILE` with the profile the repository already uses when you run the explicit
+commands. Both forms preserve participant, lane, and policy choices while
+rendering the installed package's support files. If the repository truly has no
+`code-mower.yml`, use `code-mower init --easy --apply --output-dir
+.code-mower.generated` and review the packaged starter as a new adoption. If a
+root config exists and you intentionally want starter defaults, make that choice
+explicit with `--packaged-starter`.
+
+Treat `.code-mower.generated` as review input. Do not copy it wholesale until
+you have compared it with the existing repository files.
 
 ## 5. Copy Only Intended Files
 

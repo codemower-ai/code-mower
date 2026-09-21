@@ -299,6 +299,23 @@ Selectors are not exclusive: every selector supplied must agree on one binding.
 `board list` marks each Board `managed` with its service label, or transient,
 and says when that service's supervision is unconfirmed.
 
+In v1.5.1 the inventory is global: use `code-mower board list --json`, then
+filter the returned rows by their identity-verified `repo` value. The command
+does not accept `--repo`. Responsive rows carry `serving_version`,
+`installed_version`, `restart_recommended`, `managed`, and `service_label`.
+For one known listener, `GET /api/identity` is the compact identity/version
+probe and `GET /api/status` carries the full `board.version` block. Static HTML
+and `lanes status` are not version-verification surfaces in this release.
+
+When a transient Board needs to survive logout, stop it with the exact selector
+reported by `board list`, then review and install a managed definition with
+`board service render` and `board service install`. When a managed Board is
+stale, use `board service restart` with the same repository path and port.
+Repository-filtered inventory, version parity in `lanes status`, and copyable
+promotion/restart guidance are tracked for v1.6.0 in
+[#1063](https://github.com/codemower-ai/code-mower/issues/1063); do not use
+those planned command shapes with v1.5.1.
+
 A `launchctl` that cannot be probed at all is one of those unconfirmed cases,
 not an empty inventory. On macOS the installed definitions are enumerated even
 when the capability probe fails -- they are still in `LaunchAgents` and the jobs

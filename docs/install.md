@@ -99,7 +99,7 @@ posture-appropriate doctor command has no unexplained failures, and
 explain why GitHub/local visibility is unavailable.
 
 For an existing repository with older generated files, inspect setup drift
-before copying new generated output into the repo:
+before running `init --apply` or copying new generated output into the repo:
 
 ```bash
 code-mower migration setup-drift --repo-path . --json
@@ -113,9 +113,9 @@ wrapper/pin drift checks, see
 
 ## Local audit workflow publication
 
-v1.5.0 includes the local audit publisher, which generates
-`.github/workflows/local-audit-publication.yml` alongside the updated labelers,
-gate and standalone verification helpers. Commit that generated set to the
+The local audit publisher introduced in v1.5.0 remains included in v1.5.1. It
+generates `.github/workflows/local-audit-publication.yml` alongside the updated
+labelers, gate and standalone verification helpers. Commit that generated set to the
 repository's default branch before switching local Claude/Codex wrappers to
 workflow publication. A PR's copy of the verifier has no publication authority.
 Before v1.5.1 is published, use its reviewed candidate wheel; afterward, use the
@@ -208,7 +208,7 @@ With pipx:
 
 ```bash
 PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" \
-  'code-mower[coworker]==1.5.0'
+  'code-mower[coworker]==1.5.1'
 code-mower context --help
 ```
 
@@ -216,7 +216,7 @@ With uv:
 
 ```bash
 uv tool install --python 3.12 --reinstall --refresh-package code-mower \
-  'code-mower[coworker]==1.5.0'
+  'code-mower[coworker]==1.5.1'
 code-mower context --help
 ```
 

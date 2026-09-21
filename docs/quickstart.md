@@ -243,7 +243,7 @@ do not put them in repository configuration.
 
 ```bash
 PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" \
-  'code-mower[coworker]==1.5.0'
+  'code-mower[coworker]==1.5.1'
 code-mower init --easy --context-connection example-context --dry-run
 code-mower init --easy --context-connection example-context --apply
 code-mower context connect coworker --connection example-context
@@ -455,8 +455,12 @@ an explicit `--port` fails with a friendly conflict instead. The printed URL is
 local to that machine or VM unless you create your own tunnel. `lanes status`
 discovers local Board listeners best-effort across common macOS and Linux tools;
 if listener inventory is restricted, GitHub PR/check status still reports.
-Use `code-mower board list` to see local Board listeners with repo/version,
-restart hints, and whether each one is managed or transient. Use
+Use `code-mower board list --json` to see the global local inventory with
+repo/version, restart hints, and whether each listener is managed or transient.
+In v1.5.1 `board list` does not accept `--repo`; filter its identity-verified
+rows after retrieval. For one known port, verify the version through
+`/api/identity` or the `board.version` block in `/api/status`. Static Board HTML
+and `lanes status` are not version-verification surfaces. Use
 `code-mower board stop --repo OWNER/REPO --yes`, `code-mower board stop --port
 PORT --yes`, or `code-mower board stop --pid PID --yes` only when you want to
 stop a listener that the inventory identified as a high-confidence Code Mower

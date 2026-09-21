@@ -8,7 +8,7 @@ import a manifest.
 
 | Path | Audience | Command | What it provides |
 | --- | --- | --- | --- |
-| Hosted v1.5.0 | Workspace and Code Mower administrators | `/codemower` | Dashboard OAuth, hosted policy/bindings, durable interactions, supervisor bridge |
+| Hosted v1.5.x | Workspace and Code Mower administrators | `/codemower` | Dashboard OAuth, hosted policy/bindings, durable interactions, supervisor bridge |
 | Standalone OSS seam | Adapter implementers and self-host operators | `/code-mower` | Authentication, normalization, and durable receipt contract only |
 
 The paths use separate manifests and command vocabularies. Do not point the OSS

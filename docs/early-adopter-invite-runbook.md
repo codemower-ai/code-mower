@@ -1,8 +1,8 @@
 # Early Adopter Invite Runbook
 
-Source target: v1.5.0 supervised-pilot baseline. Release invitations and pinned
-index installs target `code-mower==1.5.1` only after that version is visible on
-the selected package index.
+Source target: v1.5.1 supervised-pilot baseline. Release invitations and pinned
+index installs target `code-mower==1.5.1` after confirming that version is
+visible on the selected package index.
 
 Use this runbook for the first 5-10 friendly users before widening Code Mower
 to 20-50 early OSS users.

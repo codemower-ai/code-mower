@@ -59,6 +59,11 @@ First identify your role on this host:
 - observer: you can install Code Mower and report status but cannot mutate the
   repo.
 
+A Cursor Cloud Agent should begin as an orchestrator/observer unless the owner
+or active orchestrator explicitly assigns it a builder branch or an
+informational review. Do not assume that a hosted Cursor environment can run
+the local Codex/Claude reviewer wrappers.
+
 Read docs/install.md, docs/try-in-10-minutes.md, docs/quickstart.md,
 docs/orchestrator-prompt-pack.md, docs/lane-promotion-policy.md, and
 docs/provider-matrix.md from the same release tag you install. For an existing
@@ -69,6 +74,11 @@ Install or upgrade to the exact package version for that tag. Before and after
 the install, report command -v code-mower and code-mower --version. Use pipx on
 a laptop/workstation, uv tool install on hosted agents or minimal Linux boxes,
 and an editable venv only if you are changing Code Mower itself.
+
+If the repository already has Code Mower configuration or generated support,
+run code-mower migration setup-drift --repo-path . and review its classifications
+before any init --apply. Preserve repository policy and copy only the intended
+generated files in the upgrade PR.
 
 Run the posture-appropriate doctor:
 - local reviewer/builder machine: code-mower doctor --adoption --repo OWNER/REPO --json
@@ -114,7 +124,11 @@ diagnostic and hands orchestration to a qualified host rather than rendering a
 brief under an unqualified identity.
 
 Then run code-mower lanes status --repo OWNER/REPO and, when useful, start or
-check the local Board with code-mower board serve --repo OWNER/REPO.
+check the local Board with code-mower board serve --repo OWNER/REPO. Verify
+Board versions with the global code-mower board list --json inventory, the
+known listener's /api/identity or /api/status response, or code-mower board
+service status --json. In v1.5.1, do not pass --repo to board list and do not
+use lanes status or static Board HTML as version evidence.
 
 If any step needs the owner, stop with a numbered click-list. Include exact
 GitHub URLs, token names, scopes, secret/variable destinations, and a
@@ -155,7 +169,9 @@ docs/lane-promotion-policy.md. Follow those docs rather than improvising.
 
 Work on a setup branch. Start with the reviewer-gate pilot: install the package
 for the chosen tag, verify code-mower --version, run init --easy as a dry run,
-then apply generated output only after showing me the plan. If this is a
+then apply generated output only after showing me the plan. For an existing
+Code Mower repository, run migration setup-drift --repo-path . and review it
+before init --apply. If this is a
 hosted-agent or orchestration-only machine, run
 doctor --adoption --orchestrator-only --repo OWNER/REPO first; if this machine
 coordinates hosted builders but does not run local Codex/Claude wrappers, run

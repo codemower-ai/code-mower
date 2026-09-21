@@ -110,7 +110,7 @@ Default cloud bundles exclude:
 - model prompts and transcripts;
 - raw stdout/stderr and auth output;
 - issue body text;
-- credentials and secret values; and
+- credentials and secret values;
 - private Coworker evidence and account bindings;
 - Slack command and modal prose, raw authenticated requests and routing
   identities; and
@@ -133,10 +133,10 @@ future hosted-service work.
 - Graphify's bounded provider foundation shipped in v1.4.0; its complete
   qualified integration, scorecard and query behavior shipped in v1.4.1. It
   remains optional and has no default dependency.
-  Slack v1.5.0 supports one private workspace with explicit member, repository
+- Slack in v1.5.1 supports one private workspace with explicit member, repository
   and private-channel mappings plus private start, status, answer and
   confirmed-cancel interactions. Telemetry, Board links, Slack Connect, public
-  channels and richer Slack UX remain later work.
+  channels and richer Slack UX remain planned v1.6 work.
 - Provider cost fields remain unknown when the provider does not return them.
 - A successful release campaign proves installation and operational transport,
   not builder quality or reviewer promotion readiness.
@@ -144,6 +144,35 @@ future hosted-service work.
   adjudication.
 - Broad unattended rollout and uncalibrated merge gates are outside the current
   product posture.
+
+## Current Release And v1.6.0
+
+`v1.5.1` is released and is the current supported package. It retains the
+basic Slack boundary from v1.5.0 and adds the five reliability revisions from
+#1050: hosted-install clarity, host-independent tests, lane-exact audit seals,
+checkout-free remote doctor, safe existing-repository initialization, and
+clearer status/version reporting.
+
+The [v1.6.0 milestone](https://github.com/codemower-ai/code-mower/milestone/2)
+and [epic #1066](https://github.com/codemower-ai/code-mower/issues/1066) are the
+live trackers. The planned children are:
+
+1. Board inventory filters, version parity, stale detection, and service
+   guidance ([#1063](https://github.com/codemower-ai/code-mower/issues/1063));
+2. doctor warning taxonomy and hosted-posture scope
+   ([#1064](https://github.com/codemower-ai/code-mower/issues/1064));
+3. hosted adoption prompts, current documentation, and a normal 24-hour release
+   soak with two independent install or upgrade passes
+   ([#1065](https://github.com/codemower-ai/code-mower/issues/1065));
+4. the closed, versioned optional Slack telemetry contract and OSS emitters
+   ([#921](https://github.com/codemower-ai/code-mower/issues/921)); and
+5. hosted validation, aggregation, export/deletion, and fresh authenticated
+   views for that contract
+   ([#978](https://github.com/codemower-ai/code-mower/issues/978)).
+
+#1063, #1064, and the documentation portion of #1065 can proceed in parallel.
+#921 freezes the shared contract and fixtures before #978 enables hosted
+ingest. None of this planned work is part of v1.5.1.
 
 ## Near-Term Roadmap
 
@@ -163,10 +192,10 @@ immutable. The agreed sequence from the stabilization epic ran as follows:
    [#935](https://github.com/codemower-ai/code-mower/issues/935) and
    [#961](https://github.com/codemower-ai/code-mower/issues/961), delivered by
    PRs #956, #957, #999, #1000, #1001, #1002 and #1003. Issue
-   [#951](https://github.com/codemower-ai/code-mower/issues/951) stays open
-   only for its bounded hosted Devin canary, which needs an explicit owner
-   authorization and is not claimed by this release.
-4. **Source complete.** Supervised Slack is the `v1.5.0` work
+   [#951](https://github.com/codemower-ai/code-mower/issues/951)'s bounded
+   hosted Devin canary was not claimed by this release; it later completed
+   during v1.5.1 qualification and #951 is closed.
+4. **Released.** Supervised Slack is the `v1.5.0` work
    ([#903](https://github.com/codemower-ai/code-mower/issues/903) /
    [#923](https://github.com/codemower-ai/code-mower/issues/923)). The
    preceding sequence and implementation are complete. Authoritative observed
@@ -191,8 +220,7 @@ neither is part of the immutable `v1.4.0` artifact, and both are part of the
 published `v1.4.1` artifact.
 
 Each phase below was an independently gated epic rather than one cross-cutting
-implementation PR. Phases 1 to 3 are history; phase 4 is in final release
-qualification.
+implementation PR. All four phases are release history.
 
 ### 1. Accepted `v1.4.0` Stabilization -- shipped in `v1.4.1` ([#979](https://github.com/codemower-ai/code-mower/issues/979))
 
@@ -283,8 +311,8 @@ that baseline through
 [PR #1006](https://github.com/codemower-ai/code-mower/pull/1006) and is closed.
 It added no cloud field.
 
-#951 itself stays open only for its bounded hosted Devin canary, which requires
-an explicit owner authorization, has not run, and is not claimed by v1.4.2.
+#951's bounded hosted Devin canary was not claimed by v1.4.2. It later completed
+under the explicit v1.5.1 qualification cap, and #951 is closed.
 
 Board is a read model over one closed local observation model. Missing or stale
 evidence stays explicitly unknown or last-observed; Board never infers runtime
@@ -326,9 +354,9 @@ canonical reinstall state.
    #915, after #914.
 3. **Done.** Board shipped as `v1.4.2` through #952, after #961 and #951's
    merged local-evidence code.
-4. **Source complete.** The supervised Slack runtime and release contract are
-   implemented. #923 and the GitHub Release are the authoritative record of
-   lifecycle evidence, capped canary outcomes, publication and reinstall.
+4. **Done.** The supervised Slack runtime and release contract shipped in
+   v1.5.0. #923 and the GitHub Release are the authoritative record of lifecycle
+   evidence, capped canary outcomes, publication and reinstall.
 
 Elapsed time, implementation difficulty, or an open draft PR never changes this
 release order. Merged fixes count as on main until a later published package is
@@ -352,3 +380,10 @@ this repository. Release-specific notes and completed planning records are
 historical and must not be used as current installation instructions. Private
 CodeMower.com deployment, OAuth, database, DNS, and service-secret procedures
 belong in the hosted-service repository.
+
+`README.md`, `docs/install.md`, `docs/try-in-10-minutes.md`,
+`docs/upgrade-existing-repo.md`, `docs/quickstart.md`, and this page are the
+maintained current-release entry points. Versioned release notes,
+qualification contracts, runbooks, archived rehearsals, and transcripts retain
+their original pins as historical evidence. When the two conflict, follow the
+current-release entry points and file the mismatch as documentation drift.

@@ -84,6 +84,10 @@ writes a reviewable generated tree; it does not copy those files into your
 repository, start a provider, enable auto-merge, or upload data. Review and
 edit the generated configuration before opening the setup PR.
 
+For a repository that already contains Code Mower support, run
+`code-mower migration setup-drift --repo-path .` before `init --apply` and use
+the [existing-repository upgrade guide](https://github.com/codemower-ai/code-mower/blob/main/docs/upgrade-existing-repo.md).
+
 To inspect representative output first, use the
 [synthetic calibration example](https://github.com/codemower-ai/code-mower/blob/main/examples/demo-calibration/README.md) and
 [Board demo](https://github.com/codemower-ai/code-mower/blob/main/examples/board-demo/README.md).
@@ -130,7 +134,8 @@ ID with `session lease renew --session-id SESSION_ID` or `session lease release
 --dry-run` or `--no-lease` for read-only work.
 
 Codex, Claude Code, and Cursor are qualified for the shared session, telemetry,
-lease, and Jira-authority contract in v1.5.0. Devin, Grok Bot, Antigravity,
+lease, and Jira-authority contract in the current v1.5.1 release. Devin, Grok
+Bot, Antigravity,
 Muse, and custom hosts are recognized for briefs and provenance, while their
 execution remains an explicit handoff or provider-specific transport. See
 [Participants And Sessions](https://github.com/codemower-ai/code-mower/blob/main/docs/sessions.md) and the
@@ -257,8 +262,9 @@ and the [Cloud Data Contract](https://github.com/codemower-ai/code-mower/blob/ma
 
 ## Optional Hosted Slack
 
-v1.5.0 adds a basic Slack control surface for one private workspace and one
-authorized private, unshared channel. A Code Mower team administrator opens
+v1.5.1 retains the basic Slack control surface introduced in v1.5.0 for one
+private workspace and one authorized private, unshared channel. A Code Mower
+team administrator opens
 **Setup → Manage Slack integration** in the hosted dashboard and completes OAuth
 as a Slack workspace administrator. Ordinary hosted setup does not require a
 local manifest, Slack app creation, or Slack credentials on the user's machine.
@@ -307,7 +313,7 @@ and boundaries are recorded in
 
 Graphify's optional bounded provider foundation landed in v1.4.0; its complete
 qualified integration, scorecard and query behavior shipped in v1.4.1 and
-remain available in v1.5.0. It is separately installed into an operator-owned
+remain available in v1.5.1. It is separately installed into an operator-owned
 environment, explicitly activated, and outside the base dependency set: a
 default Claude + Codex install adds no Graphify dependency, no indexer, no
 background service, and no watcher.
@@ -326,9 +332,9 @@ for what a build is allowed to see and where its state lives, and
 [Bounded Queries And Context Packets](https://github.com/codemower-ai/code-mower/blob/main/docs/context-graph-queries.md) for the
 four questions and the packet contract.
 
-v1.5.0 includes #1007's bounded 16 MiB provider-manifest reader, `doc_ref`
-non-code exclusions, JavaScript/TypeScript related-test conventions and import
-relationships, plus parser/runtime/single-worker guidance. #1031 makes search
+The v1.5.x line includes #1007's bounded 16 MiB provider-manifest reader,
+`doc_ref` non-code exclusions, JavaScript/TypeScript related-test conventions
+and import relationships, plus parser/runtime/single-worker guidance. #1031 makes search
 readiness agree with the installed query reader and preserves usable bounded
 partial answers. The accepted `graphifyy==0.9.58` pin is unchanged. Upgrade does
 not repair existing graphs: explicitly refresh affected/partial generations,
@@ -346,7 +352,7 @@ does not need rebuilding. See
 - [Upgrade An Existing Repository](https://github.com/codemower-ai/code-mower/blob/main/docs/upgrade-existing-repo.md)
 - [Quickstart Reference](https://github.com/codemower-ai/code-mower/blob/main/docs/quickstart.md)
 - [Troubleshooting](https://github.com/codemower-ai/code-mower/blob/main/docs/troubleshooting.md)
-- [First Run Transcript](https://github.com/codemower-ai/code-mower/blob/main/docs/first-run-transcript.md) (v1.4.0 illustrative shape, not the v1.5.0 source pin)
+- [First Run Transcript](https://github.com/codemower-ai/code-mower/blob/main/docs/first-run-transcript.md) (historical v1.4.0 illustrative shape; use the maintained install guide for v1.5.1)
 
 ### Local Board And Repository Context
 
