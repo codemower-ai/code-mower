@@ -139,15 +139,28 @@ you upgrade Code Mower while the Board is open, the browser can keep talking to
 the older process until you restart it. The Board header shows the serving
 version, the installed version, and whether a restart is recommended.
 
-For a scriptable check, query the local status endpoint on the printed Board
-port:
+For a scriptable inventory across all local listeners, use:
+
+```bash
+code-mower board list --json
+```
+
+`board list` is a global local inventory in v1.5.1; it does not accept
+`--repo`. Filter the returned rows by their identity-verified `repo` field.
+Each responsive row reports `serving_version`, `installed_version`,
+`restart_recommended`, `managed`, and its service label when managed.
+
+For one known Board, query the local status endpoint on its printed port:
 
 ```bash
 curl -fsS http://127.0.0.1:PORT/api/status | python3 -m json.tool
 ```
 
-In the JSON output, inspect `board.version.serving_version`,
+In `/api/status`, inspect `board.version.serving_version`,
 `board.version.installed_version`, and `board.version.restart_recommended`.
+`GET /api/identity` is the smaller identity and version probe. Do not infer the
+version from the static HTML or from `lanes status`; neither is the v1.5.1
+version-verification contract.
 When restart is recommended, stop the old Board process and start it again:
 
 ```bash
@@ -253,7 +266,7 @@ changing the shared command mid-PR.
 ## Headless Codex Campaign Says A Keyring Is Unavailable
 
 The isolated Codex campaign home uses the OS keyring by default. A Linux host
-without a desktop session can select v1.5.0's explicit file-backed mode instead:
+without a desktop session can select the v1.5.x explicit file-backed mode instead:
 
 ```bash
 export CODE_MOWER_CODEX_CAMPAIGN_AUTH_MODE=file

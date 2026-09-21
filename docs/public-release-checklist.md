@@ -117,6 +117,11 @@ not know the original reference repos.
 - At least one cold install rehearsal and one existing-repo upgrade rehearsal
   are recorded on the release PR or epic, including the installed version,
   first-user readiness, setup-drift posture, and any filed follow-up issues.
+- A normal release candidate soaks for at least 24 hours after its final source
+  change and completes at least two independent cold-install or upgrade passes
+  during that window. An emergency patch may shorten the soak only when its
+  release issue records the reason, risk, independent evidence, and rollback
+  plan.
 - The orchestrator prompt pack has one common install/upgrade prompt that
   works across Claude Code, Codex, Cursor/Grok Bot, Antigravity, Devin, Muse,
   and future providers without requiring repo-specific private context.
@@ -161,6 +166,10 @@ scripts/dev-python -m venv .venv
 Keep running this from a fresh clone before tagging. Do not publish unless the
 generated package passes the same path outside the developer's long-lived
 worktree.
+
+The 24-hour soak starts again after any source or packaged-document change that
+requires a new candidate. Rerunning the same rehearsal on the same host does
+not count as two independent adoption passes.
 
 `scripts/dev-python` is the checked-in source checkout interpreter resolver. It
 refuses Python older than 3.12, including stale virtualenvs and old system

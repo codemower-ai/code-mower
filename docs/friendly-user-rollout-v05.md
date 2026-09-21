@@ -1,15 +1,14 @@
 # Friendly-User Rollout Plan
 
-Source target: v1.5.0 supervised-pilot baseline. Release invitations and pinned
-index installs target `code-mower==1.5.1` only after that version is visible on
-the selected package index.
+Source target: v1.5.1 supervised-pilot baseline. Release invitations and pinned
+index installs target `code-mower==1.5.1` after confirming that version is
+visible on the selected package index.
 
 This is the operating plan for the first 5-10 friendly users before Code Mower
 widens to 20-50 early adopters.
 
 The filename is historical from the v0.5 planning pass. The live target in this
-document is the v1.5.0 supervised-pilot source; invitations begin after that
-version is published.
+document is the current v1.5.1 supervised-pilot release.
 
 Code Mower is supervised-pilot, bring-your-own-agent-loop software for teams willing to
 calibrate reviewers. It is not a drop-in autonomous merge gate.

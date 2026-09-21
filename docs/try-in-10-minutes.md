@@ -91,13 +91,17 @@ with `code-mower session lease renew --session-id SESSION_ID` if work continues;
 `code-mower session show --current` finds its matching brief. Use `--dry-run`
 for a preview or `--no-lease` for a saved read-only brief. Participant selection
 alone does not qualify an orchestrator; Devin requires a qualified supervisor.
-Role admission and exact startup lease commands shipped in the published
-`v1.4.1` artifact; the published `v1.4.2` release inherits them unchanged and
-adds only the Board clarity work described in
-[the v1.4.2 release notes](v142-release-notes.md).
-These commands do not alter the published `v1.4.0` artifact.
+The current v1.5.1 release enforces role admission before it writes a session
+or lease and prints the exact show, renew, and release commands for the accepted
+session.
 
 Run this from a clean checkout of the repository you want to pilot:
+
+If the repository already contains Code Mower configuration or generated
+support, stop here and run `code-mower migration setup-drift --repo-path .`
+before `init --apply`; then follow
+[Upgrade An Existing Repository](upgrade-existing-repo.md). The commands below
+are the fresh-repository path.
 
 ```bash
 code-mower init --easy
@@ -118,8 +122,6 @@ code-mower init --easy --packaged-starter --apply \
 
 An apply that would otherwise choose the packaged starter while a root config
 exists is refused with the exact repository-config and explicit-starter commands.
-Use `code-mower migration setup-drift --repo-path .` before copying generated
-upgrade files into the checkout.
 
 The generated tree includes local Codex and Claude audit lanes, the
 `code-mower/gate` workflow, stale-audit cleanup, owner escalation labels, and

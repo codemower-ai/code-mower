@@ -66,6 +66,23 @@ Treat the doctor output as setup guidance, not as a magical quality score.
 `--strict` turns warnings into a harder gate for CI/bootstrap jobs. For a first
 local run, start without `--strict`.
 
+Do not treat the raw warning count as the number of release blockers. Classify
+each warning by the selected host posture and its remediation:
+
+- an **active owner action** blocks the capability you selected, such as
+  unreadable repository metadata or a required credential;
+- a **promotion task** matters before unattended or merge-authority use, such
+  as branch protection or auto-merge policy;
+- an **ordinary environment warning** describes an optional local tool or
+  convenience that the current role may not need; and
+- an **out-of-scope check** should disappear when the correct
+  `--hosted-builders` or `--orchestrator-only` posture is selected.
+
+Run the same posture with `--concise` for the action-oriented summary, and keep
+`--json` as the complete machine-readable record. Warning taxonomy and hosted
+scope refinements continue in v1.6.0 issue
+[#1064](https://github.com/codemower-ai/code-mower/issues/1064).
+
 ## JSON Mode
 
 Use JSON mode for support, automation, or CI:
