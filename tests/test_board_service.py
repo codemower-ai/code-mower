@@ -2264,6 +2264,47 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertTrue(payload["reconciliation"]["verified"])
         self.assertIn("reported kickstart failure", payload["message"])
         self.assertNotEqual(self.host.loaded[spec.label], first_pid)
+        self.assertEqual(payload["reconciliation"]["pre_action_pid"], first_pid)
+        self.assertEqual(
+            payload["reconciliation"]["final_pid"], self.host.loaded[spec.label]
+        )
+        self.assertTrue(payload["reconciliation"]["pid_transition_required"])
+        self.assertTrue(payload["reconciliation"]["pid_transition_verified"])
+
+    def test_restart_rejects_a_failed_kickstart_that_left_the_old_pid_running(self) -> None:
+        spec = self.spec()
+        self.install(spec)
+        first_pid = self.host.loaded[spec.label]
+
+        class RefusesKickstartWithoutChangingTheJob(board_service.LaunchdProvider):
+            def kickstart(self, label: str) -> tuple[bool, str]:
+                return False, "Kickstart failed: 1: Operation not permitted"
+
+        payload = self._restart_with(
+            RefusesKickstartWithoutChangingTheJob(
+                command_runner=self.host.run,
+                root=self.root,
+                uid=self.host.uid,
+                platform="darwin",
+            ),
+            spec,
+        )
+
+        self.assertEqual(payload["status"], "apply_failed")
+        self.assertEqual(payload["delayed_health"]["state"], "pass")
+        self.assertEqual(payload["reconciliation"]["state"], "unresolved")
+        self.assertFalse(payload["reconciliation"]["verified"])
+        self.assertTrue(payload["reconciliation"]["pid_transition_required"])
+        self.assertFalse(payload["reconciliation"]["pid_transition_verified"])
+        self.assertEqual(payload["reconciliation"]["pre_action_pid"], first_pid)
+        self.assertEqual(payload["reconciliation"]["final_pid"], first_pid)
+        self.assertEqual(self.host.loaded[spec.label], first_pid)
+        self.assertEqual(
+            payload["reconciliation"]["recovery"]["command"],
+            "code-mower board service restart --repo codemower-ai/code-mower "
+            "--repo-path . --host 127.0.0.1 --port 5332 --replace",
+        )
+        self.assertIn("pid did not change", payload["message"])
 
     def test_removal_that_cannot_delete_the_definition_is_not_reported_as_removed(self) -> None:
         self.install(self.spec())

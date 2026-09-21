@@ -2730,10 +2730,12 @@ def restart_service(
         # after a logout, or a manual `launchctl bootout` -- is recovered by
         # bootstrapping it, which is what the runbook's restart has to do.
         if existing.loaded:
+            pre_action_pid = existing.pid
             ok, detail = provider.kickstart(spec.label)
             action = "kickstart"
             restarted_message = "restarted the managed Board service in place and validated its binding"
         else:
+            pre_action_pid = None
             ok, detail = provider.bootstrap(spec.label)
             action = "bootstrap"
             restarted_message = "loaded the installed definition, which was not running, and validated its binding"
@@ -2765,8 +2767,18 @@ def restart_service(
         reconciled = _reconciliation(
             "new", final_binding, spec=spec, show_local_paths=show_local_paths
         )
-        healthy = health["state"] == "pass" and bool(reconciled["verified"])
+        final_pid = final_binding.get("pid")
+        pid_transition_required = action == "kickstart" and not ok
+        pid_transition_verified = bool(
+            pre_action_pid and final_pid and final_pid != pre_action_pid
+        )
+        binding_healthy = health["state"] == "pass" and bool(reconciled["verified"])
         reconciled["delayed_health_verified"] = health["state"] == "pass"
+        reconciled["command_succeeded"] = ok
+        reconciled["pre_action_pid"] = pre_action_pid
+        reconciled["final_pid"] = final_pid
+        reconciled["pid_transition_required"] = pid_transition_required
+        reconciled["pid_transition_verified"] = pid_transition_verified
         if health["state"] != "pass" and reconciled["verified"]:
             reconciled.update(
                 state="unresolved",
@@ -2774,7 +2786,20 @@ def restart_service(
                 detail="the binding did not remain valid throughout the delayed health window",
                 recovery=_recovery_instruction(spec, show_local_paths=show_local_paths),
             )
-        if healthy:
+        if pid_transition_required and not pid_transition_verified:
+            reconciled.update(
+                state="unresolved",
+                verified=False,
+                detail=(
+                    "kickstart reported failure and the final supervised pid did not prove that "
+                    "the process restarted"
+                ),
+                recovery=_recovery_instruction(spec, show_local_paths=show_local_paths),
+            )
+        restart_verified = binding_healthy and (
+            not pid_transition_required or pid_transition_verified
+        )
+        if restart_verified:
             status = "restarted"
             message = restarted_message
             if not ok:
@@ -2784,10 +2809,17 @@ def restart_service(
                 )
         elif not ok:
             status = "apply_failed"
-            message = (
-                (detail or f"launchd {action} failed")
-                + "; the installed binding could not be independently verified"
-            )
+            if binding_healthy and pid_transition_required and not pid_transition_verified:
+                message = (
+                    (detail or "launchd kickstart failed")
+                    + "; the service is healthy, but its supervised pid did not change, so the "
+                    "requested restart could not be verified"
+                )
+            else:
+                message = (
+                    (detail or f"launchd {action} failed")
+                    + "; the installed binding could not be independently verified"
+                )
         elif health["state"] != "pass":
             status = "delayed_health_failed"
             message = (
