@@ -302,8 +302,11 @@
         "owner_escalation_count": 1,
         "created_at": 2000000000,
         "updated_at": 2000000300,
-        "owner_escalation_key": "9999999999999999999999999999999999999999999999999999999999999999"
-      }
+        "owner_escalation_key": "9999999999999999999999999999999999999999999999999999999999999999",
+        "elapsed_seconds": 300,
+        "spend_usd": "0.10"
+      },
+      "semantic_context": {}
     },
     {
       "name": "singleton_lease_with_fencing_epoch",
@@ -320,7 +323,8 @@
         "acquired_at": 2000000000,
         "renew_by": 2000000030,
         "expires_at": 2000000090
-      }
+      },
+      "semantic_context": {}
     },
     {
       "name": "durable_intent_precedes_dispatch",
@@ -353,10 +357,26 @@
         "created_at": 2000000000,
         "updated_at": 2000000000,
         "work_generation": 4,
-        "reconciliation_authority": null
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
       },
       "semantic_context": {
-        "current_work_generation": 4
+        "current_work_generation": 4,
+        "now": 2000000000,
+        "current_head_sha": "3333333333333333333333333333333333333333",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_example",
+          "repository_id": "repository_example",
+          "lease_id": "operator_singleton",
+          "holder_id": "operator_instance_2",
+          "epoch": 8,
+          "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "state": "active",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000030,
+          "expires_at": 2000000090
+        }
       }
     },
     {
@@ -384,16 +404,32 @@
         "budget": {
           "attempt_count": 1,
           "reconciliation_count": 0,
-          "elapsed_seconds": 300,
+          "elapsed_seconds": 240,
           "spend_usd": "0.10"
         },
         "created_at": 2000000000,
-        "updated_at": 2000000300,
+        "updated_at": 2000000240,
         "work_generation": 4,
-        "reconciliation_authority": null
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
       },
       "semantic_context": {
-        "current_work_generation": 4
+        "current_work_generation": 4,
+        "now": 2000000240,
+        "current_head_sha": "3333333333333333333333333333333333333333",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_example",
+          "repository_id": "repository_example",
+          "lease_id": "operator_singleton",
+          "holder_id": "operator_instance_2",
+          "epoch": 8,
+          "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "state": "active",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000270,
+          "expires_at": 2000000330
+        }
       }
     },
     {
@@ -421,16 +457,32 @@
         "budget": {
           "attempt_count": 1,
           "reconciliation_count": 1,
-          "elapsed_seconds": 340,
+          "elapsed_seconds": 280,
           "spend_usd": "0.10"
         },
         "created_at": 2000000000,
-        "updated_at": 2000000340,
+        "updated_at": 2000000280,
         "work_generation": 4,
-        "reconciliation_authority": null
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
       },
       "semantic_context": {
-        "current_work_generation": 4
+        "current_work_generation": 4,
+        "now": 2000000280,
+        "current_head_sha": "3333333333333333333333333333333333333333",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_example",
+          "repository_id": "repository_example",
+          "lease_id": "operator_singleton",
+          "holder_id": "operator_instance_2",
+          "epoch": 8,
+          "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "state": "active",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000310,
+          "expires_at": 2000000370
+        }
       }
     },
     {
@@ -464,10 +516,12 @@
         "created_at": 2000000000,
         "updated_at": 2000000001,
         "work_generation": 4,
-        "reconciliation_authority": null
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
       },
       "semantic_context": {
-        "current_work_generation": 4
+        "current_work_generation": 4,
+        "now": 2000000001
       }
     },
     {
@@ -488,15 +542,29 @@
         "attempt_count": 1,
         "elapsed_seconds": 340,
         "spend_usd": "0.10"
-      }
+      },
+      "semantic_context": {}
     },
     {
       "name": "takeover_reconciles_unknown_without_redispatch",
       "contract_schema": "operator_state_v1.schema.json",
       "semantic_context": {
         "current_work_generation": 4,
-        "current_lease_epoch": 9,
-        "current_fence_token": "9999999999999999999999999999999999999999999999999999999999999999"
+        "now": 2000000250,
+        "current_head_sha": "3333333333333333333333333333333333333333",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_example",
+          "repository_id": "repository_example",
+          "lease_id": "operator_singleton",
+          "holder_id": "operator_instance_2",
+          "epoch": 9,
+          "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+          "state": "active",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000280,
+          "expires_at": 2000000340
+        }
       },
       "document": {
         "schema": "code_mower.operatorActionIntent.v1",
@@ -520,17 +588,18 @@
         "budget": {
           "attempt_count": 1,
           "reconciliation_count": 0,
-          "elapsed_seconds": 300,
+          "elapsed_seconds": 250,
           "spend_usd": "0.10"
         },
         "created_at": 2000000000,
-        "updated_at": 2000000310,
+        "updated_at": 2000000250,
         "work_generation": 4,
         "reconciliation_authority": {
           "lease_epoch": 9,
           "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
           "fence_status": "current"
-        }
+        },
+        "lease_id": "operator_singleton"
       }
     }
   ],
@@ -727,7 +796,9 @@
         "owner_escalation_count": 0,
         "created_at": 2000000000,
         "updated_at": 2000001000,
-        "owner_escalation_key": null
+        "owner_escalation_key": null,
+        "elapsed_seconds": 1000,
+        "spend_usd": "0.00"
       }
     },
     {
@@ -747,7 +818,9 @@
         "owner_escalation_count": 0,
         "created_at": 2000000000,
         "updated_at": 2000001001,
-        "owner_escalation_key": null
+        "owner_escalation_key": null,
+        "elapsed_seconds": 1001,
+        "spend_usd": "0.00"
       }
     },
     {
@@ -799,7 +872,8 @@
         "created_at": 2000000000,
         "updated_at": 2000000300,
         "work_generation": 4,
-        "reconciliation_authority": null
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
       }
     },
     {
@@ -834,7 +908,8 @@
         "created_at": 2000000000,
         "updated_at": 2000000000,
         "work_generation": 4,
-        "reconciliation_authority": null
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
       }
     },
     {
@@ -869,7 +944,8 @@
         "created_at": 2000000000,
         "updated_at": 2000000400,
         "work_generation": 4,
-        "reconciliation_authority": null
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
       }
     },
     {
@@ -1085,7 +1161,22 @@
       "contract_schema": "operator_state_v1.schema.json",
       "expected_violation": "intent generation must match the current durable work generation",
       "semantic_context": {
-        "current_work_generation": 4
+        "current_work_generation": 4,
+        "now": 2000000000,
+        "current_head_sha": "3333333333333333333333333333333333333333",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_example",
+          "repository_id": "repository_example",
+          "lease_id": "operator_singleton",
+          "holder_id": "operator_instance_2",
+          "epoch": 8,
+          "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "state": "active",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000030,
+          "expires_at": 2000000090
+        }
       },
       "document": {
         "schema": "code_mower.operatorActionIntent.v1",
@@ -1115,7 +1206,8 @@
         "created_at": 2000000000,
         "updated_at": 2000000000,
         "work_generation": 3,
-        "reconciliation_authority": null
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
       }
     },
     {
@@ -1215,6 +1307,874 @@
         "decision": "denied",
         "reason": "capability_missing"
       }
+    },
+    {
+      "name": "prepared_dispatch_rejects_stale_current_fence",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "prepared dispatch must match the independently read current lease fence",
+      "semantic_context": {
+        "current_work_generation": 4,
+        "now": 2000000000,
+        "current_head_sha": "3333333333333333333333333333333333333333",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_example",
+          "repository_id": "repository_example",
+          "lease_id": "operator_singleton",
+          "holder_id": "operator_instance_2",
+          "epoch": 9,
+          "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+          "state": "active",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000030,
+          "expires_at": 2000000090
+        }
+      },
+      "document": {
+        "schema": "code_mower.operatorActionIntent.v1",
+        "tenant_id": "tenant_example",
+        "repository_id": "repository_example",
+        "work_id": "work_1085",
+        "action_id": "action_open_pr",
+        "operation": "open_or_update_pull_request",
+        "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "lease_epoch": 8,
+        "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "fence_status": "current",
+        "target_head_sha": "3333333333333333333333333333333333333333",
+        "head_status": "current",
+        "state": "prepared",
+        "certainty": "not_attempted",
+        "reconciliation": "not_required",
+        "next_action": "dispatch",
+        "remote_reference": null,
+        "budget": {
+          "attempt_count": 0,
+          "reconciliation_count": 0,
+          "elapsed_seconds": 0,
+          "spend_usd": "0.00"
+        },
+        "created_at": 2000000000,
+        "updated_at": 2000000000,
+        "work_generation": 4,
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
+      }
+    },
+    {
+      "name": "retry_rejects_stale_current_head",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "retry must match the independently read current target head",
+      "semantic_context": {
+        "current_work_generation": 4,
+        "now": 2000000280,
+        "current_head_sha": "4444444444444444444444444444444444444444",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_example",
+          "repository_id": "repository_example",
+          "lease_id": "operator_singleton",
+          "holder_id": "operator_instance_2",
+          "epoch": 8,
+          "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "state": "active",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000310,
+          "expires_at": 2000000370
+        }
+      },
+      "document": {
+        "schema": "code_mower.operatorActionIntent.v1",
+        "tenant_id": "tenant_example",
+        "repository_id": "repository_example",
+        "work_id": "work_1085",
+        "action_id": "action_open_pr",
+        "operation": "open_or_update_pull_request",
+        "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "lease_epoch": 8,
+        "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "fence_status": "current",
+        "target_head_sha": "3333333333333333333333333333333333333333",
+        "head_status": "current",
+        "state": "failed",
+        "certainty": "confirmed_failure",
+        "reconciliation": "matched_failure",
+        "next_action": "retry",
+        "remote_reference": "pull_request_401",
+        "budget": {
+          "attempt_count": 1,
+          "reconciliation_count": 1,
+          "elapsed_seconds": 280,
+          "spend_usd": "0.10"
+        },
+        "created_at": 2000000000,
+        "updated_at": 2000000280,
+        "work_generation": 4,
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
+      }
+    },
+    {
+      "name": "dispatch_rejects_expired_lease",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "dispatch requires an active lease before renew_by and expires_at",
+      "semantic_context": {
+        "current_work_generation": 4,
+        "now": 2000000100,
+        "current_head_sha": "3333333333333333333333333333333333333333",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_example",
+          "repository_id": "repository_example",
+          "lease_id": "operator_singleton",
+          "holder_id": "operator_instance_2",
+          "epoch": 8,
+          "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "state": "expired",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000030,
+          "expires_at": 2000000090
+        }
+      },
+      "document": {
+        "schema": "code_mower.operatorActionIntent.v1",
+        "tenant_id": "tenant_example",
+        "repository_id": "repository_example",
+        "work_id": "work_1085",
+        "action_id": "action_open_pr",
+        "operation": "open_or_update_pull_request",
+        "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "lease_epoch": 8,
+        "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "fence_status": "current",
+        "target_head_sha": "3333333333333333333333333333333333333333",
+        "head_status": "current",
+        "state": "prepared",
+        "certainty": "not_attempted",
+        "reconciliation": "not_required",
+        "next_action": "dispatch",
+        "remote_reference": null,
+        "budget": {
+          "attempt_count": 0,
+          "reconciliation_count": 0,
+          "elapsed_seconds": 0,
+          "spend_usd": "0.00"
+        },
+        "created_at": 2000000000,
+        "updated_at": 2000000000,
+        "work_generation": 4,
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
+      }
+    },
+    {
+      "name": "dispatch_rejects_wrong_scope_lease",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "current lease tenant and repository must match the intent",
+      "semantic_context": {
+        "current_work_generation": 4,
+        "now": 2000000000,
+        "current_head_sha": "3333333333333333333333333333333333333333",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_other",
+          "repository_id": "repository_other",
+          "lease_id": "operator_singleton",
+          "holder_id": "operator_instance_2",
+          "epoch": 8,
+          "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "state": "active",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000030,
+          "expires_at": 2000000090
+        }
+      },
+      "document": {
+        "schema": "code_mower.operatorActionIntent.v1",
+        "tenant_id": "tenant_example",
+        "repository_id": "repository_example",
+        "work_id": "work_1085",
+        "action_id": "action_open_pr",
+        "operation": "open_or_update_pull_request",
+        "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "lease_epoch": 8,
+        "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "fence_status": "current",
+        "target_head_sha": "3333333333333333333333333333333333333333",
+        "head_status": "current",
+        "state": "prepared",
+        "certainty": "not_attempted",
+        "reconciliation": "not_required",
+        "next_action": "dispatch",
+        "remote_reference": null,
+        "budget": {
+          "attempt_count": 0,
+          "reconciliation_count": 0,
+          "elapsed_seconds": 0,
+          "spend_usd": "0.00"
+        },
+        "created_at": 2000000000,
+        "updated_at": 2000000000,
+        "work_generation": 4,
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
+      }
+    },
+    {
+      "name": "result_commit_rejects_stale_authority",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "result commit requires current lease fence and exact target head",
+      "semantic_context": {
+        "current_work_generation": 4,
+        "now": 2000000280,
+        "current_head_sha": "4444444444444444444444444444444444444444",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_example",
+          "repository_id": "repository_example",
+          "lease_id": "operator_singleton",
+          "holder_id": "operator_instance_2",
+          "epoch": 9,
+          "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+          "state": "active",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000310,
+          "expires_at": 2000000370
+        }
+      },
+      "document": {
+        "schema": "code_mower.operatorActionIntent.v1",
+        "tenant_id": "tenant_example",
+        "repository_id": "repository_example",
+        "work_id": "work_1085",
+        "action_id": "action_open_pr",
+        "operation": "open_or_update_pull_request",
+        "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "lease_epoch": 8,
+        "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "fence_status": "current",
+        "target_head_sha": "3333333333333333333333333333333333333333",
+        "head_status": "current",
+        "state": "succeeded",
+        "certainty": "confirmed_success",
+        "reconciliation": "matched_success",
+        "next_action": "none",
+        "remote_reference": "pull_request_401",
+        "budget": {
+          "attempt_count": 1,
+          "reconciliation_count": 1,
+          "elapsed_seconds": 280,
+          "spend_usd": "0.10"
+        },
+        "created_at": 2000000000,
+        "updated_at": 2000000280,
+        "work_generation": 4,
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
+      }
+    },
+    {
+      "name": "reconciliation_rejects_unbound_current_lease",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "reconciliation authority must match the independently read current lease",
+      "semantic_context": {
+        "current_work_generation": 4,
+        "now": 2000000250,
+        "current_head_sha": "3333333333333333333333333333333333333333",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_example",
+          "repository_id": "repository_example",
+          "lease_id": "operator_singleton",
+          "holder_id": "operator_instance_2",
+          "epoch": 10,
+          "fence_token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "state": "active",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000280,
+          "expires_at": 2000000340
+        }
+      },
+      "document": {
+        "schema": "code_mower.operatorActionIntent.v1",
+        "tenant_id": "tenant_example",
+        "repository_id": "repository_example",
+        "work_id": "work_1085",
+        "action_id": "action_open_pr",
+        "operation": "open_or_update_pull_request",
+        "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "lease_epoch": 8,
+        "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "fence_status": "stale",
+        "target_head_sha": "3333333333333333333333333333333333333333",
+        "head_status": "current",
+        "state": "reconciling",
+        "certainty": "unknown",
+        "reconciliation": "in_progress",
+        "next_action": "reconcile",
+        "remote_reference": null,
+        "budget": {
+          "attempt_count": 1,
+          "reconciliation_count": 0,
+          "elapsed_seconds": 250,
+          "spend_usd": "0.10"
+        },
+        "created_at": 2000000000,
+        "updated_at": 2000000250,
+        "work_generation": 4,
+        "reconciliation_authority": {
+          "lease_epoch": 9,
+          "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+          "fence_status": "current"
+        },
+        "lease_id": "operator_singleton"
+      }
+    },
+    {
+      "name": "policy_rejects_repository_outside_allowlist",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "record repository must be admitted by owner policy",
+      "semantic_context": {
+        "current_work_generation": 4,
+        "now": 2000000000,
+        "current_head_sha": "3333333333333333333333333333333333333333",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_example",
+          "repository_id": "repository_other",
+          "lease_id": "operator_singleton",
+          "holder_id": "operator_instance_2",
+          "epoch": 8,
+          "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "state": "active",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000030,
+          "expires_at": 2000000090
+        }
+      },
+      "document": {
+        "schema": "code_mower.operatorActionIntent.v1",
+        "tenant_id": "tenant_example",
+        "repository_id": "repository_other",
+        "work_id": "work_1085",
+        "action_id": "action_open_pr",
+        "operation": "open_or_update_pull_request",
+        "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "lease_epoch": 8,
+        "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "fence_status": "current",
+        "target_head_sha": "3333333333333333333333333333333333333333",
+        "head_status": "current",
+        "state": "prepared",
+        "certainty": "not_attempted",
+        "reconciliation": "not_required",
+        "next_action": "dispatch",
+        "remote_reference": null,
+        "budget": {
+          "attempt_count": 0,
+          "reconciliation_count": 0,
+          "elapsed_seconds": 0,
+          "spend_usd": "0.00"
+        },
+        "created_at": 2000000000,
+        "updated_at": 2000000000,
+        "work_generation": 4,
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
+      }
+    },
+    {
+      "name": "policy_rejects_unauthorized_mutation",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "operation must be present in owner policy authority.mutations",
+      "semantic_context": {
+        "current_work_generation": 4,
+        "now": 2000000000,
+        "current_head_sha": "3333333333333333333333333333333333333333",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_example",
+          "repository_id": "repository_example",
+          "lease_id": "operator_singleton",
+          "holder_id": "operator_instance_2",
+          "epoch": 8,
+          "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "state": "active",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000030,
+          "expires_at": 2000000090
+        },
+        "policy_remove_mutation": "push_commit"
+      },
+      "document": {
+        "schema": "code_mower.operatorActionIntent.v1",
+        "tenant_id": "tenant_example",
+        "repository_id": "repository_example",
+        "work_id": "work_1085",
+        "action_id": "action_open_pr",
+        "operation": "push_commit",
+        "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "lease_epoch": 8,
+        "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "fence_status": "current",
+        "target_head_sha": "3333333333333333333333333333333333333333",
+        "head_status": "current",
+        "state": "prepared",
+        "certainty": "not_attempted",
+        "reconciliation": "not_required",
+        "next_action": "dispatch",
+        "remote_reference": null,
+        "budget": {
+          "attempt_count": 0,
+          "reconciliation_count": 0,
+          "elapsed_seconds": 0,
+          "spend_usd": "0.00"
+        },
+        "created_at": 2000000000,
+        "updated_at": 2000000000,
+        "work_generation": 4,
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
+      }
+    },
+    {
+      "name": "policy_rejects_action_attempt_overage",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "attempt count exceeds the owner policy ceiling",
+      "semantic_context": {
+        "current_work_generation": 4,
+        "now": 2000000280,
+        "current_head_sha": "3333333333333333333333333333333333333333",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_example",
+          "repository_id": "repository_example",
+          "lease_id": "operator_singleton",
+          "holder_id": "operator_instance_2",
+          "epoch": 8,
+          "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "state": "active",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000310,
+          "expires_at": 2000000370
+        }
+      },
+      "document": {
+        "schema": "code_mower.operatorActionIntent.v1",
+        "tenant_id": "tenant_example",
+        "repository_id": "repository_example",
+        "work_id": "work_1085",
+        "action_id": "action_open_pr",
+        "operation": "open_or_update_pull_request",
+        "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "lease_epoch": 8,
+        "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "fence_status": "current",
+        "target_head_sha": "3333333333333333333333333333333333333333",
+        "head_status": "current",
+        "state": "failed",
+        "certainty": "confirmed_failure",
+        "reconciliation": "matched_failure",
+        "next_action": "retry",
+        "remote_reference": "pull_request_401",
+        "budget": {
+          "attempt_count": 4,
+          "reconciliation_count": 1,
+          "elapsed_seconds": 280,
+          "spend_usd": "0.10"
+        },
+        "created_at": 2000000000,
+        "updated_at": 2000000280,
+        "work_generation": 4,
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
+      }
+    },
+    {
+      "name": "policy_rejects_reconciliation_overage",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "reconciliation count exceeds the owner policy ceiling",
+      "semantic_context": {
+        "current_work_generation": 4,
+        "now": 2000000280,
+        "current_head_sha": "3333333333333333333333333333333333333333",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_example",
+          "repository_id": "repository_example",
+          "lease_id": "operator_singleton",
+          "holder_id": "operator_instance_2",
+          "epoch": 8,
+          "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "state": "active",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000310,
+          "expires_at": 2000000370
+        }
+      },
+      "document": {
+        "schema": "code_mower.operatorActionIntent.v1",
+        "tenant_id": "tenant_example",
+        "repository_id": "repository_example",
+        "work_id": "work_1085",
+        "action_id": "action_open_pr",
+        "operation": "open_or_update_pull_request",
+        "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "lease_epoch": 8,
+        "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "fence_status": "current",
+        "target_head_sha": "3333333333333333333333333333333333333333",
+        "head_status": "current",
+        "state": "failed",
+        "certainty": "confirmed_failure",
+        "reconciliation": "matched_failure",
+        "next_action": "retry",
+        "remote_reference": "pull_request_401",
+        "budget": {
+          "attempt_count": 1,
+          "reconciliation_count": 3,
+          "elapsed_seconds": 280,
+          "spend_usd": "0.10"
+        },
+        "created_at": 2000000000,
+        "updated_at": 2000000280,
+        "work_generation": 4,
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
+      }
+    },
+    {
+      "name": "policy_rejects_action_time_overage",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "action time exceeds the owner policy ceiling",
+      "semantic_context": {
+        "current_work_generation": 4,
+        "now": 2000000280,
+        "current_head_sha": "3333333333333333333333333333333333333333",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_example",
+          "repository_id": "repository_example",
+          "lease_id": "operator_singleton",
+          "holder_id": "operator_instance_2",
+          "epoch": 8,
+          "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "state": "active",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000310,
+          "expires_at": 2000000370
+        }
+      },
+      "document": {
+        "schema": "code_mower.operatorActionIntent.v1",
+        "tenant_id": "tenant_example",
+        "repository_id": "repository_example",
+        "work_id": "work_1085",
+        "action_id": "action_open_pr",
+        "operation": "open_or_update_pull_request",
+        "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "lease_epoch": 8,
+        "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "fence_status": "current",
+        "target_head_sha": "3333333333333333333333333333333333333333",
+        "head_status": "current",
+        "state": "failed",
+        "certainty": "confirmed_failure",
+        "reconciliation": "matched_failure",
+        "next_action": "retry",
+        "remote_reference": "pull_request_401",
+        "budget": {
+          "attempt_count": 1,
+          "reconciliation_count": 1,
+          "elapsed_seconds": 301,
+          "spend_usd": "0.10"
+        },
+        "created_at": 2000000000,
+        "updated_at": 2000000280,
+        "work_generation": 4,
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
+      }
+    },
+    {
+      "name": "policy_rejects_action_spend_overage",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "action spend exceeds the owner policy ceiling",
+      "semantic_context": {
+        "current_work_generation": 4,
+        "now": 2000000280,
+        "current_head_sha": "3333333333333333333333333333333333333333",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_example",
+          "repository_id": "repository_example",
+          "lease_id": "operator_singleton",
+          "holder_id": "operator_instance_2",
+          "epoch": 8,
+          "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "state": "active",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000310,
+          "expires_at": 2000000370
+        }
+      },
+      "document": {
+        "schema": "code_mower.operatorActionIntent.v1",
+        "tenant_id": "tenant_example",
+        "repository_id": "repository_example",
+        "work_id": "work_1085",
+        "action_id": "action_open_pr",
+        "operation": "open_or_update_pull_request",
+        "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "lease_epoch": 8,
+        "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "fence_status": "current",
+        "target_head_sha": "3333333333333333333333333333333333333333",
+        "head_status": "current",
+        "state": "failed",
+        "certainty": "confirmed_failure",
+        "reconciliation": "matched_failure",
+        "next_action": "retry",
+        "remote_reference": "pull_request_401",
+        "budget": {
+          "attempt_count": 1,
+          "reconciliation_count": 1,
+          "elapsed_seconds": 280,
+          "spend_usd": "25.01"
+        },
+        "created_at": 2000000000,
+        "updated_at": 2000000280,
+        "work_generation": 4,
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
+      }
+    },
+    {
+      "name": "policy_rejects_owner_escalation_overage",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "owner escalation count exceeds the configured ceiling",
+      "semantic_context": {},
+      "document": {
+        "schema": "code_mower.operatorWorkItem.v1",
+        "tenant_id": "tenant_example",
+        "repository_id": "repository_example",
+        "work_id": "work_1085",
+        "generation": 4,
+        "state": "awaiting_owner",
+        "terminal": false,
+        "last_transition": "reconciling:awaiting_owner",
+        "reason": "budget_exhausted",
+        "owner_escalation_count": 3,
+        "created_at": 2000000000,
+        "updated_at": 2000000300,
+        "owner_escalation_key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "elapsed_seconds": 300,
+        "spend_usd": "0.10"
+      }
+    },
+    {
+      "name": "policy_rejects_work_time_overage",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "work elapsed time exceeds the configured ceiling",
+      "semantic_context": {},
+      "document": {
+        "schema": "code_mower.operatorWorkItem.v1",
+        "tenant_id": "tenant_example",
+        "repository_id": "repository_example",
+        "work_id": "work_1085",
+        "generation": 4,
+        "state": "awaiting_owner",
+        "terminal": false,
+        "last_transition": "reconciling:awaiting_owner",
+        "reason": "budget_exhausted",
+        "owner_escalation_count": 1,
+        "created_at": 2000000000,
+        "updated_at": 2000014401,
+        "owner_escalation_key": "9999999999999999999999999999999999999999999999999999999999999999",
+        "elapsed_seconds": 14401,
+        "spend_usd": "0.10"
+      }
+    },
+    {
+      "name": "policy_rejects_lease_cadence_overage",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "lease deadlines must match configured TTL and renewal cadence",
+      "semantic_context": {},
+      "document": {
+        "schema": "code_mower.operatorLease.v1",
+        "tenant_id": "tenant_example",
+        "repository_id": "repository_example",
+        "lease_id": "operator_singleton",
+        "holder_id": "operator_instance_2",
+        "epoch": 8,
+        "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "state": "active",
+        "acquired_at": 2000000000,
+        "renew_by": 2000000030,
+        "expires_at": 2000000091
+      }
+    },
+    {
+      "name": "lease_rejects_reversed_chronology",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "lease chronology must be acquired_at <= renew_by < expires_at",
+      "semantic_context": {},
+      "document": {
+        "schema": "code_mower.operatorLease.v1",
+        "tenant_id": "tenant_example",
+        "repository_id": "repository_example",
+        "lease_id": "operator_singleton",
+        "holder_id": "operator_instance_2",
+        "epoch": 8,
+        "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "state": "active",
+        "acquired_at": 2000000000,
+        "renew_by": 2000000091,
+        "expires_at": 2000000090
+      }
+    },
+    {
+      "name": "policy_rejects_work_spend_overage",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "cumulative work spend exceeds the configured ceiling",
+      "semantic_context": {},
+      "document": {
+        "schema": "code_mower.operatorWorkItem.v1",
+        "tenant_id": "tenant_example",
+        "repository_id": "repository_example",
+        "work_id": "work_1085",
+        "generation": 4,
+        "state": "awaiting_owner",
+        "terminal": false,
+        "last_transition": "reconciling:awaiting_owner",
+        "reason": "budget_exhausted",
+        "owner_escalation_count": 1,
+        "created_at": 2000000000,
+        "updated_at": 2000000300,
+        "owner_escalation_key": "9999999999999999999999999999999999999999999999999999999999999999",
+        "elapsed_seconds": 300,
+        "spend_usd": "25.01"
+      }
+    },
+    {
+      "name": "dispatch_rejects_wrong_lease_identity",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "current lease identity must match the immutable action lease identity",
+      "semantic_context": {
+        "current_work_generation": 4,
+        "now": 2000000000,
+        "current_head_sha": "3333333333333333333333333333333333333333",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_example",
+          "repository_id": "repository_example",
+          "lease_id": "operator_other",
+          "holder_id": "operator_instance_2",
+          "epoch": 8,
+          "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "state": "active",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000030,
+          "expires_at": 2000000090
+        }
+      },
+      "document": {
+        "schema": "code_mower.operatorActionIntent.v1",
+        "tenant_id": "tenant_example",
+        "repository_id": "repository_example",
+        "work_id": "work_1085",
+        "action_id": "action_open_pr",
+        "operation": "open_or_update_pull_request",
+        "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "lease_epoch": 8,
+        "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "fence_status": "current",
+        "target_head_sha": "3333333333333333333333333333333333333333",
+        "head_status": "current",
+        "state": "prepared",
+        "certainty": "not_attempted",
+        "reconciliation": "not_required",
+        "next_action": "dispatch",
+        "remote_reference": null,
+        "budget": {
+          "attempt_count": 0,
+          "reconciliation_count": 0,
+          "elapsed_seconds": 0,
+          "spend_usd": "0.00"
+        },
+        "created_at": 2000000000,
+        "updated_at": 2000000000,
+        "work_generation": 4,
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
+      }
+    },
+    {
+      "name": "policy_rejects_tenant_outside_scope",
+      "contract_schema": "operator_state_v1.schema.json",
+      "expected_violation": "record tenant must match the owner policy tenant",
+      "semantic_context": {
+        "current_work_generation": 4,
+        "now": 2000000000,
+        "current_head_sha": "3333333333333333333333333333333333333333",
+        "current_lease": {
+          "schema": "code_mower.operatorLease.v1",
+          "tenant_id": "tenant_other",
+          "repository_id": "repository_example",
+          "lease_id": "operator_singleton",
+          "holder_id": "operator_instance_2",
+          "epoch": 8,
+          "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "state": "active",
+          "acquired_at": 2000000000,
+          "renew_by": 2000000030,
+          "expires_at": 2000000090
+        }
+      },
+      "document": {
+        "schema": "code_mower.operatorActionIntent.v1",
+        "tenant_id": "tenant_other",
+        "repository_id": "repository_example",
+        "work_id": "work_1085",
+        "action_id": "action_open_pr",
+        "operation": "open_or_update_pull_request",
+        "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "lease_epoch": 8,
+        "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "fence_status": "current",
+        "target_head_sha": "3333333333333333333333333333333333333333",
+        "head_status": "current",
+        "state": "prepared",
+        "certainty": "not_attempted",
+        "reconciliation": "not_required",
+        "next_action": "dispatch",
+        "remote_reference": null,
+        "budget": {
+          "attempt_count": 0,
+          "reconciliation_count": 0,
+          "elapsed_seconds": 0,
+          "spend_usd": "0.00"
+        },
+        "created_at": 2000000000,
+        "updated_at": 2000000000,
+        "work_generation": 4,
+        "reconciliation_authority": null,
+        "lease_id": "operator_singleton"
+      }
     }
   ],
   "failure_scenarios": [
@@ -1244,14 +2204,15 @@
             "remote_reference": null,
             "budget": {
               "attempt_count": 1,
-              "reconciliation_count": 0,
+              "reconciliation_count": 1,
               "elapsed_seconds": 300,
               "spend_usd": "0.10"
             },
             "created_at": 2000000000,
             "updated_at": 2000000300,
             "work_generation": 4,
-            "reconciliation_authority": null
+            "reconciliation_authority": null,
+            "lease_id": "operator_singleton"
           }
         }
       ],
@@ -1279,50 +2240,213 @@
             "remote_reference": null,
             "budget": {
               "attempt_count": 1,
-              "reconciliation_count": 0,
+              "reconciliation_count": 1,
               "elapsed_seconds": 300,
               "spend_usd": "0.10"
             },
             "created_at": 2000000000,
             "updated_at": 2000000301,
             "work_generation": 4,
-            "reconciliation_authority": null
+            "reconciliation_authority": null,
+            "lease_id": "operator_singleton"
           }
         }
       ],
-      "forbidden_after": [
+      "forbidden_afters": [
         {
-          "contract_schema": "operator_state_v1.schema.json",
-          "document": {
-            "schema": "code_mower.operatorActionIntent.v1",
-            "tenant_id": "tenant_example",
-            "repository_id": "repository_example",
-            "work_id": "work_1085",
-            "action_id": "action_open_pr",
-            "operation": "open_or_update_pull_request",
-            "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-            "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
-            "lease_epoch": 8,
-            "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-            "fence_status": "current",
-            "target_head_sha": "3333333333333333333333333333333333333333",
-            "head_status": "current",
-            "state": "reconciling",
-            "certainty": "unknown",
-            "reconciliation": "in_progress",
-            "next_action": "reconcile",
-            "remote_reference": null,
-            "budget": {
-              "attempt_count": 2,
-              "reconciliation_count": 0,
-              "elapsed_seconds": 300,
-              "spend_usd": "0.10"
-            },
-            "created_at": 2000000000,
-            "updated_at": 2000000301,
-            "work_generation": 4,
-            "reconciliation_authority": null
-          }
+          "name": "original_forbidden_shortcut",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "current",
+                "target_head_sha": "3333333333333333333333333333333333333333",
+                "head_status": "current",
+                "state": "reconciling",
+                "certainty": "unknown",
+                "reconciliation": "in_progress",
+                "next_action": "reconcile",
+                "remote_reference": null,
+                "budget": {
+                  "attempt_count": 2,
+                  "reconciliation_count": 0,
+                  "elapsed_seconds": 300,
+                  "spend_usd": "0.10"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000301,
+                "work_generation": 4,
+                "reconciliation_authority": null,
+                "lease_id": "operator_singleton"
+              }
+            }
+          ]
+        },
+        {
+          "name": "reconciliation_count_rollback",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "current",
+                "target_head_sha": "3333333333333333333333333333333333333333",
+                "head_status": "current",
+                "state": "reconciling",
+                "certainty": "unknown",
+                "reconciliation": "in_progress",
+                "next_action": "reconcile",
+                "remote_reference": null,
+                "budget": {
+                  "attempt_count": 1,
+                  "reconciliation_count": 0,
+                  "elapsed_seconds": 300,
+                  "spend_usd": "0.10"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000301,
+                "work_generation": 4,
+                "reconciliation_authority": null,
+                "lease_id": "operator_singleton"
+              }
+            }
+          ]
+        },
+        {
+          "name": "elapsed_seconds_rollback",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "current",
+                "target_head_sha": "3333333333333333333333333333333333333333",
+                "head_status": "current",
+                "state": "reconciling",
+                "certainty": "unknown",
+                "reconciliation": "in_progress",
+                "next_action": "reconcile",
+                "remote_reference": null,
+                "budget": {
+                  "attempt_count": 1,
+                  "reconciliation_count": 1,
+                  "elapsed_seconds": 1,
+                  "spend_usd": "0.10"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000301,
+                "work_generation": 4,
+                "reconciliation_authority": null,
+                "lease_id": "operator_singleton"
+              }
+            }
+          ]
+        },
+        {
+          "name": "spend_rollback",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "current",
+                "target_head_sha": "3333333333333333333333333333333333333333",
+                "head_status": "current",
+                "state": "reconciling",
+                "certainty": "unknown",
+                "reconciliation": "in_progress",
+                "next_action": "reconcile",
+                "remote_reference": null,
+                "budget": {
+                  "attempt_count": 1,
+                  "reconciliation_count": 1,
+                  "elapsed_seconds": 300,
+                  "spend_usd": "0.00"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000301,
+                "work_generation": 4,
+                "reconciliation_authority": null,
+                "lease_id": "operator_singleton"
+              }
+            }
+          ]
+        },
+        {
+          "name": "updated_at_rollback",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "current",
+                "target_head_sha": "3333333333333333333333333333333333333333",
+                "head_status": "current",
+                "state": "reconciling",
+                "certainty": "unknown",
+                "reconciliation": "in_progress",
+                "next_action": "reconcile",
+                "remote_reference": null,
+                "budget": {
+                  "attempt_count": 1,
+                  "reconciliation_count": 1,
+                  "elapsed_seconds": 300,
+                  "spend_usd": "0.10"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000001,
+                "work_generation": 4,
+                "reconciliation_authority": null,
+                "lease_id": "operator_singleton"
+              }
+            }
+          ]
         }
       ]
     },
@@ -1353,13 +2477,14 @@
             "budget": {
               "attempt_count": 1,
               "reconciliation_count": 1,
-              "elapsed_seconds": 340,
+              "elapsed_seconds": 300,
               "spend_usd": "0.10"
             },
             "created_at": 2000000000,
             "updated_at": 2000000340,
             "work_generation": 4,
-            "reconciliation_authority": null
+            "reconciliation_authority": null,
+            "lease_id": "operator_singleton"
           }
         }
       ],
@@ -1388,49 +2513,56 @@
             "budget": {
               "attempt_count": 1,
               "reconciliation_count": 1,
-              "elapsed_seconds": 340,
+              "elapsed_seconds": 300,
               "spend_usd": "0.10"
             },
             "created_at": 2000000000,
             "updated_at": 2000000340,
             "work_generation": 4,
-            "reconciliation_authority": null
+            "reconciliation_authority": null,
+            "lease_id": "operator_singleton"
           }
         }
       ],
-      "forbidden_after": [
+      "forbidden_afters": [
         {
-          "contract_schema": "operator_state_v1.schema.json",
-          "document": {
-            "schema": "code_mower.operatorActionIntent.v1",
-            "tenant_id": "tenant_example",
-            "repository_id": "repository_example",
-            "work_id": "work_1085",
-            "action_id": "action_open_pr",
-            "operation": "open_or_update_pull_request",
-            "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-            "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
-            "lease_epoch": 8,
-            "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-            "fence_status": "current",
-            "target_head_sha": "3333333333333333333333333333333333333333",
-            "head_status": "current",
-            "state": "succeeded",
-            "certainty": "confirmed_success",
-            "reconciliation": "matched_success",
-            "next_action": "none",
-            "remote_reference": "pull_request_401",
-            "budget": {
-              "attempt_count": 2,
-              "reconciliation_count": 1,
-              "elapsed_seconds": 340,
-              "spend_usd": "0.10"
-            },
-            "created_at": 2000000000,
-            "updated_at": 2000000341,
-            "work_generation": 4,
-            "reconciliation_authority": null
-          }
+          "name": "original_forbidden_shortcut",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "current",
+                "target_head_sha": "3333333333333333333333333333333333333333",
+                "head_status": "current",
+                "state": "succeeded",
+                "certainty": "confirmed_success",
+                "reconciliation": "matched_success",
+                "next_action": "none",
+                "remote_reference": "pull_request_401",
+                "budget": {
+                  "attempt_count": 2,
+                  "reconciliation_count": 1,
+                  "elapsed_seconds": 300,
+                  "spend_usd": "0.10"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000341,
+                "work_generation": 4,
+                "reconciliation_authority": null,
+                "lease_id": "operator_singleton"
+              }
+            }
+          ]
         }
       ]
     },
@@ -1476,14 +2608,15 @@
             "remote_reference": null,
             "budget": {
               "attempt_count": 1,
-              "reconciliation_count": 0,
-              "elapsed_seconds": 300,
+              "reconciliation_count": 1,
+              "elapsed_seconds": 240,
               "spend_usd": "0.10"
             },
             "created_at": 2000000000,
-            "updated_at": 2000000300,
+            "updated_at": 2000000240,
             "work_generation": 4,
-            "reconciliation_authority": null
+            "reconciliation_authority": null,
+            "lease_id": "operator_singleton"
           }
         }
       ],
@@ -1500,8 +2633,8 @@
             "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
             "state": "active",
             "acquired_at": 2000000100,
-            "renew_by": 2000000130,
-            "expires_at": 2000000190
+            "renew_by": 2000000280,
+            "expires_at": 2000000340
           }
         },
         {
@@ -1527,74 +2660,553 @@
             "remote_reference": null,
             "budget": {
               "attempt_count": 1,
-              "reconciliation_count": 0,
-              "elapsed_seconds": 300,
+              "reconciliation_count": 1,
+              "elapsed_seconds": 250,
               "spend_usd": "0.10"
             },
             "created_at": 2000000000,
-            "updated_at": 2000000310,
+            "updated_at": 2000000250,
             "work_generation": 4,
             "reconciliation_authority": {
               "lease_epoch": 9,
               "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
               "fence_status": "current"
-            }
+            },
+            "lease_id": "operator_singleton"
           }
         }
       ],
-      "forbidden_after": [
+      "forbidden_afters": [
         {
-          "contract_schema": "operator_state_v1.schema.json",
-          "document": {
-            "schema": "code_mower.operatorLease.v1",
-            "tenant_id": "tenant_example",
-            "repository_id": "repository_example",
-            "lease_id": "operator_singleton",
-            "holder_id": "operator_instance_2",
-            "epoch": 9,
-            "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
-            "state": "active",
-            "acquired_at": 2000000100,
-            "renew_by": 2000000130,
-            "expires_at": 2000000190
-          }
+          "name": "original_forbidden_shortcut",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorLease.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "lease_id": "operator_singleton",
+                "holder_id": "operator_instance_2",
+                "epoch": 9,
+                "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+                "state": "active",
+                "acquired_at": 2000000100,
+                "renew_by": 2000000130,
+                "expires_at": 2000000190
+              }
+            },
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "stale",
+                "target_head_sha": "3333333333333333333333333333333333333333",
+                "head_status": "current",
+                "state": "reconciling",
+                "certainty": "unknown",
+                "reconciliation": "in_progress",
+                "next_action": "reconcile",
+                "remote_reference": null,
+                "budget": {
+                  "attempt_count": 2,
+                  "reconciliation_count": 0,
+                  "elapsed_seconds": 300,
+                  "spend_usd": "0.10"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000310,
+                "work_generation": 4,
+                "reconciliation_authority": {
+                  "lease_epoch": 9,
+                  "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+                  "fence_status": "current"
+                },
+                "lease_id": "operator_singleton"
+              }
+            }
+          ]
         },
         {
-          "contract_schema": "operator_state_v1.schema.json",
-          "document": {
-            "schema": "code_mower.operatorActionIntent.v1",
-            "tenant_id": "tenant_example",
-            "repository_id": "repository_example",
-            "work_id": "work_1085",
-            "action_id": "action_open_pr",
-            "operation": "open_or_update_pull_request",
-            "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-            "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
-            "lease_epoch": 8,
-            "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-            "fence_status": "stale",
-            "target_head_sha": "3333333333333333333333333333333333333333",
-            "head_status": "current",
-            "state": "reconciling",
-            "certainty": "unknown",
-            "reconciliation": "in_progress",
-            "next_action": "reconcile",
-            "remote_reference": null,
-            "budget": {
-              "attempt_count": 2,
-              "reconciliation_count": 0,
-              "elapsed_seconds": 300,
-              "spend_usd": "0.10"
+          "name": "cross_tenant",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorLease.v1",
+                "tenant_id": "tenant_other",
+                "repository_id": "repository_example",
+                "lease_id": "operator_singleton",
+                "holder_id": "operator_instance_2",
+                "epoch": 9,
+                "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+                "state": "active",
+                "acquired_at": 2000000100,
+                "renew_by": 2000000280,
+                "expires_at": 2000000340
+              }
             },
-            "created_at": 2000000000,
-            "updated_at": 2000000310,
-            "work_generation": 4,
-            "reconciliation_authority": {
-              "lease_epoch": 9,
-              "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
-              "fence_status": "current"
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "stale",
+                "target_head_sha": "3333333333333333333333333333333333333333",
+                "head_status": "current",
+                "state": "reconciling",
+                "certainty": "unknown",
+                "reconciliation": "in_progress",
+                "next_action": "reconcile",
+                "remote_reference": null,
+                "budget": {
+                  "attempt_count": 1,
+                  "reconciliation_count": 0,
+                  "elapsed_seconds": 250,
+                  "spend_usd": "0.10"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000250,
+                "work_generation": 4,
+                "reconciliation_authority": {
+                  "lease_epoch": 9,
+                  "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+                  "fence_status": "current"
+                },
+                "lease_id": "operator_singleton"
+              }
             }
-          }
+          ]
+        },
+        {
+          "name": "cross_repository",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorLease.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_other",
+                "lease_id": "operator_singleton",
+                "holder_id": "operator_instance_2",
+                "epoch": 9,
+                "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+                "state": "active",
+                "acquired_at": 2000000100,
+                "renew_by": 2000000280,
+                "expires_at": 2000000340
+              }
+            },
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "stale",
+                "target_head_sha": "3333333333333333333333333333333333333333",
+                "head_status": "current",
+                "state": "reconciling",
+                "certainty": "unknown",
+                "reconciliation": "in_progress",
+                "next_action": "reconcile",
+                "remote_reference": null,
+                "budget": {
+                  "attempt_count": 1,
+                  "reconciliation_count": 0,
+                  "elapsed_seconds": 250,
+                  "spend_usd": "0.10"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000250,
+                "work_generation": 4,
+                "reconciliation_authority": {
+                  "lease_epoch": 9,
+                  "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+                  "fence_status": "current"
+                },
+                "lease_id": "operator_singleton"
+              }
+            }
+          ]
+        },
+        {
+          "name": "cross_operator_lease",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorLease.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "lease_id": "another_operator",
+                "holder_id": "operator_instance_2",
+                "epoch": 9,
+                "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+                "state": "active",
+                "acquired_at": 2000000100,
+                "renew_by": 2000000280,
+                "expires_at": 2000000340
+              }
+            },
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "stale",
+                "target_head_sha": "3333333333333333333333333333333333333333",
+                "head_status": "current",
+                "state": "reconciling",
+                "certainty": "unknown",
+                "reconciliation": "in_progress",
+                "next_action": "reconcile",
+                "remote_reference": null,
+                "budget": {
+                  "attempt_count": 1,
+                  "reconciliation_count": 0,
+                  "elapsed_seconds": 250,
+                  "spend_usd": "0.10"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000250,
+                "work_generation": 4,
+                "reconciliation_authority": {
+                  "lease_epoch": 9,
+                  "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+                  "fence_status": "current"
+                },
+                "lease_id": "operator_singleton"
+              }
+            }
+          ]
+        },
+        {
+          "name": "same_holder_identity",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorLease.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "lease_id": "operator_singleton",
+                "holder_id": "operator_instance_1",
+                "epoch": 9,
+                "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+                "state": "active",
+                "acquired_at": 2000000100,
+                "renew_by": 2000000280,
+                "expires_at": 2000000340
+              }
+            },
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "stale",
+                "target_head_sha": "3333333333333333333333333333333333333333",
+                "head_status": "current",
+                "state": "reconciling",
+                "certainty": "unknown",
+                "reconciliation": "in_progress",
+                "next_action": "reconcile",
+                "remote_reference": null,
+                "budget": {
+                  "attempt_count": 1,
+                  "reconciliation_count": 0,
+                  "elapsed_seconds": 250,
+                  "spend_usd": "0.10"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000250,
+                "work_generation": 4,
+                "reconciliation_authority": {
+                  "lease_epoch": 9,
+                  "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+                  "fence_status": "current"
+                },
+                "lease_id": "operator_singleton"
+              }
+            }
+          ]
+        },
+        {
+          "name": "reversed_lease_chronology",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorLease.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "lease_id": "operator_singleton",
+                "holder_id": "operator_instance_2",
+                "epoch": 9,
+                "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+                "state": "active",
+                "acquired_at": 2000000100,
+                "renew_by": 2000000341,
+                "expires_at": 2000000340
+              }
+            },
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "stale",
+                "target_head_sha": "3333333333333333333333333333333333333333",
+                "head_status": "current",
+                "state": "reconciling",
+                "certainty": "unknown",
+                "reconciliation": "in_progress",
+                "next_action": "reconcile",
+                "remote_reference": null,
+                "budget": {
+                  "attempt_count": 1,
+                  "reconciliation_count": 0,
+                  "elapsed_seconds": 250,
+                  "spend_usd": "0.10"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000250,
+                "work_generation": 4,
+                "reconciliation_authority": {
+                  "lease_epoch": 9,
+                  "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+                  "fence_status": "current"
+                },
+                "lease_id": "operator_singleton"
+              }
+            }
+          ]
+        },
+        {
+          "name": "elapsed_seconds_rollback",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorLease.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "lease_id": "operator_singleton",
+                "holder_id": "operator_instance_2",
+                "epoch": 9,
+                "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+                "state": "active",
+                "acquired_at": 2000000100,
+                "renew_by": 2000000280,
+                "expires_at": 2000000340
+              }
+            },
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "stale",
+                "target_head_sha": "3333333333333333333333333333333333333333",
+                "head_status": "current",
+                "state": "reconciling",
+                "certainty": "unknown",
+                "reconciliation": "in_progress",
+                "next_action": "reconcile",
+                "remote_reference": null,
+                "budget": {
+                  "attempt_count": 1,
+                  "reconciliation_count": 0,
+                  "elapsed_seconds": 1,
+                  "spend_usd": "0.10"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000250,
+                "work_generation": 4,
+                "reconciliation_authority": {
+                  "lease_epoch": 9,
+                  "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+                  "fence_status": "current"
+                },
+                "lease_id": "operator_singleton"
+              }
+            }
+          ]
+        },
+        {
+          "name": "spend_rollback",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorLease.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "lease_id": "operator_singleton",
+                "holder_id": "operator_instance_2",
+                "epoch": 9,
+                "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+                "state": "active",
+                "acquired_at": 2000000100,
+                "renew_by": 2000000280,
+                "expires_at": 2000000340
+              }
+            },
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "stale",
+                "target_head_sha": "3333333333333333333333333333333333333333",
+                "head_status": "current",
+                "state": "reconciling",
+                "certainty": "unknown",
+                "reconciliation": "in_progress",
+                "next_action": "reconcile",
+                "remote_reference": null,
+                "budget": {
+                  "attempt_count": 1,
+                  "reconciliation_count": 0,
+                  "elapsed_seconds": 250,
+                  "spend_usd": "0.00"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000250,
+                "work_generation": 4,
+                "reconciliation_authority": {
+                  "lease_epoch": 9,
+                  "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+                  "fence_status": "current"
+                },
+                "lease_id": "operator_singleton"
+              }
+            }
+          ]
+        },
+        {
+          "name": "reconciliation_count_rollback",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorLease.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "lease_id": "operator_singleton",
+                "holder_id": "operator_instance_2",
+                "epoch": 9,
+                "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+                "state": "active",
+                "acquired_at": 2000000100,
+                "renew_by": 2000000280,
+                "expires_at": 2000000340
+              }
+            },
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "stale",
+                "target_head_sha": "3333333333333333333333333333333333333333",
+                "head_status": "current",
+                "state": "reconciling",
+                "certainty": "unknown",
+                "reconciliation": "in_progress",
+                "next_action": "reconcile",
+                "remote_reference": null,
+                "budget": {
+                  "attempt_count": 1,
+                  "reconciliation_count": 0,
+                  "elapsed_seconds": 250,
+                  "spend_usd": "0.10"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000250,
+                "work_generation": 4,
+                "reconciliation_authority": {
+                  "lease_epoch": 9,
+                  "fence_token": "9999999999999999999999999999999999999999999999999999999999999999",
+                  "fence_status": "current"
+                },
+                "lease_id": "operator_singleton"
+              }
+            }
+          ]
         }
       ]
     },
@@ -1631,7 +3243,8 @@
             "created_at": 2000000000,
             "updated_at": 2000000000,
             "work_generation": 4,
-            "reconciliation_authority": null
+            "reconciliation_authority": null,
+            "lease_id": "operator_singleton"
           }
         }
       ],
@@ -1666,43 +3279,50 @@
             "created_at": 2000000000,
             "updated_at": 2000000001,
             "work_generation": 4,
-            "reconciliation_authority": null
+            "reconciliation_authority": null,
+            "lease_id": "operator_singleton"
           }
         }
       ],
-      "forbidden_after": [
+      "forbidden_afters": [
         {
-          "contract_schema": "operator_state_v1.schema.json",
-          "document": {
-            "schema": "code_mower.operatorActionIntent.v1",
-            "tenant_id": "tenant_example",
-            "repository_id": "repository_example",
-            "work_id": "work_1085",
-            "action_id": "action_open_pr",
-            "operation": "open_or_update_pull_request",
-            "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-            "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
-            "lease_epoch": 8,
-            "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-            "fence_status": "current",
-            "target_head_sha": "4444444444444444444444444444444444444444",
-            "head_status": "current",
-            "state": "prepared",
-            "certainty": "not_attempted",
-            "reconciliation": "not_required",
-            "next_action": "dispatch",
-            "remote_reference": null,
-            "budget": {
-              "attempt_count": 0,
-              "reconciliation_count": 0,
-              "elapsed_seconds": 0,
-              "spend_usd": "0.00"
-            },
-            "created_at": 2000000000,
-            "updated_at": 2000000001,
-            "work_generation": 4,
-            "reconciliation_authority": null
-          }
+          "name": "original_forbidden_shortcut",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "current",
+                "target_head_sha": "4444444444444444444444444444444444444444",
+                "head_status": "current",
+                "state": "prepared",
+                "certainty": "not_attempted",
+                "reconciliation": "not_required",
+                "next_action": "dispatch",
+                "remote_reference": null,
+                "budget": {
+                  "attempt_count": 0,
+                  "reconciliation_count": 0,
+                  "elapsed_seconds": 0,
+                  "spend_usd": "0.00"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000001,
+                "work_generation": 4,
+                "reconciliation_authority": null,
+                "lease_id": "operator_singleton"
+              }
+            }
+          ]
         }
       ]
     },
@@ -1739,7 +3359,8 @@
             "created_at": 2000000000,
             "updated_at": 2000000000,
             "work_generation": 4,
-            "reconciliation_authority": null
+            "reconciliation_authority": null,
+            "lease_id": "operator_singleton"
           }
         }
       ],
@@ -1774,43 +3395,50 @@
             "created_at": 2000000000,
             "updated_at": 2000000300,
             "work_generation": 4,
-            "reconciliation_authority": null
+            "reconciliation_authority": null,
+            "lease_id": "operator_singleton"
           }
         }
       ],
-      "forbidden_after": [
+      "forbidden_afters": [
         {
-          "contract_schema": "operator_state_v1.schema.json",
-          "document": {
-            "schema": "code_mower.operatorActionIntent.v1",
-            "tenant_id": "tenant_example",
-            "repository_id": "repository_example",
-            "work_id": "work_1085",
-            "action_id": "action_open_pr",
-            "operation": "open_or_update_pull_request",
-            "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-            "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
-            "lease_epoch": 8,
-            "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-            "fence_status": "current",
-            "target_head_sha": "3333333333333333333333333333333333333333",
-            "head_status": "current",
-            "state": "failed",
-            "certainty": "confirmed_failure",
-            "reconciliation": "not_required",
-            "next_action": "retry",
-            "remote_reference": null,
-            "budget": {
-              "attempt_count": 1,
-              "reconciliation_count": 0,
-              "elapsed_seconds": 300,
-              "spend_usd": "0.10"
-            },
-            "created_at": 2000000000,
-            "updated_at": 2000000300,
-            "work_generation": 4,
-            "reconciliation_authority": null
-          }
+          "name": "original_forbidden_shortcut",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "current",
+                "target_head_sha": "3333333333333333333333333333333333333333",
+                "head_status": "current",
+                "state": "failed",
+                "certainty": "confirmed_failure",
+                "reconciliation": "not_required",
+                "next_action": "retry",
+                "remote_reference": null,
+                "budget": {
+                  "attempt_count": 1,
+                  "reconciliation_count": 0,
+                  "elapsed_seconds": 300,
+                  "spend_usd": "0.10"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000300,
+                "work_generation": 4,
+                "reconciliation_authority": null,
+                "lease_id": "operator_singleton"
+              }
+            }
+          ]
         }
       ]
     },
@@ -1847,7 +3475,8 @@
             "created_at": 2000000000,
             "updated_at": 2000000300,
             "work_generation": 4,
-            "reconciliation_authority": null
+            "reconciliation_authority": null,
+            "lease_id": "operator_singleton"
           }
         }
       ],
@@ -1882,43 +3511,50 @@
             "created_at": 2000000000,
             "updated_at": 2000000310,
             "work_generation": 4,
-            "reconciliation_authority": null
+            "reconciliation_authority": null,
+            "lease_id": "operator_singleton"
           }
         }
       ],
-      "forbidden_after": [
+      "forbidden_afters": [
         {
-          "contract_schema": "operator_state_v1.schema.json",
-          "document": {
-            "schema": "code_mower.operatorActionIntent.v1",
-            "tenant_id": "tenant_example",
-            "repository_id": "repository_example",
-            "work_id": "work_1085",
-            "action_id": "action_open_pr",
-            "operation": "open_or_update_pull_request",
-            "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-            "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
-            "lease_epoch": 8,
-            "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-            "fence_status": "current",
-            "target_head_sha": "3333333333333333333333333333333333333333",
-            "head_status": "current",
-            "state": "reconciling",
-            "certainty": "unknown",
-            "reconciliation": "in_progress",
-            "next_action": "reconcile",
-            "remote_reference": "session_partial",
-            "budget": {
-              "attempt_count": 2,
-              "reconciliation_count": 0,
-              "elapsed_seconds": 300,
-              "spend_usd": "0.10"
-            },
-            "created_at": 2000000000,
-            "updated_at": 2000000310,
-            "work_generation": 4,
-            "reconciliation_authority": null
-          }
+          "name": "original_forbidden_shortcut",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "current",
+                "target_head_sha": "3333333333333333333333333333333333333333",
+                "head_status": "current",
+                "state": "reconciling",
+                "certainty": "unknown",
+                "reconciliation": "in_progress",
+                "next_action": "reconcile",
+                "remote_reference": "session_partial",
+                "budget": {
+                  "attempt_count": 2,
+                  "reconciliation_count": 0,
+                  "elapsed_seconds": 300,
+                  "spend_usd": "0.10"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000310,
+                "work_generation": 4,
+                "reconciliation_authority": null,
+                "lease_id": "operator_singleton"
+              }
+            }
+          ]
         }
       ]
     },
@@ -1940,7 +3576,9 @@
             "owner_escalation_count": 0,
             "owner_escalation_key": null,
             "created_at": 2000000000,
-            "updated_at": 2000000300
+            "updated_at": 2000000300,
+            "elapsed_seconds": 300,
+            "spend_usd": "0.10"
           }
         }
       ],
@@ -1960,28 +3598,87 @@
             "owner_escalation_count": 1,
             "owner_escalation_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "created_at": 2000000000,
-            "updated_at": 2000000310
+            "updated_at": 2000000310,
+            "elapsed_seconds": 310,
+            "spend_usd": "0.10"
           }
         }
       ],
-      "forbidden_after": [
+      "forbidden_afters": [
         {
-          "contract_schema": "operator_state_v1.schema.json",
-          "document": {
-            "schema": "code_mower.operatorWorkItem.v1",
-            "tenant_id": "tenant_example",
-            "repository_id": "repository_example",
-            "work_id": "work_1085",
-            "generation": 4,
-            "state": "reconciling",
-            "terminal": false,
-            "last_transition": "executing:reconciling",
-            "reason": "none",
-            "owner_escalation_count": 0,
-            "owner_escalation_key": null,
-            "created_at": 2000000000,
-            "updated_at": 2000000310
-          }
+          "name": "original_forbidden_shortcut",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorWorkItem.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "generation": 4,
+                "state": "reconciling",
+                "terminal": false,
+                "last_transition": "executing:reconciling",
+                "reason": "none",
+                "owner_escalation_count": 0,
+                "owner_escalation_key": null,
+                "created_at": 2000000000,
+                "updated_at": 2000000310,
+                "elapsed_seconds": 310,
+                "spend_usd": "0.00"
+              }
+            }
+          ]
+        },
+        {
+          "name": "work_elapsed_seconds_rollback",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorWorkItem.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "generation": 4,
+                "state": "awaiting_owner",
+                "terminal": false,
+                "last_transition": "reconciling:awaiting_owner",
+                "reason": "budget_exhausted",
+                "owner_escalation_count": 1,
+                "owner_escalation_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "created_at": 2000000000,
+                "updated_at": 2000000310,
+                "elapsed_seconds": 1,
+                "spend_usd": "0.10"
+              }
+            }
+          ]
+        },
+        {
+          "name": "work_spend_rollback",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorWorkItem.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "generation": 4,
+                "state": "awaiting_owner",
+                "terminal": false,
+                "last_transition": "reconciling:awaiting_owner",
+                "reason": "budget_exhausted",
+                "owner_escalation_count": 1,
+                "owner_escalation_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "created_at": 2000000000,
+                "updated_at": 2000000310,
+                "elapsed_seconds": 310,
+                "spend_usd": "0.00"
+              }
+            }
+          ]
         }
       ]
     },
@@ -2003,7 +3700,9 @@
             "owner_escalation_count": 1,
             "owner_escalation_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "created_at": 2000000000,
-            "updated_at": 2000000310
+            "updated_at": 2000000310,
+            "elapsed_seconds": 310,
+            "spend_usd": "0.00"
           }
         }
       ],
@@ -2023,28 +3722,37 @@
             "owner_escalation_count": 1,
             "owner_escalation_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "created_at": 2000000000,
-            "updated_at": 2000000310
+            "updated_at": 2000000310,
+            "elapsed_seconds": 310,
+            "spend_usd": "0.00"
           }
         }
       ],
-      "forbidden_after": [
+      "forbidden_afters": [
         {
-          "contract_schema": "operator_state_v1.schema.json",
-          "document": {
-            "schema": "code_mower.operatorWorkItem.v1",
-            "tenant_id": "tenant_example",
-            "repository_id": "repository_example",
-            "work_id": "work_1085",
-            "generation": 4,
-            "state": "awaiting_owner",
-            "terminal": false,
-            "last_transition": "reconciling:awaiting_owner",
-            "reason": "budget_exhausted",
-            "owner_escalation_count": 2,
-            "owner_escalation_key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            "created_at": 2000000000,
-            "updated_at": 2000000311
-          }
+          "name": "original_forbidden_shortcut",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorWorkItem.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "generation": 4,
+                "state": "awaiting_owner",
+                "terminal": false,
+                "last_transition": "reconciling:awaiting_owner",
+                "reason": "budget_exhausted",
+                "owner_escalation_count": 2,
+                "owner_escalation_key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "created_at": 2000000000,
+                "updated_at": 2000000311,
+                "elapsed_seconds": 311,
+                "spend_usd": "0.00"
+              }
+            }
+          ]
         }
       ]
     },
@@ -2066,7 +3774,9 @@
             "owner_escalation_count": 0,
             "owner_escalation_key": null,
             "created_at": 2000000000,
-            "updated_at": 2000000200
+            "updated_at": 2000000200,
+            "elapsed_seconds": 200,
+            "spend_usd": "0.00"
           }
         },
         {
@@ -2099,7 +3809,8 @@
             "created_at": 2000000000,
             "updated_at": 2000000200,
             "work_generation": 4,
-            "reconciliation_authority": null
+            "reconciliation_authority": null,
+            "lease_id": "operator_singleton"
           }
         }
       ],
@@ -2119,7 +3830,9 @@
             "owner_escalation_count": 0,
             "owner_escalation_key": null,
             "created_at": 2000000000,
-            "updated_at": 2000000210
+            "updated_at": 2000000210,
+            "elapsed_seconds": 210,
+            "spend_usd": "0.00"
           }
         },
         {
@@ -2152,61 +3865,70 @@
             "created_at": 2000000000,
             "updated_at": 2000000210,
             "work_generation": 4,
-            "reconciliation_authority": null
+            "reconciliation_authority": null,
+            "lease_id": "operator_singleton"
           }
         }
       ],
-      "forbidden_after": [
+      "forbidden_afters": [
         {
-          "contract_schema": "operator_state_v1.schema.json",
-          "document": {
-            "schema": "code_mower.operatorWorkItem.v1",
-            "tenant_id": "tenant_example",
-            "repository_id": "repository_example",
-            "work_id": "work_1085",
-            "generation": 4,
-            "state": "cancelled",
-            "terminal": true,
-            "last_transition": "executing:cancelled",
-            "reason": "owner_cancelled",
-            "owner_escalation_count": 0,
-            "owner_escalation_key": null,
-            "created_at": 2000000000,
-            "updated_at": 2000000210
-          }
-        },
-        {
-          "contract_schema": "operator_state_v1.schema.json",
-          "document": {
-            "schema": "code_mower.operatorActionIntent.v1",
-            "tenant_id": "tenant_example",
-            "repository_id": "repository_example",
-            "work_id": "work_1085",
-            "action_id": "action_open_pr",
-            "operation": "open_or_update_pull_request",
-            "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-            "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
-            "lease_epoch": 8,
-            "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-            "fence_status": "current",
-            "target_head_sha": "3333333333333333333333333333333333333333",
-            "head_status": "current",
-            "state": "uncertain",
-            "certainty": "unknown",
-            "reconciliation": "required",
-            "next_action": "reconcile",
-            "remote_reference": null,
-            "budget": {
-              "attempt_count": 1,
-              "reconciliation_count": 0,
-              "elapsed_seconds": 300,
-              "spend_usd": "0.10"
+          "name": "original_forbidden_shortcut",
+          "records": [
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorWorkItem.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "generation": 4,
+                "state": "cancelled",
+                "terminal": true,
+                "last_transition": "executing:cancelled",
+                "reason": "owner_cancelled",
+                "owner_escalation_count": 0,
+                "owner_escalation_key": null,
+                "created_at": 2000000000,
+                "updated_at": 2000000210,
+                "elapsed_seconds": 210,
+                "spend_usd": "0.00"
+              }
             },
-            "created_at": 2000000000,
-            "updated_at": 2000000210,
-            "work_generation": 4,
-            "reconciliation_authority": null
-          }
+            {
+              "contract_schema": "operator_state_v1.schema.json",
+              "document": {
+                "schema": "code_mower.operatorActionIntent.v1",
+                "tenant_id": "tenant_example",
+                "repository_id": "repository_example",
+                "work_id": "work_1085",
+                "action_id": "action_open_pr",
+                "operation": "open_or_update_pull_request",
+                "idempotency_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+                "lease_epoch": 8,
+                "fence_token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "fence_status": "current",
+                "target_head_sha": "3333333333333333333333333333333333333333",
+                "head_status": "current",
+                "state": "uncertain",
+                "certainty": "unknown",
+                "reconciliation": "required",
+                "next_action": "reconcile",
+                "remote_reference": null,
+                "budget": {
+                  "attempt_count": 1,
+                  "reconciliation_count": 0,
+                  "elapsed_seconds": 300,
+                  "spend_usd": "0.10"
+                },
+                "created_at": 2000000000,
+                "updated_at": 2000000210,
+                "work_generation": 4,
+                "reconciliation_authority": null,
+                "lease_id": "operator_singleton"
+              }
+            }
+          ]
         }
       ]
     }

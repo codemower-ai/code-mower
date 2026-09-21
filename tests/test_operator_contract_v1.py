@@ -9,6 +9,8 @@ from typing import Any
 
 from code_mower.operator_contract_v1 import (
     action_intent_semantic_errors,
+    lease_semantic_errors,
+    policy_binding_errors,
     qualification_semantic_errors,
     recovery_transition_errors,
 )
@@ -167,16 +169,26 @@ class OperatorContractV1Tests(unittest.TestCase):
                 max_evidence_age_seconds=policy["qualification"]["max_evidence_age_seconds"],
                 now=context.get("now", 2_000_000_100),
             )
-        if document.get("schema") == "code_mower.operatorActionIntent.v1":
-            generation = context.get("current_work_generation")
-            if generation is not None:
-                return action_intent_semantic_errors(
-                    document,
-                    current_work_generation=generation,
-                    current_lease_epoch=context.get("current_lease_epoch"),
-                    current_fence_token=context.get("current_fence_token"),
-                )
-        return ()
+        if document.get("schema") == "code_mower.operatorPolicy.v1":
+            return ()
+        policy = copy.deepcopy(
+            next(
+                case["document"]
+                for case in self.fixtures["accepted"]
+                if case["name"] == "single_tenant_manual_merge_policy"
+            )
+        )
+        removed_mutation = context.get("policy_remove_mutation")
+        if isinstance(removed_mutation, str):
+            policy["authority"]["mutations"].remove(removed_mutation)
+        return policy_binding_errors(
+            policy,
+            document,
+            current_work_generation=context.get("current_work_generation"),
+            current_lease=context.get("current_lease"),
+            current_head_sha=context.get("current_head_sha"),
+            now=context.get("now"),
+        )
 
     def test_schemas_are_versioned_and_every_object_definition_is_closed(self) -> None:
         self.assertEqual(
@@ -300,8 +312,8 @@ class OperatorContractV1Tests(unittest.TestCase):
     def test_failure_fixtures_execute_required_and_forbidden_recovery_transitions(self) -> None:
         scenarios = {case["name"]: case for case in self.fixtures["failure_scenarios"]}
         for case in scenarios.values():
-            self.assertEqual(set(case), {"name", "before", "after", "forbidden_after"})
-            for phase in ("before", "after", "forbidden_after"):
+            self.assertEqual(set(case), {"name", "before", "after", "forbidden_afters"})
+            for phase in ("before", "after"):
                 for record in case[phase]:
                     self.assertEqual(set(record), {"contract_schema", "document"})
                     self.assertEqual(
@@ -309,18 +321,16 @@ class OperatorContractV1Tests(unittest.TestCase):
                         [],
                         f"{case['name']} {phase} contains an invalid contract record",
                     )
-                    document = record["document"]
-                    if document.get("schema") == "code_mower.operatorActionIntent.v1":
-                        authority = document.get("reconciliation_authority") or {}
-                        self.assertEqual(
-                            action_intent_semantic_errors(
-                                document,
-                                current_work_generation=4,
-                                current_lease_epoch=authority.get("lease_epoch"),
-                                current_fence_token=authority.get("fence_token"),
-                            ),
-                            (),
-                        )
+            for forbidden in case["forbidden_afters"]:
+                self.assertEqual(set(forbidden), {"name", "records"})
+                self.assertTrue(forbidden["name"])
+                for record in forbidden["records"]:
+                    self.assertEqual(set(record), {"contract_schema", "document"})
+                    self.assertEqual(
+                        self._validate(record["contract_schema"], record["document"]),
+                        [],
+                        f"{case['name']} {forbidden['name']} is not shape-valid",
+                    )
         self.assertEqual(
             set(scenarios),
             {
@@ -338,11 +348,12 @@ class OperatorContractV1Tests(unittest.TestCase):
         for name, case in scenarios.items():
             before = [record["document"] for record in case["before"]]
             after = [record["document"] for record in case["after"]]
-            forbidden = [record["document"] for record in case["forbidden_after"]]
             with self.subTest(case=name, outcome="required"):
                 self.assertEqual(recovery_transition_errors(name, before, after), ())
-            with self.subTest(case=name, outcome="forbidden"):
-                self.assertTrue(recovery_transition_errors(name, before, forbidden))
+            for forbidden_case in case["forbidden_afters"]:
+                forbidden = [record["document"] for record in forbidden_case["records"]]
+                with self.subTest(case=name, outcome=forbidden_case["name"]):
+                    self.assertTrue(recovery_transition_errors(name, before, forbidden))
 
     def test_takeover_after_unknown_preserves_dispatch_fence_and_uses_current_reconciler(self) -> None:
         intent = next(
@@ -376,8 +387,276 @@ class OperatorContractV1Tests(unittest.TestCase):
             for case in self.fixtures["accepted"]
             if case["name"] == "durable_intent_precedes_dispatch"
         )
-        self.assertEqual(action_intent_semantic_errors(current, current_work_generation=4), ())
-        self.assertTrue(action_intent_semantic_errors(current, current_work_generation=5))
+        context = next(
+            case["semantic_context"]
+            for case in self.fixtures["accepted"]
+            if case["name"] == "durable_intent_precedes_dispatch"
+        )
+        self.assertEqual(
+            action_intent_semantic_errors(
+                current,
+                current_work_generation=4,
+                current_lease=context["current_lease"],
+                current_head_sha=context["current_head_sha"],
+                now=context["now"],
+            ),
+            (),
+        )
+        self.assertTrue(
+            action_intent_semantic_errors(
+                current,
+                current_work_generation=5,
+                current_lease=context["current_lease"],
+                current_head_sha=context["current_head_sha"],
+                now=context["now"],
+            )
+        )
+
+    def test_mutation_authority_matrix_fails_closed(self) -> None:
+        cases = [
+            case
+            for case in self.fixtures["accepted"]
+            if case["document"].get("schema") == "code_mower.operatorActionIntent.v1"
+            and case["document"].get("next_action") != "abandon"
+        ]
+        for case in cases:
+            intent = case["document"]
+            context = case["semantic_context"]
+            kwargs = {
+                "current_work_generation": context["current_work_generation"],
+                "current_lease": context["current_lease"],
+                "current_head_sha": context["current_head_sha"],
+                "now": context["now"],
+            }
+            with self.subTest(case=case["name"], mutation="baseline"):
+                self.assertEqual(action_intent_semantic_errors(intent, **kwargs), ())
+            with self.subTest(case=case["name"], mutation="generation"):
+                changed = dict(kwargs, current_work_generation=5)
+                self.assertTrue(action_intent_semantic_errors(intent, **changed))
+            for field, value in (
+                ("tenant_id", "tenant_other"),
+                ("repository_id", "repository_other"),
+                ("lease_id", "operator_other"),
+                ("schema", "code_mower.operatorProjection.v1"),
+                ("epoch", context["current_lease"]["epoch"] + 1),
+                ("fence_token", "a" * 64),
+                ("state", "expired"),
+                ("renew_by", context["now"]),
+            ):
+                changed_lease = copy.deepcopy(context["current_lease"])
+                changed_lease[field] = value
+                changed = dict(kwargs, current_lease=changed_lease)
+                with self.subTest(case=case["name"], mutation=f"lease.{field}"):
+                    self.assertTrue(action_intent_semantic_errors(intent, **changed))
+            if intent["next_action"] in {"dispatch", "retry"} or intent["certainty"] in {
+                "confirmed_success",
+                "confirmed_failure",
+            }:
+                with self.subTest(case=case["name"], mutation="head"):
+                    changed = dict(kwargs, current_head_sha="f" * 40)
+                    self.assertTrue(action_intent_semantic_errors(intent, **changed))
+
+    def test_policy_binding_matrix_enforces_record_level_ceilings(self) -> None:
+        policy = next(
+            case["document"]
+            for case in self.fixtures["accepted"]
+            if case["name"] == "single_tenant_manual_merge_policy"
+        )
+        action_case = next(
+            case
+            for case in self.fixtures["accepted"]
+            if case["name"] == "durable_intent_precedes_dispatch"
+        )
+        action = action_case["document"]
+        context = action_case["semantic_context"]
+
+        def action_errors(document: dict[str, Any], selected_policy: dict[str, Any] = policy):
+            return policy_binding_errors(
+                selected_policy,
+                document,
+                current_work_generation=context["current_work_generation"],
+                current_lease=context["current_lease"],
+                current_head_sha=context["current_head_sha"],
+                now=context["now"],
+            )
+
+        self.assertEqual(action_errors(action), ())
+        for field, ceiling in (
+            ("attempt_count", "max_attempts_per_action"),
+            ("reconciliation_count", "max_reconciliations_per_action"),
+            ("elapsed_seconds", "max_action_seconds"),
+        ):
+            changed = copy.deepcopy(action)
+            changed["budget"][field] = policy["budgets"][ceiling] + 1
+            with self.subTest(record="action", ceiling=ceiling):
+                self.assertTrue(action_errors(changed))
+        changed = copy.deepcopy(action)
+        changed["budget"]["spend_usd"] = "25.01"
+        self.assertTrue(action_errors(changed))
+        changed_policy = copy.deepcopy(policy)
+        changed_policy["authority"]["mutations"].remove(action["operation"])
+        self.assertTrue(action_errors(action, changed_policy))
+
+        work = next(
+            case["document"]
+            for case in self.fixtures["accepted"]
+            if case["name"] == "work_waiting_for_owner_after_budget_exhaustion"
+        )
+        for field, value in (
+            ("owner_escalation_count", policy["budgets"]["max_owner_escalations"] + 1),
+            ("elapsed_seconds", policy["budgets"]["max_work_seconds"] + 1),
+            ("spend_usd", "25.01"),
+        ):
+            changed = copy.deepcopy(work)
+            changed[field] = value
+            with self.subTest(record="work", ceiling=field):
+                self.assertTrue(policy_binding_errors(policy, changed))
+
+        lease = next(
+            case["document"]
+            for case in self.fixtures["accepted"]
+            if case["name"] == "singleton_lease_with_fencing_epoch"
+        )
+        self.assertEqual(policy_binding_errors(policy, lease), ())
+        changed = copy.deepcopy(lease)
+        changed["expires_at"] += 1
+        self.assertTrue(policy_binding_errors(policy, changed))
+
+    def test_recovery_matrix_rejects_scope_chronology_and_all_counter_rollbacks(self) -> None:
+        for case in self.fixtures["failure_scenarios"]:
+            before = [copy.deepcopy(item["document"]) for item in case["before"]]
+            after = [copy.deepcopy(item["document"]) for item in case["after"]]
+            self.assertEqual(recovery_transition_errors(case["name"], before, after), ())
+            before_by_schema = {item["schema"]: item for item in before}
+            after_by_schema = {item["schema"]: item for item in after}
+            action_schema = "code_mower.operatorActionIntent.v1"
+            if action_schema in before_by_schema and action_schema in after_by_schema:
+                for field, old_value, new_value in (
+                    ("attempt_count", 2, 1),
+                    ("reconciliation_count", 2, 1),
+                    ("elapsed_seconds", 2, 1),
+                    ("spend_usd", "2.00", "1.00"),
+                ):
+                    changed_before = copy.deepcopy(before)
+                    changed_after = copy.deepcopy(after)
+                    next(item for item in changed_before if item["schema"] == action_schema)["budget"][
+                        field
+                    ] = old_value
+                    next(item for item in changed_after if item["schema"] == action_schema)["budget"][
+                        field
+                    ] = new_value
+                    with self.subTest(case=case["name"], rollback=f"action.{field}"):
+                        self.assertTrue(
+                            recovery_transition_errors(case["name"], changed_before, changed_after)
+                        )
+            work_schema = "code_mower.operatorWorkItem.v1"
+            if work_schema in before_by_schema and work_schema in after_by_schema:
+                for field, old_value, new_value in (
+                    ("owner_escalation_count", 2, 1),
+                    ("elapsed_seconds", 2, 1),
+                    ("spend_usd", "2.00", "1.00"),
+                ):
+                    changed_before = copy.deepcopy(before)
+                    changed_after = copy.deepcopy(after)
+                    next(item for item in changed_before if item["schema"] == work_schema)[field] = old_value
+                    next(item for item in changed_after if item["schema"] == work_schema)[field] = new_value
+                    with self.subTest(case=case["name"], rollback=f"work.{field}"):
+                        self.assertTrue(
+                            recovery_transition_errors(case["name"], changed_before, changed_after)
+                        )
+
+        takeover = next(
+            case for case in self.fixtures["failure_scenarios"] if case["name"] == "lease_takeover"
+        )
+        before = [item["document"] for item in takeover["before"]]
+        after = [item["document"] for item in takeover["after"]]
+        lease_index = next(
+            index
+            for index, item in enumerate(after)
+            if item["schema"] == "code_mower.operatorLease.v1"
+        )
+        for field, value in (
+            ("tenant_id", "tenant_other"),
+            ("repository_id", "repository_other"),
+            ("lease_id", "operator_other"),
+            ("holder_id", next(item for item in before if item["schema"] == "code_mower.operatorLease.v1")["holder_id"]),
+        ):
+            changed = copy.deepcopy(after)
+            changed[lease_index][field] = value
+            with self.subTest(case="lease_takeover", scope=field):
+                self.assertTrue(recovery_transition_errors("lease_takeover", before, changed))
+        changed = copy.deepcopy(after)
+        changed[lease_index]["renew_by"] = changed[lease_index]["expires_at"] + 1
+        self.assertTrue(recovery_transition_errors("lease_takeover", before, changed))
+
+    def test_lease_chronology_matrix_is_strict(self) -> None:
+        lease = next(
+            case["document"]
+            for case in self.fixtures["accepted"]
+            if case["name"] == "singleton_lease_with_fencing_epoch"
+        )
+        self.assertEqual(lease_semantic_errors(lease), ())
+        for acquired, renew, expires in (
+            (10, 9, 11),
+            (10, 11, 11),
+            (10, 12, 11),
+        ):
+            changed = copy.deepcopy(lease)
+            changed.update({"acquired_at": acquired, "renew_by": renew, "expires_at": expires})
+            self.assertTrue(lease_semantic_errors(changed))
+
+    def test_full_work_transition_matrix_matches_the_closed_state_machine(self) -> None:
+        state_schema = self.schemas["operator_state_v1.schema.json"]
+        transitions = state_schema["$defs"]["transition"]["enum"]
+        base = next(
+            case["document"]
+            for case in self.fixtures["accepted"]
+            if case["name"] == "work_waiting_for_owner_after_budget_exhaustion"
+        )
+        terminal_reasons = {
+            "completed": "work_completed",
+            "failed": "work_failed",
+            "cancelled": "owner_cancelled",
+        }
+        for transition in transitions:
+            _, target = transition.split(":", 1)
+            document = copy.deepcopy(base)
+            document.update(
+                {
+                    "state": target,
+                    "terminal": target in terminal_reasons,
+                    "last_transition": transition,
+                    "reason": terminal_reasons.get(
+                        target,
+                        "approval_required" if target == "awaiting_owner" else "none",
+                    ),
+                    "owner_escalation_count": 1 if target == "awaiting_owner" else 0,
+                    "owner_escalation_key": "9" * 64 if target == "awaiting_owner" else None,
+                }
+            )
+            with self.subTest(transition=transition):
+                self.assertEqual(
+                    self._validate("operator_state_v1.schema.json", document),
+                    [],
+                )
+
+    def test_full_lease_state_matrix_preserves_history_but_grants_only_live_authority(self) -> None:
+        lease = next(
+            case["document"]
+            for case in self.fixtures["accepted"]
+            if case["name"] == "singleton_lease_with_fencing_epoch"
+        )
+        for state in ("active", "expired", "released"):
+            document = copy.deepcopy(lease)
+            document["state"] = state
+            with self.subTest(state=state, validation="history"):
+                self.assertEqual(lease_semantic_errors(document), ())
+            with self.subTest(state=state, validation="authority"):
+                errors = lease_semantic_errors(document, now=document["acquired_at"], require_live=True)
+                if state == "active":
+                    self.assertEqual(errors, ())
+                else:
+                    self.assertTrue(errors)
 
     def test_metadata_projection_is_exactly_the_policy_allowlist(self) -> None:
         policy = next(
