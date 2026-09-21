@@ -342,37 +342,41 @@ def _has_code_mower_claim(
     if not identity or not getattr(identity, "enabled", False):
         return False
 
-    label_set = set(_text(label).lower() for label in labels)
-    author_lower = _text(author).lower()
-    branch_lower = _text(branch).lower()
-
-    configured_labels = {_text(label).lower() for label, _ in getattr(identity, "labels", [])}
-    if label_set & configured_labels:
+    if has_lineage_markers:
         return True
 
-    if label_set & {"dispatched:codex", "dispatched:claude", "dispatched:cursor", "dispatched:devin", "dispatched:gitar", "dispatched:muse"}:
+    label_set = set(_text(label).lower() for label in labels)
+    
+    identity_labels = getattr(identity, "labels", ())
+    if identity_labels:
+        configured_labels = {_text(label).lower() for label, _ in identity_labels}
+        if label_set & configured_labels:
+            return True
+
+    audit_patterns = {"dispatched:codex", "dispatched:claude", "dispatched:cursor", 
+                      "dispatched:devin", "dispatched:gitar", "dispatched:muse"}
+    if label_set & audit_patterns:
         return True
 
     for label in label_set:
-        if label.startswith("needs-") and label.endswith("-audit"):
-            return True
-        if label.endswith("-audit-done") or label.endswith("-audit-blocked"):
-            return True
-
-    configured_authors = {_text(account).lower() for account, _ in getattr(identity, "authors", [])}
-    if author_lower in configured_authors:
-        return True
-
-    configured_prefixes = tuple(_text(prefix).lower() for prefix, _ in getattr(identity, "branch_prefixes", []))
-    if configured_prefixes and any(branch_lower.startswith(prefix) for prefix in configured_prefixes):
-        return True
-
-    check_names_lower = [check.get("name", "").lower() for check in checks]
-    for name in check_names_lower:
-        if any(term in name for term in CHECK_TERMS):
+        if (label.startswith("needs-") and label.endswith("-audit")) or \
+           label.endswith("-audit-done") or label.endswith("-audit-blocked"):
             return True
 
-    if has_lineage_markers:
+    identity_authors = getattr(identity, "authors", ())
+    if identity_authors:
+        author_lower = _text(author).lower()
+        configured_authors = {_text(account).lower() for account, _ in identity_authors}
+        if author_lower in configured_authors:
+            return True
+
+    identity_prefixes = getattr(identity, "branch_prefixes", ())
+    if identity_prefixes:
+        branch_lower = _text(branch).lower()
+        if any(branch_lower.startswith(_text(prefix).lower()) for prefix, _ in identity_prefixes):
+            return True
+
+    if checks and any(any(term in check.get("name", "").lower() for term in CHECK_TERMS) for check in checks):
         return True
 
     return False
@@ -488,14 +492,19 @@ def _remote(
             continue
         identity = None
         has_lineage_markers = False
+        raw_labels = raw_pr.get("labels") if isinstance(raw_pr.get("labels"), list) else []
+        label_names = [item.get("name", "") for item in raw_labels if isinstance(item, Mapping)]
+        raw_author = raw_pr.get("author")
+        author_login = raw_author.get("login", "") if isinstance(raw_author, Mapping) else ""
+        branch = _text(raw_pr.get("headRefName"))
+        checks = _checks(raw_pr.get("statusCheckRollup"))
+        
         try:
             if policy_config.validate_config(lineage_config):
                 raise ContractError("Trusted validated status policy required")
             identity = lineage_identity(lineage_config)
             authority = lineage_authorities(lineage_config)
-            target = Target(repo, raw_pr.get("number"), raw_pr.get("headRefName"), raw_pr.get("headRefOid"))
-            raw_labels = raw_pr.get("labels")
-            raw_author = raw_pr.get("author")
+            target = Target(repo, raw_pr.get("number"), branch, raw_pr.get("headRefOid"))
             if (not isinstance(raw_labels, list)
                     or any(not isinstance(item, Mapping) or not isinstance(item.get("name"), str) for item in raw_labels)
                     or not isinstance(raw_author, Mapping) or not isinstance(raw_author.get("login"), str)):
@@ -508,8 +517,8 @@ def _remote(
                 return gh_json_runner(["api", f"repos/{target.repo}/issues/{target.pr_number}/comments?per_page={size}&page={number}"])
             history = lineage_history(page)
             chain, decision = lineage_decision(target, identity, authority, history,
-                author=raw_author["login"], labels=[item["name"] for item in raw_labels])
-            has_lineage_markers = bool(chain.episodes) if hasattr(chain, "episodes") else False
+                author=author_login, labels=label_names)
+            has_lineage_markers = bool(getattr(chain, "episodes", None))
             pr["lineage"] = lineage_projection(decision)
             pr["lineage"]["repo"] = target.repo
             pr["lineage"]["pr_number"] = target.pr_number
@@ -520,12 +529,10 @@ def _remote(
                 for key, lane in lanes.items() if isinstance(lane, Mapping)
                 and admit(decision, str(lane.get("author_lane") or lane.get("trailer_lane") or lane.get("provider") or key))})
             if pr["lineage"]["status"] == "ready" and pr["lineage"]["reason"] == "no_identity" and not pr["lineage"]["contributors"]:
-                label_names = [item.get("name", "") for item in raw_labels if isinstance(item, Mapping)]
-                checks = _checks(raw_pr.get("statusCheckRollup"))
                 has_claim = _has_code_mower_claim(
                     labels=label_names,
-                    author=raw_author["login"],
-                    branch=target.branch,
+                    author=author_login,
+                    branch=branch,
                     checks=checks,
                     identity=identity,
                     has_lineage_markers=has_lineage_markers,
@@ -543,12 +550,6 @@ def _remote(
                 "next_action": "restore readable lineage metadata and rerun status",
             }
         except (ValueError, KeyError, TypeError, RuntimeError):
-            raw_labels = raw_pr.get("labels") if isinstance(raw_pr.get("labels"), list) else []
-            label_names = [item.get("name", "") for item in raw_labels if isinstance(item, Mapping)]
-            raw_author = raw_pr.get("author")
-            author_login = raw_author.get("login", "") if isinstance(raw_author, Mapping) else ""
-            branch = _text(raw_pr.get("headRefName"))
-            checks = _checks(raw_pr.get("statusCheckRollup"))
             has_claim = _has_code_mower_claim(
                 labels=label_names,
                 author=author_login,
