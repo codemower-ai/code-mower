@@ -171,7 +171,11 @@ listener is unresolved `rollback_failed`, with the same exact recovery command.
 Rollback version checks use the identity/version evidence captured from the old
 Board before it is stopped. A byte-for-byte restored older Board therefore
 validates as the previous state even when the command performing the replacement
-comes from a newer installation. If the prior definition was unreadable,
+comes from a newer installation. A readable definition whose job was already
+unloaded has no running version to capture; after restoration, its complete
+binding is checked against the normal current-version contract. Missing version
+evidence remains unresolved when a prior job was loaded or its state was unknown.
+If the prior definition was unreadable,
 `--replace` knowingly discarded bytes that could not be backed up; removing a
 failed replacement is then reported as unresolved cleanup, never as a restored
 previous service.

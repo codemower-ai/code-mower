@@ -1608,6 +1608,30 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertIn("ai.codemower.board.5332", self.host.loaded)
         self.assertEqual(self.host.identities[5332]["repo"], "codemower-ai/code-mower")
 
+    def test_a_failed_write_restores_a_readable_definition_that_was_already_unloaded(self) -> None:
+        original = self.spec()
+        self.install(original)
+        before = (self.root / f"{original.label}.plist").read_text(encoding="utf-8")
+        self.host.provider().bootout(original.label)
+        drifted = self.spec(
+            repo="codemower-ai/private-repo", repo_path=self.other_checkout, port=5332
+        )
+
+        payload = self._restart_with(self._refusing_writes(), drifted, replace=True)
+
+        self.assertEqual(payload["status"], "apply_failed")
+        self.assertEqual(payload["reconciliation"]["state"], "previous")
+        self.assertTrue(payload["reconciliation"]["verified"])
+        self.assertFalse(payload["reconciliation"]["version_evidence_captured"])
+        self.assertFalse(payload["reconciliation"]["version_evidence_required"])
+        self.assertTrue(payload["rollback"]["ok"])
+        self.assertTrue(payload["rollback"]["restored"])
+        self.assertEqual(
+            (self.root / f"{original.label}.plist").read_text(encoding="utf-8"), before
+        )
+        self.assertEqual(payload["reconciliation"]["binding"]["failing_checks"], [])
+        self.assertEqual(self.host.identities[5332]["repo"], "codemower-ai/code-mower")
+
     def test_a_failed_write_that_cannot_be_reloaded_says_so(self) -> None:
         self.install(self.spec())
         self.host.bootstrap_failures.add("ai.codemower.board.5332")
@@ -1805,6 +1829,50 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertEqual(
             (self.root / f"{original.label}.plist").read_text(encoding="utf-8"), before
         )
+        self.assertEqual(self.host.identities[5332]["repo"], "codemower-ai/code-mower")
+
+    def test_a_failed_replacement_restores_a_readable_definition_that_was_already_unloaded(
+        self,
+    ) -> None:
+        original = self.spec()
+        self.install(original)
+        before = (self.root / f"{original.label}.plist").read_text(encoding="utf-8")
+        self.host.provider().bootout(original.label)
+        drifted = self.spec(
+            repo="codemower-ai/private-repo", repo_path=self.other_checkout, port=5332
+        )
+
+        class ReplacementFailsBeforeLoading(board_service.LaunchdProvider):
+            bootstraps = 0
+
+            def bootstrap(self, label: str) -> tuple[bool, str]:
+                self.bootstraps += 1
+                if self.bootstraps == 1:
+                    return False, "Bootstrap failed: 5: Operation not permitted"
+                return super().bootstrap(label)
+
+        payload = self._restart_with(
+            ReplacementFailsBeforeLoading(
+                command_runner=self.host.run,
+                root=self.root,
+                uid=self.host.uid,
+                platform="darwin",
+            ),
+            drifted,
+            replace=True,
+        )
+
+        self.assertEqual(payload["status"], "apply_failed")
+        self.assertEqual(payload["reconciliation"]["state"], "previous")
+        self.assertTrue(payload["reconciliation"]["verified"])
+        self.assertFalse(payload["reconciliation"]["version_evidence_captured"])
+        self.assertFalse(payload["reconciliation"]["version_evidence_required"])
+        self.assertTrue(payload["rollback"]["ok"])
+        self.assertTrue(payload["rollback"]["restored"])
+        self.assertEqual(
+            (self.root / f"{original.label}.plist").read_text(encoding="utf-8"), before
+        )
+        self.assertEqual(payload["reconciliation"]["binding"]["failing_checks"], [])
         self.assertEqual(self.host.identities[5332]["repo"], "codemower-ai/code-mower")
 
     def test_a_successful_bootstrap_with_failed_health_restores_the_old_binding(self) -> None:
@@ -2019,6 +2087,56 @@ class BoardServiceLifecycleTest(ServiceHarness):
         self.assertEqual(checks["binding.installed_version"]["expected_installed_version"], "1.5.1")
         self.assertEqual(checks["binding.serving_version"]["expected_serving_version"], "1.5.1")
         self.assertTrue(payload["rollback"]["ok"])
+
+    def test_a_running_previous_board_with_missing_version_evidence_stays_unresolved(self) -> None:
+        original = self.spec()
+        self.install(original)
+        drifted = self.spec(
+            repo="codemower-ai/private-repo", repo_path=self.other_checkout, port=5332
+        )
+        identity_probes = 0
+
+        def miss_only_the_pre_mutation_probe(host: str, port: int) -> dict[str, object]:
+            nonlocal identity_probes
+            identity_probes += 1
+            if identity_probes == 1:
+                return {"available": False, "error": "transient probe failure"}
+            return self.host.identity_probe(host, port)
+
+        class ReplacementFailsBeforeLoading(board_service.LaunchdProvider):
+            bootstraps = 0
+
+            def bootstrap(self, label: str) -> tuple[bool, str]:
+                self.bootstraps += 1
+                if self.bootstraps == 1:
+                    return False, "Bootstrap failed: 5: Operation not permitted"
+                return super().bootstrap(label)
+
+        payload = board_service.restart_service(
+            drifted,
+            provider=ReplacementFailsBeforeLoading(
+                command_runner=self.host.run,
+                root=self.root,
+                uid=self.host.uid,
+                platform="darwin",
+            ),
+            replace=True,
+            command_runner=self.host.run,
+            identity_probe=miss_only_the_pre_mutation_probe,
+            settle_seconds=0.0,
+            refresh_seconds=0.1,
+            timeout_seconds=0.0,
+            sleeper=self.sleeper,
+        )
+
+        self.assertEqual(payload["status"], "rollback_failed")
+        self.assertEqual(payload["reconciliation"]["state"], "unresolved")
+        self.assertFalse(payload["reconciliation"]["verified"])
+        self.assertFalse(payload["reconciliation"]["version_evidence_captured"])
+        self.assertTrue(payload["reconciliation"]["version_evidence_required"])
+        self.assertEqual(payload["reconciliation"]["binding"]["failing_checks"], [])
+        self.assertFalse(payload["rollback"]["ok"])
+        self.assertIn("recovery", payload["reconciliation"])
 
     def test_an_unreconciled_partial_replacement_has_one_exact_recovery_command(self) -> None:
         self.install(self.spec())

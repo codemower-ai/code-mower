@@ -2027,7 +2027,12 @@ def _previous_version_evidence(
 ) -> dict[str, Any] | None:
     """Capture the old Board's version contract before its process is stopped."""
 
-    if previous is None or not previous.readable or not previous.port:
+    if (
+        previous is None
+        or not previous.readable
+        or not previous.port
+        or previous.load_state == JOB_ABSENT
+    ):
         return None
     probe = identity_probe or (lambda host, port: probe_identity(host, port))
     identity = probe(previous.host, previous.port)
@@ -2085,15 +2090,18 @@ def _rollback_and_reconcile(
         restored = _reconciliation(
             "previous", previous_binding, spec=spec, show_local_paths=show_local_paths
         )
-        if previous_version is None:
+        version_evidence_required = previous.load_state != JOB_ABSENT
+        if previous_version is None and version_evidence_required:
             restored.update(
                 state="unresolved",
                 verified=False,
                 version_evidence_captured=False,
+                version_evidence_required=True,
                 recovery=_recovery_instruction(spec, show_local_paths=show_local_paths),
             )
         else:
-            restored["version_evidence_captured"] = True
+            restored["version_evidence_captured"] = previous_version is not None
+            restored["version_evidence_required"] = version_evidence_required
         rollback["ok"] = bool(restored["verified"])
         rollback["restored"] = bool(restored["verified"])
         rollback["delayed_health"] = rollback_health
@@ -2355,15 +2363,18 @@ def _apply(
         reconciled = _reconciliation(
             "previous", previous_binding, spec=spec, show_local_paths=show_local_paths
         )
-        if previous_version is None:
+        version_evidence_required = previous.load_state != JOB_ABSENT
+        if previous_version is None and version_evidence_required:
             reconciled.update(
                 state="unresolved",
                 verified=False,
                 version_evidence_captured=False,
+                version_evidence_required=True,
                 recovery=_recovery_instruction(spec, show_local_paths=show_local_paths),
             )
         else:
-            reconciled["version_evidence_captured"] = True
+            reconciled["version_evidence_captured"] = previous_version is not None
+            reconciled["version_evidence_required"] = version_evidence_required
         restore["ok"] = bool(reconciled["verified"])
         restore["restored"] = bool(reconciled["verified"])
         restore["delayed_health"] = restore_health
