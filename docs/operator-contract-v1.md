@@ -59,6 +59,10 @@ The canonical path is illustrative; only edges listed by the schema are legal.
 are terminal and cannot re-enter active work. Each write atomically records the
 new state, allowed transition, reason, generation, and timestamps. A
 generation mismatch rejects the write rather than overwriting newer state.
+Active states other than `awaiting_owner` require reason `none`; every
+`awaiting_owner` record uses one of the policy stop reasons; and `completed`,
+`failed`, and `cancelled` require `work_completed`, `work_failed`, and
+`owner_cancelled`, respectively. These combinations are closed in the schema.
 The work record also carries cumulative `elapsed_seconds` and `spend_usd`;
 neither may move backwards across a transition or exceed owner policy.
 
@@ -100,7 +104,11 @@ Clock skew, delayed workers, and a process resuming after expiry must therefore
 fail the fencing comparison even when they locally believe the lease is valid.
 Lease chronology is `acquired_at <= renew_by < expires_at`; active authority
 ends at `renew_by` unless a compare-and-swap renewal advances both deadlines.
-The policy binding check also verifies the configured TTL/renewal cadence.
+`acquired_at` is the durable anchor for the current authority interval. A
+successful acquisition, takeover, or renewal atomically sets that anchor and
+the two deadlines. The policy binding check requires `renew_by` to equal the
+anchor plus `lease_renewal_seconds` and `expires_at` to equal the anchor plus
+`lease_ttl_seconds`; shifting both deadlines cannot extend authority.
 
 ## Durable intent, certainty, and reconciliation
 
@@ -125,9 +133,13 @@ Reconciliation queries remote state using the idempotency key, stable remote
 reference when known, target head, and operation-specific metadata. Confirmed
 remote success records `confirmed_success` without another mutation.
 Confirmed absence or failure records `confirmed_failure`; a retry can then be
-considered under the same durable intent and cumulative budget. Inconclusive
-reconciliation remains unknown and eventually stops for owner action. A new
-intent cannot be used to bypass uncertainty.
+considered under the same durable intent and cumulative budget. Under the
+original holder, retry requires the original dispatch fence to remain current.
+After takeover, the original fence remains stale and immutable, while retry
+requires the separately recorded current `reconciliation_authority` to match
+the independently read live lease. Inconclusive reconciliation remains unknown
+and eventually stops for owner action. A new intent cannot be used to bypass
+uncertainty.
 
 Restart loads nonterminal intents before admitting new work. Duplicate
 delivery, restart, and lease takeover therefore converge on the saved intent.
@@ -154,16 +166,16 @@ these ceilings.
 
 Failures have these required outcomes:
 
-| Event | Durable outcome | Forbidden shortcut |
-| --- | --- | --- |
-| Process restart after dispatch | Load the intent and reconcile | Blind retry |
-| Duplicate delivery | Return the idempotent recorded result | Second mutation |
-| Lease takeover | Increment epoch; abandon prepared intents and reconcile dispatched unknown intents under separate current authority | Accept the old token or blindly retry |
-| Stale head | Abandon before dispatch; reconcile an already-dispatched unknown effect against its immutable target | Mutate or silently retarget the stale head |
-| Provider timeout | Record unknown and reconcile | Assume failure |
-| Partial success | Reconcile each remote effect | Repeat the mutation set |
-| Budget exhaustion | Stop and escalate within the remaining limit | Implicitly extend budget |
-| Owner stop | Cancel or abandon without new mutation | Continue dispatch |
+| Event | Required source and edge | Durable outcome | Forbidden shortcut |
+| --- | --- | --- | --- |
+| Process restart after dispatch | Dispatched or uncertain unknown intent -> reconciling | Load the intent and reconcile | Blind retry |
+| Duplicate delivery | Any saved intent -> the identical record | Return the idempotent recorded result | Second mutation |
+| Lease takeover | Dispatched or uncertain unknown intent -> reconciling under a new lease | Increment epoch and record separate current reconciliation authority | Accept the old token or blindly retry |
+| Stale head | Prepared, not-attempted intent -> abandoned | Abandon before dispatch; reconcile an already-dispatched unknown effect through the takeover path | Mutate or silently retarget the stale head |
+| Provider timeout | Prepared, not-attempted intent -> uncertain unknown | Record unknown and reconcile | Erase a known result or assume failure |
+| Partial success | Dispatched or uncertain unknown intent -> reconciling | Reconcile each remote effect | Repeat the mutation set |
+| Budget exhaustion | Active nonterminal work -> `awaiting_owner`, with `last_transition` naming that exact edge | Stop and escalate within the remaining limit | Implicitly extend budget or invent a source edge |
+| Owner stop | Nonterminal work -> `cancelled`; prepared action -> `abandoned` | Cancel or abandon without new mutation | Continue dispatch |
 
 `failed` means a confirmed terminal work failure. Transport errors do not make
 a mutation a confirmed failure. Cancellation is complete only when no new
@@ -202,6 +214,16 @@ projected to local status, a future private Board ingress, or a future cloud
 adapter. It contains opaque identifiers, role and state values, bounded counts,
 elapsed time, and decimal spend metadata.
 
+Projection combinations are event-specific and closed. `work_state` carries a
+work identifier and a valid work state/reason pair; `lease_state` carries no
+work, action, or provider identity and uses only lease state/reason pairs;
+`action_state` carries work, action, provider, and role identities and a valid
+action state/reason pair; `owner_action` carries only the affected work
+identity and a stop or cancellation pair; and `qualification_state` carries
+provider and role identity with a qualification state/reason pair. A state or
+reason from another event family is invalid even when each value is separately
+known to the contract.
+
 Source, diffs, prompts, transcripts, issue bodies, raw provider output,
 credentials, private content, and personal paths are excluded. Hashing private
 content does not make it allowed metadata unless this contract explicitly
@@ -233,7 +255,9 @@ same metadata-only boundary.
 
 The canonical accepted and rejected fixtures are executable examples of these
 rules. Each recovery fixture contains schema-valid before, required-after, and
-named forbidden-after record sequences; `recovery_transition_errors` verifies
+named forbidden-after record sequences. Named rejected transition fixtures
+also cover invalid sources and false source-edge claims;
+`recovery_transition_errors` verifies
 tenant, repository, Operator-lease identity, lease chronology, timestamps,
 every cumulative integer counter, decimal spend, fencing, and certainty.
 Dependent implementations must consume them without weakening a rejected case,

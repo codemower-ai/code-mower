@@ -217,7 +217,14 @@ class OperatorContractV1Tests(unittest.TestCase):
         self.assertEqual(self.fixtures["contract"], "code_mower.operator.v1")
         self.assertEqual(
             set(self.fixtures),
-            {"schema", "contract", "accepted", "rejected", "failure_scenarios"},
+            {
+                "schema",
+                "contract",
+                "accepted",
+                "rejected",
+                "failure_scenarios",
+                "rejected_transitions",
+            },
         )
         names: set[str] = set()
         for case in self.fixtures["accepted"]:
@@ -355,6 +362,23 @@ class OperatorContractV1Tests(unittest.TestCase):
                 with self.subTest(case=name, outcome=forbidden_case["name"]):
                     self.assertTrue(recovery_transition_errors(name, before, forbidden))
 
+        for case in self.fixtures["rejected_transitions"]:
+            self.assertEqual(
+                set(case),
+                {"name", "event", "expected_violation", "before", "after"},
+            )
+            for phase in ("before", "after"):
+                for record in case[phase]:
+                    self.assertEqual(
+                        self._validate(record["contract_schema"], record["document"]),
+                        [],
+                        f"{case['name']} {phase} is not shape-valid",
+                    )
+            before = [record["document"] for record in case["before"]]
+            after = [record["document"] for record in case["after"]]
+            with self.subTest(case=case["name"]):
+                self.assertTrue(recovery_transition_errors(case["event"], before, after))
+
     def test_takeover_after_unknown_preserves_dispatch_fence_and_uses_current_reconciler(self) -> None:
         intent = next(
             case["document"]
@@ -366,6 +390,37 @@ class OperatorContractV1Tests(unittest.TestCase):
         self.assertEqual(intent["reconciliation_authority"]["lease_epoch"], 9)
         self.assertEqual(intent["certainty"], "unknown")
         self.assertEqual(intent["next_action"], "reconcile")
+
+    def test_original_and_takeover_retry_authority_matrix_is_exact(self) -> None:
+        accepted_names = {
+            "confirmed_failure_retries_under_original_authority",
+            "takeover_confirmed_failure_retries_under_current_authority",
+        }
+        rejected_names = {
+            "original_holder_retry_rejects_takeover_lease",
+            "takeover_retry_rejects_wrong_reconciliation_authority",
+        }
+        for case in self.fixtures["accepted"]:
+            if case["name"] in accepted_names:
+                with self.subTest(case=case["name"]):
+                    self.assertEqual(
+                        self._semantic_errors(case["document"], case["semantic_context"]),
+                        (),
+                    )
+        for case in self.fixtures["rejected"]:
+            if case["name"] in rejected_names:
+                with self.subTest(case=case["name"]):
+                    self.assertTrue(
+                        self._semantic_errors(case["document"], case["semantic_context"])
+                    )
+        self.assertEqual(
+            accepted_names,
+            {case["name"] for case in self.fixtures["accepted"]} & accepted_names,
+        )
+        self.assertEqual(
+            rejected_names,
+            {case["name"] for case in self.fixtures["rejected"]} & rejected_names,
+        )
 
     def test_owner_stop_reasons_and_escalation_identity_are_aligned(self) -> None:
         policy = next(
@@ -518,9 +573,16 @@ class OperatorContractV1Tests(unittest.TestCase):
             if case["name"] == "singleton_lease_with_fencing_epoch"
         )
         self.assertEqual(policy_binding_errors(policy, lease), ())
-        changed = copy.deepcopy(lease)
-        changed["expires_at"] += 1
-        self.assertTrue(policy_binding_errors(policy, changed))
+        for renew_delta, expiry_delta in ((0, 1), (50, 50), (-10, -10)):
+            changed = copy.deepcopy(lease)
+            changed["renew_by"] += renew_delta
+            changed["expires_at"] += expiry_delta
+            with self.subTest(
+                record="lease",
+                renew_delta=renew_delta,
+                expiry_delta=expiry_delta,
+            ):
+                self.assertTrue(policy_binding_errors(policy, changed))
 
     def test_recovery_matrix_rejects_scope_chronology_and_all_counter_rollbacks(self) -> None:
         for case in self.fixtures["failure_scenarios"]:
@@ -639,6 +701,276 @@ class OperatorContractV1Tests(unittest.TestCase):
                     self._validate("operator_state_v1.schema.json", document),
                     [],
                 )
+
+    def test_work_state_reason_matrix_is_closed(self) -> None:
+        state_schema = self.schemas["operator_state_v1.schema.json"]
+        states = state_schema["$defs"]["lifecycle_state"]["enum"]
+        reasons = state_schema["$defs"]["stop_reason"]["enum"]
+        transitions = state_schema["$defs"]["transition"]["enum"]
+        transition_by_target = {
+            target: transition
+            for transition in transitions
+            for _, target in [transition.split(":", 1)]
+        }
+        allowed = {
+            **{
+                state: {"none"}
+                for state in states
+                if state
+                not in {"awaiting_owner", "completed", "failed", "cancelled"}
+            },
+            "awaiting_owner": {
+                "approval_required",
+                "budget_exhausted",
+                "capability_unqualified",
+                "credentials_unavailable",
+                "policy_denied",
+                "reconciliation_inconclusive",
+                "repository_not_allowed",
+                "stale_head",
+                "stale_lease",
+                "user_input_required",
+            },
+            "completed": {"work_completed"},
+            "failed": {"work_failed"},
+            "cancelled": {"owner_cancelled"},
+        }
+        base = next(
+            case["document"]
+            for case in self.fixtures["accepted"]
+            if case["name"] == "work_waiting_for_owner_after_budget_exhaustion"
+        )
+        for state in states:
+            for reason in reasons:
+                document = copy.deepcopy(base)
+                document.update(
+                    state=state,
+                    terminal=state in {"completed", "failed", "cancelled"},
+                    last_transition=None if state == "observed" else transition_by_target[state],
+                    reason=reason,
+                    owner_escalation_count=1 if state == "awaiting_owner" else 0,
+                    owner_escalation_key="9" * 64 if state == "awaiting_owner" else None,
+                )
+                valid = not self._validate("operator_state_v1.schema.json", document)
+                with self.subTest(state=state, reason=reason):
+                    self.assertEqual(valid, reason in allowed[state])
+
+    def test_recovery_event_source_and_target_matrices_are_closed(self) -> None:
+        scenarios = {case["name"]: case for case in self.fixtures["failure_scenarios"]}
+        action_tuples = (
+            ("prepared", "not_attempted", "not_required", "dispatch"),
+            ("dispatched", "unknown", "required", "reconcile"),
+            ("uncertain", "unknown", "required", "reconcile"),
+            ("reconciling", "unknown", "in_progress", "reconcile"),
+            ("succeeded", "confirmed_success", "matched_success", "none"),
+            ("failed", "confirmed_failure", "matched_failure", "retry"),
+            ("abandoned", "not_applicable", "not_required", "abandon"),
+        )
+        expected_sources = {
+            "restart_after_dispatch": set(action_tuples[1:4]),
+            "stale_head": {action_tuples[0]},
+            "provider_timeout": {action_tuples[0]},
+            "partial_success": set(action_tuples[1:3]),
+            "lease_takeover": set(action_tuples[1:4]),
+        }
+        expected_targets = {
+            "restart_after_dispatch": {action_tuples[3]},
+            "stale_head": {action_tuples[6]},
+            "provider_timeout": {action_tuples[2]},
+            "partial_success": {action_tuples[3]},
+            "lease_takeover": {action_tuples[3]},
+        }
+        action_schema = "code_mower.operatorActionIntent.v1"
+        for event, allowed in expected_sources.items():
+            case = scenarios[event]
+            before = [copy.deepcopy(item["document"]) for item in case["before"]]
+            after = [copy.deepcopy(item["document"]) for item in case["after"]]
+            source = next(item for item in before if item["schema"] == action_schema)
+            for values in action_tuples:
+                source.update(
+                    zip(
+                        ("state", "certainty", "reconciliation", "next_action"),
+                        values,
+                        strict=True,
+                    )
+                )
+                with self.subTest(event=event, source=values):
+                    self.assertEqual(
+                        not recovery_transition_errors(event, before, after),
+                        values in allowed,
+                    )
+            # Restore the accepted source, then exhaust the destination tuple.
+            before = [copy.deepcopy(item["document"]) for item in case["before"]]
+            for values in action_tuples:
+                changed_after = [copy.deepcopy(item["document"]) for item in case["after"]]
+                target_action = next(
+                    item for item in changed_after if item["schema"] == action_schema
+                )
+                target_action.update(
+                    zip(
+                        ("state", "certainty", "reconciliation", "next_action"),
+                        values,
+                        strict=True,
+                    )
+                )
+                with self.subTest(event=event, target=values):
+                    self.assertEqual(
+                        not recovery_transition_errors(event, before, changed_after),
+                        values in expected_targets[event],
+                    )
+
+        lifecycle = self.schemas["operator_state_v1.schema.json"]["$defs"]["lifecycle_state"]["enum"]
+        for event, allowed_sources, target in (
+            (
+                "budget_exhaustion",
+                {"admitted", "claimed", "executing", "waiting_provider", "reconciling", "awaiting_review"},
+                "awaiting_owner",
+            ),
+            (
+                "owner_stop",
+                {
+                    "observed",
+                    "admitted",
+                    "claimed",
+                    "executing",
+                    "waiting_provider",
+                    "reconciling",
+                    "awaiting_review",
+                    "awaiting_owner",
+                },
+                "cancelled",
+            ),
+        ):
+            case = scenarios[event]
+            for source_state in lifecycle:
+                for target_state in lifecycle:
+                    before = [copy.deepcopy(item["document"]) for item in case["before"]]
+                    after = [copy.deepcopy(item["document"]) for item in case["after"]]
+                    old_work = next(item for item in before if item["schema"].endswith("WorkItem.v1"))
+                    new_work = next(item for item in after if item["schema"].endswith("WorkItem.v1"))
+                    old_work["state"] = source_state
+                    new_work["state"] = target_state
+                    new_work["last_transition"] = f"{source_state}:{target_state}"
+                    with self.subTest(event=event, source=source_state, target=target_state):
+                        self.assertEqual(
+                            not recovery_transition_errors(event, before, after),
+                            source_state in allowed_sources and target_state == target,
+                        )
+
+    def test_projection_event_state_reason_matrix_is_closed(self) -> None:
+        projection = self.schemas["operator_state_v1.schema.json"]["$defs"]["projection"]
+        events = projection["properties"]["event_type"]["enum"]
+        states = projection["properties"]["state"]["enum"]
+        reasons = projection["properties"]["reason"]["enum"]
+        stop_reasons = {
+            "approval_required",
+            "budget_exhausted",
+            "capability_unqualified",
+            "credentials_unavailable",
+            "policy_denied",
+            "reconciliation_inconclusive",
+            "repository_not_allowed",
+            "stale_head",
+            "stale_lease",
+            "user_input_required",
+        }
+        allowed = {
+            "work_state": {
+                **{
+                    state: {"none"}
+                    for state in (
+                        "observed",
+                        "admitted",
+                        "claimed",
+                        "executing",
+                        "waiting_provider",
+                        "reconciling",
+                        "awaiting_review",
+                    )
+                },
+                "awaiting_owner": stop_reasons,
+                "completed": {"work_completed"},
+                "failed": {"work_failed"},
+                "cancelled": {"owner_cancelled"},
+            },
+            "lease_state": {
+                "active": {"lease_acquired", "lease_renewed"},
+                "expired": {"lease_expired"},
+                "released": {"lease_released"},
+            },
+            "action_state": {
+                "prepared": {"dispatch_prepared"},
+                "dispatched": {"dispatch_started"},
+                "succeeded": {"remote_success", "reconciled_success"},
+                "failed": {"remote_failure", "reconciled_failure"},
+                "uncertain": {"remote_unknown"},
+                "reconciling": {"reconciliation_started"},
+                "abandoned": {"stale_head", "stale_lease", "owner_cancelled"},
+            },
+            "owner_action": {
+                "awaiting_owner": stop_reasons,
+                "cancelled": {"owner_cancelled"},
+            },
+            "qualification_state": {
+                "qualified": {"evidence_current"},
+                "pending": {"evidence_missing", "human_merge_required"},
+                "failed": {"evidence_failed", "capability_missing"},
+                "stale": {"evidence_stale"},
+            },
+        }
+        base = next(
+            case["document"]
+            for case in self.fixtures["accepted"]
+            if case["name"] == "metadata_only_projection"
+        )
+        identifiers = {
+            "work_state": ("work_1085", None, None, None),
+            "lease_state": (None, None, None, None),
+            "action_state": ("work_1085", "action_open_pr", "codex", "orchestrator"),
+            "owner_action": ("work_1085", None, None, None),
+            "qualification_state": (None, None, "codex", "reviewer"),
+        }
+        for event in events:
+            for state in states:
+                for reason in reasons:
+                    document = copy.deepcopy(base)
+                    document.update(
+                        event_type=event,
+                        state=state,
+                        reason=reason,
+                    )
+                    (
+                        document["work_id"],
+                        document["action_id"],
+                        document["provider_id"],
+                        document["role"],
+                    ) = identifiers[event]
+                    valid = not self._validate("operator_state_v1.schema.json", document)
+                    expected = reason in allowed[event].get(state, set())
+                    with self.subTest(event=event, state=state, reason=reason):
+                        self.assertEqual(valid, expected)
+
+        representative = {
+            event: next(iter(state_reasons.items()))
+            for event, state_reasons in allowed.items()
+        }
+        for event in events:
+            state, valid_reasons = representative[event]
+            reason = next(iter(valid_reasons))
+            for identifier_shape, values in identifiers.items():
+                document = copy.deepcopy(base)
+                document.update(event_type=event, state=state, reason=reason)
+                (
+                    document["work_id"],
+                    document["action_id"],
+                    document["provider_id"],
+                    document["role"],
+                ) = values
+                with self.subTest(event=event, identifier_shape=identifier_shape):
+                    self.assertEqual(
+                        not self._validate("operator_state_v1.schema.json", document),
+                        values == identifiers[event],
+                    )
 
     def test_full_lease_state_matrix_preserves_history_but_grants_only_live_authority(self) -> None:
         lease = next(

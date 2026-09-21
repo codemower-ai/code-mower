@@ -155,8 +155,14 @@ def action_intent_semantic_errors(
                 errors.append("action authority does not match the current lease fence")
 
     if next_action in {"dispatch", "retry"}:
-        if record.get("fence_status") != "current":
-            errors.append("dispatch or retry requires a current dispatch fence")
+        # A takeover keeps the immutable dispatch fence stale.  Once the new
+        # holder has reconciled a confirmed failure, retry is authorized by
+        # its separately recorded current authority rather than by rewriting
+        # the original fence.
+        if record.get("fence_status") != "current" and not (
+            next_action == "retry" and isinstance(authority, Mapping)
+        ):
+            errors.append("dispatch or original-holder retry requires a current dispatch fence")
         if record.get("head_status") != "current":
             errors.append("dispatch or retry requires a current target head")
     if requires_exact_head:
@@ -285,12 +291,16 @@ def policy_binding_errors(
             errors.append("work spend exceeds owner policy max_spend_usd")
     elif schema == "code_mower.operatorLease.v1":
         errors.extend(lease_semantic_errors(record, now=now))
+        acquired_at = record.get("acquired_at")
         renew_by = record.get("renew_by")
         expires_at = record.get("expires_at")
         ttl = budgets.get("lease_ttl_seconds")
         renewal = budgets.get("lease_renewal_seconds")
-        if all(isinstance(value, int) for value in (renew_by, expires_at, ttl, renewal)):
-            if expires_at - renew_by != ttl - renewal:
+        if all(
+            isinstance(value, int)
+            for value in (acquired_at, renew_by, expires_at, ttl, renewal)
+        ):
+            if renew_by - acquired_at != renewal or expires_at - acquired_at != ttl:
                 errors.append("lease deadlines do not match owner policy cadence")
     return tuple(errors)
 
@@ -397,6 +407,48 @@ def _lease_pair(
     return old, new
 
 
+def _action_tuple(record: Mapping[str, Any]) -> tuple[object, object, object, object]:
+    return (
+        record.get("state"),
+        record.get("certainty"),
+        record.get("reconciliation"),
+        record.get("next_action"),
+    )
+
+
+def _require_action_edge(
+    event: str,
+    old: Mapping[str, Any],
+    new: Mapping[str, Any],
+    *,
+    allowed_sources: set[tuple[object, object, object, object]],
+    allowed_targets: set[tuple[object, object, object, object]],
+    errors: list[str],
+) -> None:
+    if _action_tuple(old) not in allowed_sources:
+        errors.append(f"{event} has an invalid action source state")
+    if _action_tuple(new) not in allowed_targets:
+        errors.append(f"{event} has an invalid action target state")
+
+
+def _require_work_edge(
+    event: str,
+    old: Mapping[str, Any],
+    new: Mapping[str, Any],
+    *,
+    allowed_sources: set[str],
+    target: str,
+    errors: list[str],
+) -> None:
+    source = old.get("state")
+    if source not in allowed_sources:
+        errors.append(f"{event} has an invalid work source state")
+    if new.get("state") != target:
+        errors.append(f"{event} has an invalid work target state")
+    if new.get("last_transition") != f"{source}:{target}":
+        errors.append(f"{event} last_transition does not match the actual work edge")
+
+
 def recovery_transition_errors(
     event: str,
     before_records: Sequence[Mapping[str, Any]],
@@ -428,6 +480,18 @@ def recovery_transition_errors(
         new_attempts = new.get("budget", {}).get("attempt_count")
 
         if event == "restart_after_dispatch":
+            _require_action_edge(
+                event,
+                old,
+                new,
+                allowed_sources={
+                    ("dispatched", "unknown", "required", "reconcile"),
+                    ("uncertain", "unknown", "required", "reconcile"),
+                    ("reconciling", "unknown", "in_progress", "reconcile"),
+                },
+                allowed_targets={("reconciling", "unknown", "in_progress", "reconcile")},
+                errors=errors,
+            )
             if old.get("certainty") != "unknown" or new.get("certainty") != "unknown":
                 errors.append("restart must preserve an unknown dispatched outcome")
             if new.get("next_action") != "reconcile":
@@ -438,6 +502,14 @@ def recovery_transition_errors(
             if old != new:
                 errors.append("duplicate delivery must return the recorded intent unchanged")
         elif event == "stale_head":
+            _require_action_edge(
+                event,
+                old,
+                new,
+                allowed_sources={("prepared", "not_attempted", "not_required", "dispatch")},
+                allowed_targets={("abandoned", "not_applicable", "not_required", "abandon")},
+                errors=errors,
+            )
             if new.get("head_status") != "stale":
                 errors.append("stale-head recovery must record the stale target")
             if new.get("state") != "abandoned" or new.get("next_action") != "abandon":
@@ -445,11 +517,30 @@ def recovery_transition_errors(
             if new_attempts != 0:
                 errors.append("a pre-dispatch stale head cannot consume an attempt")
         elif event == "provider_timeout":
+            _require_action_edge(
+                event,
+                old,
+                new,
+                allowed_sources={("prepared", "not_attempted", "not_required", "dispatch")},
+                allowed_targets={("uncertain", "unknown", "required", "reconcile")},
+                errors=errors,
+            )
             if new.get("certainty") != "unknown" or new.get("next_action") != "reconcile":
                 errors.append("provider timeout must become unknown and reconcile")
             if old_attempts != 0 or new_attempts != 1:
                 errors.append("provider timeout must record exactly one dispatched attempt")
         elif event == "partial_success":
+            _require_action_edge(
+                event,
+                old,
+                new,
+                allowed_sources={
+                    ("dispatched", "unknown", "required", "reconcile"),
+                    ("uncertain", "unknown", "required", "reconcile"),
+                },
+                allowed_targets={("reconciling", "unknown", "in_progress", "reconcile")},
+                errors=errors,
+            )
             if new.get("certainty") != "unknown" or new.get("next_action") != "reconcile":
                 errors.append("partial success must remain unknown pending reconciliation")
             if old_attempts != new_attempts:
@@ -467,6 +558,18 @@ def recovery_transition_errors(
             errors.append("takeover must issue a new fence token")
         if pair is not None:
             old, new = pair
+            _require_action_edge(
+                event,
+                old,
+                new,
+                allowed_sources={
+                    ("dispatched", "unknown", "required", "reconcile"),
+                    ("uncertain", "unknown", "required", "reconcile"),
+                    ("reconciling", "unknown", "in_progress", "reconcile"),
+                },
+                allowed_targets={("reconciling", "unknown", "in_progress", "reconcile")},
+                errors=errors,
+            )
             authority = new.get("reconciliation_authority")
             for action, lease, label in ((old, old_lease, "dispatch"), (new, new_lease, "recovery")):
                 if action.get("tenant_id") != lease.get("tenant_id"):
@@ -503,6 +606,21 @@ def recovery_transition_errors(
             errors.append("recovery transition changed work generation")
 
         if event == "budget_exhaustion":
+            _require_work_edge(
+                event,
+                old_work,
+                new_work,
+                allowed_sources={
+                    "admitted",
+                    "claimed",
+                    "executing",
+                    "waiting_provider",
+                    "reconciling",
+                    "awaiting_review",
+                },
+                target="awaiting_owner",
+                errors=errors,
+            )
             if new_work.get("state") != "awaiting_owner" or new_work.get("reason") != "budget_exhausted":
                 errors.append("budget exhaustion must stop awaiting owner")
             if new_work.get("owner_escalation_count") != old_work.get("owner_escalation_count", 0) + 1:
@@ -514,10 +632,35 @@ def recovery_transition_errors(
                 errors.append("owner escalation redelivery must reuse the durable notification record")
         else:
             action_pair = _action_pair(before, after, errors)
+            _require_work_edge(
+                event,
+                old_work,
+                new_work,
+                allowed_sources={
+                    "observed",
+                    "admitted",
+                    "claimed",
+                    "executing",
+                    "waiting_provider",
+                    "reconciling",
+                    "awaiting_review",
+                    "awaiting_owner",
+                },
+                target="cancelled",
+                errors=errors,
+            )
             if new_work.get("state") != "cancelled" or new_work.get("reason") != "owner_cancelled":
                 errors.append("owner stop must cancel the work item")
             if action_pair is not None:
                 old_action, new_action = action_pair
+                _require_action_edge(
+                    event,
+                    old_action,
+                    new_action,
+                    allowed_sources={("prepared", "not_attempted", "not_required", "dispatch")},
+                    allowed_targets={("abandoned", "not_applicable", "not_required", "abandon")},
+                    errors=errors,
+                )
                 if new_action.get("state") != "abandoned" or new_action.get("next_action") != "abandon":
                     errors.append("owner stop must abandon a prepared action")
                 if old_action.get("budget", {}).get("attempt_count") != new_action.get("budget", {}).get(
