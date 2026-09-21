@@ -1,0 +1,724 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "code_mower.operator_policy.v1",
+  "title": "Code Mower Operator v1 authority and provider qualification contract",
+  "description": "Closed, provider-neutral policy records. These records grant no runtime authority by themselves.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/policy"
+    },
+    {
+      "$ref": "#/$defs/qualification"
+    }
+  ],
+  "$defs": {
+    "opaque_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "maxLength": 128
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "maxLength": 64
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation",
+        "proposals",
+        "mutations",
+        "denied",
+        "merge_approval",
+        "operator_merge"
+      ],
+      "properties": {
+        "observation": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "repository_metadata",
+              "issue_metadata",
+              "pull_request_metadata",
+              "check_metadata",
+              "provider_session_metadata",
+              "operator_records"
+            ]
+          }
+        },
+        "proposals": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "work_selection",
+              "provider_assignment",
+              "owner_escalation",
+              "review_request"
+            ]
+          }
+        },
+        "mutations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "create_provider_session",
+              "message_provider_session",
+              "cancel_provider_session",
+              "create_branch",
+              "push_commit",
+              "open_or_update_pull_request",
+              "apply_workflow_label",
+              "request_review",
+              "post_bounded_status"
+            ]
+          }
+        },
+        "denied": {
+          "const": [
+            "merge_pull_request",
+            "approve_own_work",
+            "weaken_branch_protection",
+            "expose_private_content",
+            "expand_repository_allowlist",
+            "mint_or_rotate_credentials"
+          ]
+        },
+        "merge_approval": {
+          "const": "human_required"
+        },
+        "operator_merge": {
+          "const": false
+        }
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_concurrent_work_items",
+        "max_concurrent_mutations",
+        "max_attempts_per_action",
+        "max_reconciliations_per_action",
+        "max_owner_escalations",
+        "max_work_seconds",
+        "max_action_seconds",
+        "max_spend_usd",
+        "lease_ttl_seconds",
+        "lease_renewal_seconds"
+      ],
+      "properties": {
+        "max_concurrent_work_items": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "max_concurrent_mutations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "max_attempts_per_action": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "max_reconciliations_per_action": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "max_owner_escalations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "max_work_seconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 604800
+        },
+        "max_action_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "max_spend_usd": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,5})\\.[0-9]{2}$",
+          "maxLength": 9
+        },
+        "lease_ttl_seconds": {
+          "type": "integer",
+          "minimum": 15,
+          "maximum": 600
+        },
+        "lease_renewal_seconds": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 300
+        }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classification",
+        "projection_fields",
+        "excluded_content",
+        "opaque_identifiers"
+      ],
+      "properties": {
+        "classification": {
+          "const": "metadata_only"
+        },
+        "projection_fields": {
+          "const": [
+            "schema",
+            "event_type",
+            "observed_at",
+            "tenant_id",
+            "repository_id",
+            "work_id",
+            "action_id",
+            "provider_id",
+            "role",
+            "state",
+            "reason",
+            "attempt_count",
+            "elapsed_seconds",
+            "spend_usd"
+          ]
+        },
+        "excluded_content": {
+          "const": [
+            "source",
+            "diffs",
+            "prompts",
+            "transcripts",
+            "issue_bodies",
+            "raw_provider_output",
+            "credentials",
+            "private_content",
+            "personal_paths"
+          ]
+        },
+        "opaque_identifiers": {
+          "const": true
+        }
+      }
+    },
+    "qualification_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "roles",
+        "required_evidence",
+        "max_evidence_age_seconds",
+        "fail_closed",
+        "provider_name_grants_authority"
+      ],
+      "properties": {
+        "roles": {
+          "const": [
+            "orchestrator",
+            "builder",
+            "reviewer",
+            "merge_authority"
+          ]
+        },
+        "required_evidence": {
+          "const": [
+            "capability_declaration",
+            "deterministic_harness",
+            "exact_head_result",
+            "policy_decision"
+          ]
+        },
+        "max_evidence_age_seconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 2592000
+        },
+        "fail_closed": {
+          "const": true
+        },
+        "provider_name_grants_authority": {
+          "const": false
+        }
+      }
+    },
+    "owner_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stop_reasons",
+        "delivery",
+        "after_budget_exhaustion"
+      ],
+      "properties": {
+        "stop_reasons": {
+          "const": [
+            "approval_required",
+            "budget_exhausted",
+            "capability_unqualified",
+            "credentials_unavailable",
+            "policy_denied",
+            "reconciliation_inconclusive",
+            "repository_not_allowed",
+            "user_input_required"
+          ]
+        },
+        "delivery": {
+          "const": "bounded_deduplicated_escalation"
+        },
+        "after_budget_exhaustion": {
+          "const": "stop_without_mutation"
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "contract_version",
+        "tenant_id",
+        "repository_allowlist",
+        "authority",
+        "budgets",
+        "qualification",
+        "privacy",
+        "owner_action"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.operatorPolicy.v1"
+        },
+        "contract_version": {
+          "const": "1.7"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/opaque_id"
+        },
+        "repository_allowlist": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/opaque_id"
+          }
+        },
+        "authority": {
+          "$ref": "#/$defs/authority"
+        },
+        "budgets": {
+          "$ref": "#/$defs/budgets"
+        },
+        "qualification": {
+          "$ref": "#/$defs/qualification_policy"
+        },
+        "privacy": {
+          "$ref": "#/$defs/privacy"
+        },
+        "owner_action": {
+          "$ref": "#/$defs/owner_action"
+        }
+      }
+    },
+    "capability": {
+      "enum": [
+        "observe_repository",
+        "select_work",
+        "create_session",
+        "message_session",
+        "cancel_session",
+        "write_branch",
+        "open_pull_request",
+        "request_review",
+        "structured_result",
+        "reconcile_remote_mutation"
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capability_declaration_digest",
+        "harness_digest",
+        "source_head",
+        "observed_at",
+        "expires_at"
+      ],
+      "properties": {
+        "capability_declaration_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "harness_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "source_head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
+          "maxLength": 40
+        },
+        "observed_at": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "expires_at": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "provider_id",
+        "transport_id",
+        "role",
+        "required_capabilities",
+        "declared_capabilities",
+        "evidence",
+        "status",
+        "decision",
+        "reason"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.operatorQualification.v1"
+        },
+        "provider_id": {
+          "$ref": "#/$defs/opaque_id"
+        },
+        "transport_id": {
+          "$ref": "#/$defs/opaque_id"
+        },
+        "role": {
+          "enum": [
+            "orchestrator",
+            "builder",
+            "reviewer",
+            "merge_authority"
+          ]
+        },
+        "required_capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/capability"
+          }
+        },
+        "declared_capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/capability"
+          }
+        },
+        "evidence": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/evidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "qualified",
+            "pending",
+            "failed",
+            "stale"
+          ]
+        },
+        "decision": {
+          "enum": [
+            "allowed",
+            "denied"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "evidence_current",
+            "evidence_missing",
+            "evidence_failed",
+            "evidence_stale",
+            "capability_missing",
+            "human_merge_required"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "qualified"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence": {
+                "$ref": "#/$defs/evidence"
+              },
+              "decision": {
+                "const": "allowed"
+              },
+              "reason": {
+                "const": "evidence_current"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "pending",
+                  "failed",
+                  "stale"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "decision": {
+                "const": "denied"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "merge_authority"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "pending"
+              },
+              "decision": {
+                "const": "denied"
+              },
+              "reason": {
+                "const": "human_merge_required"
+              },
+              "evidence": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "orchestrator"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "properties": {
+              "required_capabilities": {
+                "const": [
+                  "observe_repository",
+                  "select_work",
+                  "create_session",
+                  "structured_result",
+                  "reconcile_remote_mutation"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "builder"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "properties": {
+              "required_capabilities": {
+                "const": [
+                  "create_session",
+                  "write_branch",
+                  "open_pull_request",
+                  "structured_result"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "reviewer"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "properties": {
+              "required_capabilities": {
+                "const": [
+                  "observe_repository",
+                  "request_review",
+                  "structured_result"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "merge_authority"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "properties": {
+              "required_capabilities": {
+                "const": [
+                  "observe_repository"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "qualified"
+              },
+              "role": {
+                "const": "orchestrator"
+              }
+            },
+            "required": [
+              "status",
+              "role"
+            ]
+          },
+          "then": {
+            "properties": {
+              "declared_capabilities": {
+                "const": [
+                  "observe_repository",
+                  "select_work",
+                  "create_session",
+                  "structured_result",
+                  "reconcile_remote_mutation"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "qualified"
+              },
+              "role": {
+                "const": "builder"
+              }
+            },
+            "required": [
+              "status",
+              "role"
+            ]
+          },
+          "then": {
+            "properties": {
+              "declared_capabilities": {
+                "const": [
+                  "create_session",
+                  "write_branch",
+                  "open_pull_request",
+                  "structured_result"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "qualified"
+              },
+              "role": {
+                "const": "reviewer"
+              }
+            },
+            "required": [
+              "status",
+              "role"
+            ]
+          },
+          "then": {
+            "properties": {
+              "declared_capabilities": {
+                "const": [
+                  "observe_repository",
+                  "request_review",
+                  "structured_result"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
