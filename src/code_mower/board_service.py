@@ -2157,9 +2157,17 @@ def _rollback_and_reconcile(
         )
     else:
         load_state, _pid = _runtime_state_or_unknown(provider, spec.label)
-        installed = provider.read_service(spec.label)
+        # Absence reconciliation only needs to know whether the definition
+        # exists.  `read_service()` also attaches runtime state, so calling it
+        # here would repeat the same provider query that may already be
+        # unavailable and let that exception escape the rollback result.
+        # `definition_exists()` is deliberately fail-closed: an unreadable
+        # path counts as present rather than being mistaken for absence.
+        definition_present = bool(
+            getattr(provider, "definition_exists", lambda _label: True)(spec.label)
+        )
         inventory = port_listener_inventory(spec.port, command_runner)
-        definition_absent = installed is None
+        definition_absent = not definition_present
         job_absent = load_state == JOB_ABSENT
         port_absent = bool(inventory["available"]) and not inventory["listeners"]
         absent = (
