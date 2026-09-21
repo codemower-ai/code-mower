@@ -62,14 +62,13 @@ comes back with stale arguments, fails the gate instead of passing on a single
 early probe. The payload reports `delayed_health` with its state, the settle and
 refresh windows, and how many refreshes it took.
 
-When that window closes without a validating binding, the operation reports
-`delayed_health_failed`: the service applied but its binding never validated.
-This is the one failure that is *not* in the fail-closed table below, and the
-difference matters. The refusals below are decided before anything is applied
-and leave no local state behind; `delayed_health_failed` is decided after
-launchd already holds the job, so the definition stays installed and
-`board service status` keeps reporting the failing binding until you repair or
-remove it.
+When that window closes without a validating binding, an in-place restart or an
+unchanged install reports `delayed_health_failed`, because no definition was
+replaced. A new apply is different: a fresh install is removed again, while a
+replacement restores and verifies the previous binding. Those operations report
+`apply_failed` when the pre-operation state is verified and `rollback_failed`
+with a recovery command when neither state can be verified. The payload keeps
+the failed `delayed_health` evidence alongside the reconciliation result.
 
 ## Fail-closed refusals
 
@@ -162,6 +161,14 @@ the same complete read against the previous binding. A result never calls both
 replacement and rollback successful. If neither binding can be verified, the
 operation reports `rollback_failed` with one recovery command and the checkout
 where that command must run.
+
+Rollback version checks use the identity/version evidence captured from the old
+Board before it is stopped. A byte-for-byte restored older Board therefore
+validates as the previous state even when the command performing the replacement
+comes from a newer installation. If the prior definition was unreadable,
+`--replace` knowingly discarded bytes that could not be backed up; removing a
+failed replacement is then reported as unresolved cleanup, never as a restored
+previous service.
 
 The swap is the point at which the original contents stop existing, so it
 happens only once the old job is established as unloaded -- a `bootout` that
