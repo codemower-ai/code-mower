@@ -351,3 +351,12 @@ documents:
 - path: docs/v151-release-runbook.md
   status: frozen
   sha256: 9f48b6f03a5b3bf4392d1ac0ffbcb5060157c32e272a9c10883d84eb72965aa0
+- path: docs/v152-qualification.md
+  status: frozen
+  sha256: 251fac01db2f67d9f36f88c2ec4956aa888fe2dcaba3e5b76b77d7fe9bf0d93b
+- path: docs/v152-release-notes.md
+  status: frozen
+  sha256: 7d82af17663fe10cbe2ece382b7a3dda86a5ff0b1dd610bc5443a8137c3cb051
+- path: docs/v152-release-runbook.md
+  status: frozen
+  sha256: 7a7492e3e297d920dbb76b7c25339f3865d545c108a0114e65b1a3d989ad3bcd

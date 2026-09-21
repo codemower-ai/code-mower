@@ -1,11 +1,11 @@
 # Install And Bootstrap
 
 <!-- code-mower:release-facts:start -->
-v1.5.1 uses the exact install pin `code-mower==1.5.1` and requires Python
+v1.5.2 uses the exact install pin `code-mower==1.5.2` and requires Python
 3.12 or newer. Confirm that version is published on the selected index, then
 verify the command path and version after installing. The
-[qualification contract](v151-qualification.md) defines the required evidence. Use the
-[candidate runbook](v151-release-runbook.md) for prepublication local-wheel rehearsals.
+[qualification contract](v152-qualification.md) defines the required evidence. Use the
+[candidate runbook](v152-release-runbook.md) for prepublication local-wheel rehearsals.
 <!-- code-mower:release-facts:end -->
 
 
@@ -47,7 +47,7 @@ UV_BOOTSTRAP="$HOME/.local/share/code-mower-bootstrap/uv"
 python3.12 -m venv "$UV_BOOTSTRAP"
 "$UV_BOOTSTRAP/bin/python" -m pip install --upgrade uv
 "$UV_BOOTSTRAP/bin/python" -m uv --version
-"$UV_BOOTSTRAP/bin/python" -m uv tool install --python 3.12 code-mower==1.5.1
+"$UV_BOOTSTRAP/bin/python" -m uv tool install --python 3.12 code-mower==1.5.2
 ```
 
 The module form works even when uv is not yet on `PATH`. After installation,
@@ -76,7 +76,7 @@ code-mower --version
 ```
 
 `command -v code-mower` must print the path belonging to the installer you
-chose, and `code-mower --version` must print `code-mower 1.5.1`. A version that
+chose, and `code-mower --version` must print `code-mower 1.5.2`. A version that
 does not match, or a path from a different installer, means an older command is
 still winning on `PATH`; resolve that before running anything against a
 repository.
@@ -111,12 +111,12 @@ wrapper/pin drift checks, see
 
 ## Local audit workflow publication
 
-The local audit publisher introduced in v1.5.0 remains included in v1.5.1. It
+The local audit publisher introduced in v1.5.0 remains included in v1.5.2. It
 generates `.github/workflows/local-audit-publication.yml` alongside the updated
 labelers, gate and standalone verification helpers. Commit that generated set to the
 repository's default branch before switching local Claude/Codex wrappers to
 workflow publication. A PR's copy of the verifier has no publication authority.
-Before v1.5.1 is published, use its reviewed candidate wheel; afterward, use the
+Before v1.5.2 is published, use its reviewed candidate wheel; afterward, use the
 exact published pin below.
 
 The generated self-hosted audit job seals the verdict digest in an immutable
@@ -136,7 +136,7 @@ Install with pipx and an explicit Python 3.12+ interpreter:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.1
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.2
 code-mower --version
 ```
 
@@ -157,7 +157,7 @@ To replace an existing pipx install with an exact release, use `--force` so the
 old venv cannot keep serving the previous package:
 
 ```bash
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.5.1
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.5.2
 code-mower --version
 ```
 
@@ -170,7 +170,7 @@ export PIPX_HOME="$CODE_MOWER_AGENT_TOOLS/pipx"
 export PIPX_BIN_DIR="$CODE_MOWER_AGENT_TOOLS/bin"
 export PIPX_LOG_DIR="$CODE_MOWER_AGENT_TOOLS/logs"
 mkdir -p "$PIPX_HOME" "$PIPX_BIN_DIR" "$PIPX_LOG_DIR"
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.5.1
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.5.2
 "$PIPX_BIN_DIR/code-mower" --version
 ```
 
@@ -181,7 +181,7 @@ interactive shell profile:
 
 ```bash
 uv python install 3.12
-uv tool install --python 3.12 code-mower==1.5.1
+uv tool install --python 3.12 code-mower==1.5.2
 code-mower --version
 ```
 
@@ -191,7 +191,7 @@ installed command directly from the uv tool bin directory for that session.
 To replace an existing uv tool install with an exact release:
 
 ```bash
-uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.5.1
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.5.2
 code-mower --version
 ```
 
@@ -206,7 +206,7 @@ With pipx:
 
 ```bash
 PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" \
-  'code-mower[coworker]==1.5.1'
+  'code-mower[coworker]==1.5.2'
 code-mower context --help
 ```
 
@@ -214,7 +214,7 @@ With uv:
 
 ```bash
 uv tool install --python 3.12 --reinstall --refresh-package code-mower \
-  'code-mower[coworker]==1.5.1'
+  'code-mower[coworker]==1.5.2'
 code-mower context --help
 ```
 
@@ -242,7 +242,7 @@ command -v code-mower
 code-mower --version
 pipx uninstall code-mower
 uv python install 3.12
-uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.5.1
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.5.2
 hash -r
 command -v code-mower
 code-mower --version
@@ -262,7 +262,7 @@ For pipx:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.5.1
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.5.2
 code-mower --version
 ```
 
@@ -270,7 +270,7 @@ For uv:
 
 ```bash
 uv python install 3.12
-uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.5.1
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.5.2
 code-mower --version
 ```
 

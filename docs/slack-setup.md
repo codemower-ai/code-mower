@@ -10,12 +10,12 @@ Slack conveys a bounded request to the qualified supervisor; it does not run an
 agent or gain provider, review, approval, or merge authority. Hosted Devin is a
 bounded builder, never an orchestrator qualification.
 
-Live operation requires the current immutable reviewed `code-mower==1.5.1`
+Live operation requires the current immutable reviewed `code-mower==1.5.2`
 package, or a later compatible release, and a separately qualified hosted
 deployment. The private bridge verifies its implementation lock and
 rejects editable/VCS installs for live operation. Version alone is insufficient.
 Telemetry readiness, Board/cloud links, a general integrations picker, Slack
-Connect, public channels, DMs, and rich Slack UX are outside v1.5.1 and remain
+Connect, public channels, DMs, and rich Slack UX are outside v1.5.2 and remain
 planned v1.6 work.
 
 ## Hosted setup for a workspace administrator
@@ -28,10 +28,10 @@ not create or import a Slack app manifest.
 1. Sign in to Code Mower, select the intended team, then open **Setup → Manage
    Slack integration**. Supply the exact Slack workspace ID. If the deployment
    supports an Enterprise Grid workspace, also supply the expected enterprise
-   ID; v1.5.1 still rejects organization-wide installation.
+   ID; v1.5.2 still rejects organization-wide installation.
 
 2. Choose **Install**, review Slack's consent screen, and authorize the Code
-   Mower app in that same workspace. The v1.5.1 hosted app requests only the bot
+   Mower app in that same workspace. The v1.5.2 hosted app requests only the bot
    `commands` scope. It does not request message or channel history, posting,
    files, email, user tokens, Events API subscriptions, Socket Mode, or an
    organization-wide grant. Token rotation is enabled.

@@ -22,12 +22,12 @@ dry-run-first.
 
 ## Current Source And Published Baseline
 
-This source defines Code Mower `v1.5.1`, with package spec
-`code-mower==1.5.1`. Confirm the release tag on GitHub Releases and the package
+This source defines Code Mower `v1.5.2`, with package spec
+`code-mower==1.5.2`. Confirm the release tag on GitHub Releases and the package
 version on the selected index before using an index install command; source
 version and publication state are separate facts. See the
-[v1.5.1 release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v151-release-notes.md)
-and [qualification contract](https://github.com/codemower-ai/code-mower/blob/main/docs/v151-qualification.md).
+[v1.5.2 release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v152-release-notes.md)
+and [qualification contract](https://github.com/codemower-ai/code-mower/blob/main/docs/v152-qualification.md).
 After publication, the GitHub Release and linked release issue carry the
 observed source SHA, artifact digests, canary outcomes, publication run and
 reinstall evidence.
@@ -133,7 +133,7 @@ future hosted-service work.
 - Graphify's bounded provider foundation shipped in v1.4.0; its complete
   qualified integration, scorecard and query behavior shipped in v1.4.1. It
   remains optional and has no default dependency.
-- Slack in v1.5.1 supports one private workspace with explicit member, repository
+- Slack in v1.5.2 supports one private workspace with explicit member, repository
   and private-channel mappings plus private start, status, answer and
   confirmed-cancel interactions. Telemetry, Board links, Slack Connect, public
   channels and richer Slack UX remain planned v1.6 work.
@@ -147,7 +147,7 @@ future hosted-service work.
 
 ## Current Release And v1.6.0
 
-`v1.5.1` is released and is the current supported package. It retains the
+`v1.5.2` is released and is the current supported package. It retains the
 basic Slack boundary from v1.5.0 and adds the five reliability revisions from
 #1050: hosted-install clarity, host-independent tests, lane-exact audit seals,
 checkout-free remote doctor, safe existing-repository initialization, and
@@ -172,7 +172,7 @@ live trackers. The planned children are:
 
 #1063, #1064, and the documentation portion of #1065 can proceed in parallel.
 #921 freezes the shared contract and fixtures before #978 enables hosted
-ingest. None of this planned work is part of v1.5.1.
+ingest. None of this planned work is part of v1.5.2.
 
 ## Near-Term Roadmap
 

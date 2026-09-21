@@ -2,7 +2,7 @@
 
 Graphify's bounded provider foundation landed in v1.4.0; its complete qualified
 integration, scorecard and query behavior shipped in v1.4.1, were extended in
-v1.5.0, and remain available in current v1.5.1. It is an **optional** local
+v1.5.0, and remain available in current v1.5.2. It is an **optional** local
 repository-graph provider, separately installed into
 an operator-owned environment, explicitly activated, and outside the base
 dependency set: a default Claude + Codex installation adds no Graphify

@@ -4,13 +4,13 @@
 Code Mower users install from PyPI. For the current release, build the immutable
 merge-SHA candidate first, qualify those retained bytes, then tag and publish the
 unchanged SHA. The release workflow retrieves and verifies the candidate without
-rebuilding. Follow the [v1.5.1 runbook](v151-release-runbook.md) and
-[qualification contract](v151-qualification.md); observed evidence belongs on the release
+rebuilding. Follow the [v1.5.2 runbook](v152-release-runbook.md) and
+[qualification contract](v152-qualification.md); observed evidence belongs on the release
 issue and GitHub Release.
 
 ```bash
 CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.1
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.2
 ```
 <!-- code-mower:release-facts:end -->
 
@@ -27,14 +27,14 @@ source candidate with publication pending #915 even after publication finished.
 Editing `main` cannot repair that tagged README or the README embedded in its
 package. Never rewrite a published tag to correct the wording.
 
-1. Choose the exact release tag, such as `v1.5.1`. Set both the project version
-   in `pyproject.toml` and `src/code_mower/__init__.py` to `1.5.1`.
-2. Add exactly one matching `## 1.5.1` (or `## v1.5.1`) CHANGELOG heading as
+1. Choose the exact release tag, such as `v1.5.2`. Set both the project version
+   in `pyproject.toml` and `src/code_mower/__init__.py` to `1.5.2`.
+2. Add exactly one matching `## 1.5.2` (or `## v1.5.2`) CHANGELOG heading as
    the first versioned entry; an `Unreleased` section may precede it. Describe
-   what the release contains. A neutral heading such as `## 1.5.1 — release`
+   what the release contains. A neutral heading such as `## 1.5.2 — release`
    works before publication and remains true afterward.
 3. Set the README's opening source identity statement to
-   `This source defines Code Mower v1.5.1, with package spec code-mower==1.5.1.`
+   `This source defines Code Mower v1.5.2, with package spec code-mower==1.5.2.`
    Markdown backticks and line wrapping are supported. Keep this statement
    before the first `##` heading and keep its tag and install spec exact.
    Follow it with the durable instruction to confirm the release tag on GitHub
@@ -50,12 +50,12 @@ package. Never rewrite a published tag to correct the wording.
    name (the tag does not need to exist):
 
    ```bash
-   .venv/bin/python src/code_mower/release_identity.py --tag v1.5.1
+   .venv/bin/python src/code_mower/release_identity.py --tag v1.5.2
    .venv/bin/python -m code_mower.migration release-readiness --json
    ```
 
 5. Obtain independent review on the exact final preparation PR head, green CI,
-   and the authoritative Code Mower gate before merge. For v1.5.1, require the
+   and the authoritative Code Mower gate before merge. For v1.5.2, require the
    five reliability revisions tracked by #1050 and the final reviewed release
    notes, qualification contract and publication instructions on that head.
    After the recorded owner merge process, bind the
@@ -64,7 +64,7 @@ package. Never rewrite a published tag to correct the wording.
    release decision, tag or publication. Re-run identity on that exact checkout;
    publish the retained pair with the same SHA and candidate workflow run ID.
 
-For releases after v1.5.1, let the final candidate soak for at least 24 hours
+For releases after v1.5.2, let the final candidate soak for at least 24 hours
 after its last source or packaged-document change and complete at least two
 independent cold-install or upgrade passes during that window. A candidate
 change restarts the clock. An emergency patch may shorten the soak only when
@@ -92,7 +92,7 @@ always requires final-state text, including TestPyPI rehearsals and GitHub
 releases marked prerelease. Neither the index nor that flag bypasses the gate.
 
 The executed v1.4.2 commands below remain a historical record. Do not mechanically
-substitute v1.5.1: its candidate-before-tag procedure is in the current runbook.
+substitute v1.5.2: its candidate-before-tag procedure is in the current runbook.
 
 ## Current Status
 
@@ -174,7 +174,7 @@ should be the `/releases/latest` result, and exact-version installs should
 resolve from PyPI.
 
 ```bash
-RELEASE_VERSION="${RELEASE_VERSION:-1.5.1}"
+RELEASE_VERSION="${RELEASE_VERSION:-1.5.2}"
 RELEASE_TAG="v$RELEASE_VERSION"
 gh release view "$RELEASE_TAG" \
   --repo codemower-ai/code-mower \
@@ -2146,7 +2146,7 @@ being verified instead of copying an older version pin through this reusable
 section:
 
 ```bash
-export RELEASE_VERSION="${RELEASE_VERSION:-1.5.1}"
+export RELEASE_VERSION="${RELEASE_VERSION:-1.5.2}"
 export RELEASE_TAG="v$RELEASE_VERSION"
 export RELEASE_SPEC="code-mower==$RELEASE_VERSION"
 export RELEASE_WHEEL_STEM="code_mower-${RELEASE_VERSION}"
@@ -2296,7 +2296,7 @@ The primary README command stays on the exact current release so an adopter,
 an agent, and the release rehearsal all install the same artifact:
 
 ```bash
-RELEASE_VERSION="${RELEASE_VERSION:-1.5.1}"
+RELEASE_VERSION="${RELEASE_VERSION:-1.5.2}"
 RELEASE_SPEC="code-mower==$RELEASE_VERSION"
 CODE_MOWER_PYTHON="$(command -v python3.12)"
 pipx install --python "$CODE_MOWER_PYTHON" "$RELEASE_SPEC"

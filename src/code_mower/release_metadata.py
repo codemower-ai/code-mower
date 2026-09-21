@@ -17,6 +17,7 @@ _TOP_LEVEL_KEYS = {
     "schema",
     "version",
     "previous_version",
+    "previous_wheel_sha256",
     "tag",
     "package_spec",
     "stage",
@@ -37,6 +38,7 @@ class ReleaseMetadataError(ValueError):
 class ReleaseMetadata:
     version: str
     previous_version: str
+    previous_wheel_sha256: str
     tag: str
     package_spec: str
     stage: str
@@ -95,6 +97,9 @@ def load_release_metadata(repo_root: Path) -> ReleaseMetadata:
 
     version = _text(data["version"], "version")
     previous = _text(data["previous_version"], "previous_version")
+    previous_wheel_sha256 = _text(
+        data["previous_wheel_sha256"], "previous_wheel_sha256"
+    )
     try:
         parsed_version = Version(version)
         parsed_previous = Version(previous)
@@ -102,6 +107,8 @@ def load_release_metadata(repo_root: Path) -> ReleaseMetadata:
         raise ReleaseMetadataError(f"invalid release version: {exc}") from exc
     if parsed_previous >= parsed_version:
         raise ReleaseMetadataError("previous_version must be older than version")
+    if not re.fullmatch(r"[0-9a-f]{64}", previous_wheel_sha256):
+        raise ReleaseMetadataError("previous_wheel_sha256 must be a lowercase SHA-256 digest")
     tag = _text(data["tag"], "tag")
     package_spec = _text(data["package_spec"], "package_spec")
     if tag != f"v{version}" or package_spec != f"code-mower=={version}":
@@ -139,6 +146,7 @@ def load_release_metadata(repo_root: Path) -> ReleaseMetadata:
     return ReleaseMetadata(
         version=version,
         previous_version=previous,
+        previous_wheel_sha256=previous_wheel_sha256,
         tag=tag,
         package_spec=package_spec,
         stage=stage,
