@@ -7,6 +7,12 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+from code_mower.operator_contract_v1 import (
+    action_intent_semantic_errors,
+    qualification_semantic_errors,
+    recovery_transition_errors,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "src" / "code_mower"
@@ -144,6 +150,32 @@ class OperatorContractV1Tests(unittest.TestCase):
         schema = self.schemas[schema_name]
         return _errors(document, schema, schema)
 
+    def _semantic_errors(
+        self,
+        document: dict[str, Any],
+        context: dict[str, Any] | None,
+    ) -> tuple[str, ...]:
+        context = context or {}
+        if document.get("schema") == "code_mower.operatorQualification.v1":
+            policy = next(
+                case["document"]
+                for case in self.fixtures["accepted"]
+                if case["name"] == "single_tenant_manual_merge_policy"
+            )
+            return qualification_semantic_errors(
+                document,
+                max_evidence_age_seconds=policy["qualification"]["max_evidence_age_seconds"],
+                now=context.get("now", 2_000_000_100),
+            )
+        if document.get("schema") == "code_mower.operatorActionIntent.v1":
+            generation = context.get("current_work_generation")
+            if generation is not None:
+                return action_intent_semantic_errors(
+                    document,
+                    current_work_generation=generation,
+                )
+        return ()
+
     def test_schemas_are_versioned_and_every_object_definition_is_closed(self) -> None:
         self.assertEqual(
             {schema["$id"] for schema in self.schemas.values()},
@@ -176,12 +208,20 @@ class OperatorContractV1Tests(unittest.TestCase):
         names: set[str] = set()
         for case in self.fixtures["accepted"]:
             with self.subTest(case=case["name"]):
-                self.assertEqual(set(case), {"name", "contract_schema", "document"})
+                self.assertEqual(
+                    set(case),
+                    {"name", "contract_schema", "document"}
+                    | ({"semantic_context"} if "semantic_context" in case else set()),
+                )
                 self.assertNotIn(case["name"], names)
                 names.add(case["name"])
                 self.assertEqual(
                     self._validate(case["contract_schema"], case["document"]),
                     [],
+                )
+                self.assertEqual(
+                    self._semantic_errors(case["document"], case.get("semantic_context")),
+                    (),
                 )
 
     def test_all_canonical_rejected_fixtures_fail_validation(self) -> None:
@@ -190,13 +230,19 @@ class OperatorContractV1Tests(unittest.TestCase):
             with self.subTest(case=case["name"]):
                 self.assertEqual(
                     set(case),
-                    {"name", "contract_schema", "expected_violation", "document"},
+                    {"name", "contract_schema", "expected_violation", "document"}
+                    | ({"semantic_context"} if "semantic_context" in case else set()),
                 )
                 self.assertNotIn(case["name"], names)
                 names.add(case["name"])
                 self.assertTrue(case["expected_violation"])
+                schema_errors = self._validate(case["contract_schema"], case["document"])
+                semantic_errors = self._semantic_errors(
+                    case["document"],
+                    case.get("semantic_context"),
+                )
                 self.assertTrue(
-                    self._validate(case["contract_schema"], case["document"]),
+                    schema_errors or semantic_errors,
                     f"rejected fixture unexpectedly validated: {case['name']}",
                 )
 
@@ -249,13 +295,27 @@ class OperatorContractV1Tests(unittest.TestCase):
             policy["budgets"]["lease_ttl_seconds"],
         )
 
-    def test_failure_fixture_covers_required_recovery_boundaries(self) -> None:
+    def test_failure_fixtures_execute_required_and_forbidden_recovery_transitions(self) -> None:
         scenarios = {case["name"]: case for case in self.fixtures["failure_scenarios"]}
         for case in scenarios.values():
-            self.assertEqual(
-                set(case),
-                {"name", "required_outcome", "forbidden_outcome"},
-            )
+            self.assertEqual(set(case), {"name", "before", "after", "forbidden_after"})
+            for phase in ("before", "after", "forbidden_after"):
+                for record in case[phase]:
+                    self.assertEqual(set(record), {"contract_schema", "document"})
+                    self.assertEqual(
+                        self._validate(record["contract_schema"], record["document"]),
+                        [],
+                        f"{case['name']} {phase} contains an invalid contract record",
+                    )
+                    document = record["document"]
+                    if document.get("schema") == "code_mower.operatorActionIntent.v1":
+                        self.assertEqual(
+                            action_intent_semantic_errors(
+                                document,
+                                current_work_generation=4,
+                            ),
+                            (),
+                        )
         self.assertEqual(
             set(scenarios),
             {
@@ -266,11 +326,53 @@ class OperatorContractV1Tests(unittest.TestCase):
                 "provider_timeout",
                 "partial_success",
                 "budget_exhaustion",
+                "owner_escalation_redelivery",
                 "owner_stop",
             },
         )
-        self.assertEqual(scenarios["provider_timeout"]["forbidden_outcome"], "assume_failure_and_retry")
-        self.assertEqual(scenarios["lease_takeover"]["required_outcome"], "increment_epoch_and_fence_old_holder")
+        for name, case in scenarios.items():
+            before = [record["document"] for record in case["before"]]
+            after = [record["document"] for record in case["after"]]
+            forbidden = [record["document"] for record in case["forbidden_after"]]
+            with self.subTest(case=name, outcome="required"):
+                self.assertEqual(recovery_transition_errors(name, before, after), ())
+            with self.subTest(case=name, outcome="forbidden"):
+                self.assertTrue(recovery_transition_errors(name, before, forbidden))
+
+    def test_takeover_after_unknown_preserves_dispatch_fence_and_uses_current_reconciler(self) -> None:
+        intent = next(
+            case["document"]
+            for case in self.fixtures["accepted"]
+            if case["name"] == "takeover_reconciles_unknown_without_redispatch"
+        )
+        self.assertEqual(intent["lease_epoch"], 8)
+        self.assertEqual(intent["fence_status"], "stale")
+        self.assertEqual(intent["reconciliation_authority"]["lease_epoch"], 9)
+        self.assertEqual(intent["certainty"], "unknown")
+        self.assertEqual(intent["next_action"], "reconcile")
+
+    def test_owner_stop_reasons_and_escalation_identity_are_aligned(self) -> None:
+        policy = next(
+            case["document"]
+            for case in self.fixtures["accepted"]
+            if case["name"] == "single_tenant_manual_merge_policy"
+        )
+        self.assertTrue({"stale_head", "stale_lease"}.issubset(policy["owner_action"]["stop_reasons"]))
+        work = next(
+            case["document"]
+            for case in self.fixtures["accepted"]
+            if case["name"] == "work_waiting_for_owner_after_budget_exhaustion"
+        )
+        self.assertEqual(len(work["owner_escalation_key"]), 64)
+
+    def test_intent_generation_is_bound_to_current_work_generation(self) -> None:
+        current = next(
+            case["document"]
+            for case in self.fixtures["accepted"]
+            if case["name"] == "durable_intent_precedes_dispatch"
+        )
+        self.assertEqual(action_intent_semantic_errors(current, current_work_generation=4), ())
+        self.assertTrue(action_intent_semantic_errors(current, current_work_generation=5))
 
     def test_metadata_projection_is_exactly_the_policy_allowlist(self) -> None:
         policy = next(
@@ -315,6 +417,7 @@ class OperatorContractV1Tests(unittest.TestCase):
     def test_contract_artifacts_are_in_package_and_document_inventory(self) -> None:
         package_manifest = (PACKAGE / "package_manifest.py").read_text(encoding="utf-8")
         for path in (
+            "src/code_mower/operator_contract_v1.py",
             "src/code_mower/operator_policy_v1.schema.json",
             "src/code_mower/operator_state_v1.schema.json",
             "src/code_mower/operator_contract_v1.fixtures.json",

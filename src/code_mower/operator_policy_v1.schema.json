@@ -272,6 +272,8 @@
             "policy_denied",
             "reconciliation_inconclusive",
             "repository_not_allowed",
+            "stale_head",
+            "stale_lease",
             "user_input_required"
           ]
         },
@@ -494,11 +496,7 @@
           "if": {
             "properties": {
               "status": {
-                "enum": [
-                  "pending",
-                  "failed",
-                  "stale"
-                ]
+                "const": "pending"
               }
             },
             "required": [
@@ -509,6 +507,65 @@
             "properties": {
               "decision": {
                 "const": "denied"
+              },
+              "reason": {
+                "enum": [
+                  "evidence_missing",
+                  "human_merge_required"
+                ]
+              },
+              "evidence": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "failed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "decision": {
+                "const": "denied"
+              },
+              "reason": {
+                "enum": [
+                  "evidence_failed",
+                  "capability_missing"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "stale"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "decision": {
+                "const": "denied"
+              },
+              "reason": {
+                "const": "evidence_stale"
+              },
+              "evidence": {
+                "$ref": "#/$defs/evidence"
               }
             }
           }
