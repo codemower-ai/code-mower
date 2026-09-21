@@ -162,6 +162,12 @@ replacement and rollback successful. If neither binding can be verified, the
 operation reports `rollback_failed` with one recovery command and the checkout
 where that command must run.
 
+A failed first install has absence as its rollback target. That result re-reads
+the definition, launchd job and unfiltered listener inventory after cleanup;
+only no definition, no job and an available inventory with zero listeners on
+the target port is verified absence. An unavailable inventory or any surviving
+listener is unresolved `rollback_failed`, with the same exact recovery command.
+
 Rollback version checks use the identity/version evidence captured from the old
 Board before it is stopped. A byte-for-byte restored older Board therefore
 validates as the previous state even when the command performing the replacement

@@ -1842,6 +1842,81 @@ class BoardServiceLifecycleTest(ServiceHarness):
         )
         self.assertEqual(self.host.identities[5332]["repo"], "codemower-ai/code-mower")
 
+    def test_a_first_install_rollback_with_a_detached_listener_is_unresolved(self) -> None:
+        host = self.host
+
+        class LoadsWrongIdentityAndLeavesDetachedListener(board_service.LaunchdProvider):
+            def bootstrap(self, label: str) -> tuple[bool, str]:
+                super().bootstrap(label)
+                host.identities[5332]["repo"] = "codemower-ai/private-repo"
+                return False, "Bootstrap failed after registering the new job"
+
+            def bootout(self, label: str) -> tuple[bool, str]:
+                ok, detail = super().bootout(label)
+                host.add_foreign_listener(
+                    5332,
+                    command="/usr/local/bin/code-mower board serve --repo codemower-ai/private-repo",
+                    ppid=1,
+                )
+                return ok, detail
+
+        payload = self._restart_with(
+            LoadsWrongIdentityAndLeavesDetachedListener(
+                command_runner=self.host.run,
+                root=self.root,
+                uid=self.host.uid,
+                platform="darwin",
+            ),
+            self.spec(),
+        )
+
+        self.assertEqual(payload["status"], "rollback_failed")
+        self.assertEqual(payload["reconciliation"]["state"], "unresolved")
+        self.assertFalse(payload["reconciliation"]["verified"])
+        self.assertTrue(payload["reconciliation"]["definition_absent"])
+        self.assertTrue(payload["reconciliation"]["job_absent"])
+        self.assertTrue(payload["reconciliation"]["listener_inventory_available"])
+        self.assertEqual(payload["reconciliation"]["listener_count"], 1)
+        self.assertFalse(payload["rollback"]["ok"])
+        self.assertEqual(
+            payload["reconciliation"]["recovery"]["command"],
+            "code-mower board service restart --repo codemower-ai/code-mower "
+            "--repo-path . --host 127.0.0.1 --port 5332 --replace",
+        )
+        self.assertFalse((self.root / "ai.codemower.board.5332.plist").exists())
+        self.assertNotIn("ai.codemower.board.5332", self.host.loaded)
+        self.assertIn(5332, self.host.listeners)
+
+    def test_a_first_install_rollback_with_no_listener_inventory_is_unresolved(self) -> None:
+        host = self.host
+
+        class LosesListenerInventoryDuringRollback(board_service.LaunchdProvider):
+            def bootstrap(self, label: str) -> tuple[bool, str]:
+                super().bootstrap(label)
+                host.identities[5332]["repo"] = "codemower-ai/private-repo"
+                return False, "Bootstrap failed after registering the new job"
+
+            def bootout(self, label: str) -> tuple[bool, str]:
+                ok, detail = super().bootout(label)
+                host.listener_inventory_available = False
+                return ok, detail
+
+        payload = self._restart_with(
+            LosesListenerInventoryDuringRollback(
+                command_runner=self.host.run,
+                root=self.root,
+                uid=self.host.uid,
+                platform="darwin",
+            ),
+            self.spec(),
+        )
+
+        self.assertEqual(payload["status"], "rollback_failed")
+        self.assertEqual(payload["reconciliation"]["state"], "unresolved")
+        self.assertFalse(payload["reconciliation"]["listener_inventory_available"])
+        self.assertIn("recovery", payload["reconciliation"])
+        self.assertFalse(payload["rollback"]["ok"])
+
     def test_an_unreadable_takeover_failure_never_claims_the_prior_state_was_restored(self) -> None:
         original = self.spec()
         self.install(original)

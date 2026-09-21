@@ -2124,20 +2124,45 @@ def _rollback_and_reconcile(
         )
     else:
         load_state, _pid = provider.runtime_state(spec.label)
+        installed = provider.read_service(spec.label)
+        inventory = port_listener_inventory(spec.port, command_runner)
+        definition_absent = installed is None
+        job_absent = load_state == JOB_ABSENT
+        port_absent = bool(inventory["available"]) and not inventory["listeners"]
         absent = (
-            provider.read_service(spec.label) is None
-            and load_state == JOB_ABSENT
+            definition_absent
+            and job_absent
+            and port_absent
             and bool(rollback.get("ok"))
         )
         restored = {
             "state": "absent" if absent else "unresolved",
             "verified": absent,
             "target": "absent",
+            "definition_absent": definition_absent,
+            "job_absent": job_absent,
+            "listener_inventory_available": bool(inventory["available"]),
+            "listener_count": len(inventory["listeners"]),
         }
         if not absent:
             restored["recovery"] = _recovery_instruction(
                 spec, show_local_paths=show_local_paths
             )
+            if not inventory["available"]:
+                restored["detail"] = (
+                    "the local listener inventory could not be read, so target-port absence "
+                    "could not be verified"
+                )
+            elif inventory["listeners"]:
+                restored["detail"] = (
+                    f"port {spec.port} still has {len(inventory['listeners'])} listener(s) "
+                    "after rollback"
+                )
+            else:
+                restored["detail"] = rollback.get("detail") or (
+                    "the definition or launchd job was still present after rollback"
+                )
+        rollback["ok"] = absent
         status = "apply_failed" if absent else "rollback_failed"
         message = (
             f"{failure_detail}; the pre-operation absence was restored and verified"
