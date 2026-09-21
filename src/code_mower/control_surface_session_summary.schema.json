@@ -1,5 +1,34 @@
 {
   "$defs": {
+    "capability": {
+      "additionalProperties": false,
+      "properties": {
+        "accepting": {
+          "type": "boolean"
+        },
+        "capability_version": {
+          "const": 1
+        },
+        "fixture_manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "schema": {
+          "const": "code_mower.controlSurfaceSessionSummaryCapability.v1"
+        },
+        "summary_schema": {
+          "const": "code_mower.controlSurfaceSessionSummary.v1"
+        }
+      },
+      "required": [
+        "schema",
+        "summary_schema",
+        "capability_version",
+        "fixture_manifest_sha256",
+        "accepting"
+      ],
+      "type": "object"
+    },
     "dimensions": {
       "additionalProperties": false,
       "properties": {

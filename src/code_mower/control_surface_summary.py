@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import math
 import re
+import uuid
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Mapping
+
+from . import __version__
+from .providers import build_code_mower_tool_provenance
 
 EVENT_TYPE = "control_surface_session_summary"
 SUMMARY_SCHEMA = "code_mower.controlSurfaceSessionSummary.v1"
 CAPABILITY_VERSION = 1
+CAPABILITY_SCHEMA = "code_mower.controlSurfaceSessionSummaryCapability.v1"
 SOURCE = "code-mower slack lifecycle"
 PRIVACY_CLASSIFICATION = "metadata_only"
 
@@ -126,6 +135,15 @@ _REPO_SLUG = re.compile(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}")
 _SESSION = re.compile(r"[0-9a-f]{32}")
 _HEAD_SHA = re.compile(r"[0-9a-f]{40}")
 _PR_NUMBER = re.compile(r"[1-9][0-9]{0,9}")
+_CAPABILITY_FIELDS = frozenset(
+    {
+        "schema",
+        "summary_schema",
+        "capability_version",
+        "fixture_manifest_sha256",
+        "accepting",
+    }
+)
 
 
 def _error(detail: str) -> Exception:
@@ -266,3 +284,167 @@ def validate_control_surface_summary(value: Mapping[str, Any]) -> None:
             _optional_metric(metrics[field], field)
     if "usage_acu" in metrics and provider != "devin":
         raise _error("usage_acu is available only for devin observations")
+
+
+@lru_cache(maxsize=1)
+def fixture_manifest_digest() -> str:
+    """Return the exact installed fixture-manifest identity advertised by hosted."""
+
+    raw = Path(__file__).with_name(
+        "control_surface_session_summary.fixture-manifest.json"
+    ).read_bytes()
+    return hashlib.sha256(raw).hexdigest()
+
+
+def capability_accepts_summary(value: object) -> bool:
+    """Fail closed unless hosted advertises this exact installed contract."""
+
+    return bool(
+        isinstance(value, Mapping)
+        and set(value) == _CAPABILITY_FIELDS
+        and value.get("schema") == CAPABILITY_SCHEMA
+        and value.get("summary_schema") == SUMMARY_SCHEMA
+        and type(value.get("capability_version")) is int
+        and value["capability_version"] == CAPABILITY_VERSION
+        and value.get("fixture_manifest_sha256") == fixture_manifest_digest()
+        and value.get("accepting") is True
+    )
+
+
+def opaque_session(logical_session: str) -> str:
+    """Derive a stable unlinkable cloud key, never reuse a Slack/provider id."""
+
+    if not isinstance(logical_session, str) or not logical_session or len(logical_session) > 128:
+        raise _error("logical session must be bounded local metadata")
+    seed = (SUMMARY_SCHEMA + "\0" + logical_session).encode("utf-8")
+    return hashlib.sha256(seed).hexdigest()[:32]
+
+
+def _stamp(value: dt.datetime) -> str:
+    if not isinstance(value, dt.datetime) or value.tzinfo is None:
+        raise _error("observed_at must include a UTC offset")
+    return value.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _owner_action(lifecycle: Mapping[str, Any]) -> str:
+    reason = lifecycle["reason"]
+    return {
+        "user_input_required": "answer_question",
+        "approval_required": "respond_to_approval",
+        "provider_unavailable": "inspect_provider",
+        "reconcile_dispatch": "inspect_provider",
+        "inspect_provider_then_acknowledge": "inspect_provider",
+        "result_not_ready": "inspect_provider",
+        "result_unavailable": "inspect_provider",
+        "session_failed": "inspect_failure",
+        "session_suspended": "inspect_failure",
+        "none": "none",
+    }[reason]
+
+
+def build_control_surface_summary(
+    *,
+    logical_session: str,
+    repo_slug: str,
+    provider: str,
+    lifecycle: Mapping[str, Any],
+    observed_at: dt.datetime,
+    pr_number: int | None = None,
+    head_sha: str | None = None,
+    pr_state: str | None = None,
+    elapsed_seconds: float | None = None,
+    usage_acu: float | None = None,
+) -> dict[str, Any]:
+    """Build one retry-stable allowlisted summary from a public lifecycle."""
+
+    from .remote_session import RemoteError, public_projection
+
+    try:
+        projected = public_projection(dict(lifecycle))
+    except (RemoteError, TypeError, ValueError):
+        raise _error("lifecycle must be the closed public projection") from None
+    created_at = _stamp(observed_at)
+    state = projected["state"]
+    dimensions: dict[str, Any] = {
+        "summary_schema": SUMMARY_SCHEMA,
+        "capability_version": CAPABILITY_VERSION,
+        "control_surface": "slack",
+        "session": opaque_session(logical_session),
+        "privacy_classification": PRIVACY_CLASSIFICATION,
+        "state": state,
+        "outcome": OUTCOME_BY_STATE.get(state, "unknown"),
+        "owner_action": _owner_action(projected),
+    }
+    if pr_number is not None:
+        dimensions["pr_number"] = str(pr_number)
+    if head_sha is not None:
+        dimensions["head_sha"] = head_sha
+    if pr_state is not None:
+        dimensions["pr_state"] = pr_state
+    metrics: dict[str, Any] = {
+        "summary_count": 1,
+        **{f"{key}_count": projected["counts"][key] for key in ("dispatch", "message", "cancel", "collect")},
+    }
+    if elapsed_seconds is not None:
+        metrics["elapsed_seconds"] = elapsed_seconds
+    if usage_acu is not None:
+        metrics["usage_acu"] = usage_acu
+    event_seed = json.dumps(
+        [repo_slug, provider, created_at, dimensions, metrics],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    event = {
+        "schema": "code_mower.benchmarkEvent.v1",
+        "event_type": EVENT_TYPE,
+        "event_id": str(uuid.uuid5(uuid.NAMESPACE_URL, event_seed)),
+        "created_at": created_at,
+        "repo_slug": repo_slug,
+        "team_id": "",
+        "install_id": "",
+        "source": SOURCE,
+        "provider": provider,
+        "lens": "",
+        "status": state,
+        "metrics": metrics,
+        "dimensions": dimensions,
+        "tool": build_code_mower_tool_provenance(
+            source=SOURCE,
+            version=__version__,
+            role="reporter",
+        ),
+    }
+    validate_control_surface_summary(event)
+    return event
+
+
+def gated_control_surface_summary(
+    capability: object, **summary: Any
+) -> dict[str, Any] | None:
+    """Return no cloud event until exact hosted acceptance is advertised."""
+
+    if not capability_accepts_summary(capability):
+        return None
+    return build_control_surface_summary(**summary)
+
+
+def slack_board_run(
+    *,
+    logical_session: str,
+    binding: Any,
+    provider: str,
+    observed_at: dt.datetime,
+    lifecycle: Mapping[str, Any],
+) -> Any:
+    """Adapt a Slack-requested lifecycle into the existing local Board seam."""
+
+    from .board_local_observation import run_from_remote_lifecycle
+
+    return run_from_remote_lifecycle(
+        id="slack-" + opaque_session(logical_session)[:20],
+        binding=binding,
+        provider=provider,
+        role="builder",
+        observed_at=observed_at,
+        lifecycle=lifecycle,
+    )

@@ -3,16 +3,25 @@ from __future__ import annotations
 import hashlib
 import importlib.resources
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from code_mower.cloud_client.errors import CloudBundleError
 from code_mower.cloud_client.events import validate_cloud_event
+from code_mower.board_local_observation import WorkBinding
 from code_mower.control_surface_summary import (
+    CAPABILITY_SCHEMA,
     CAPABILITY_VERSION,
     EVENT_TYPE,
     SUMMARY_SCHEMA,
+    build_control_surface_summary,
+    capability_accepts_summary,
+    fixture_manifest_digest,
+    gated_control_surface_summary,
+    opaque_session,
+    slack_board_run,
     validate_control_surface_summary,
 )
 from code_mower.package_manifest import PACKAGE_FILES
@@ -119,3 +128,88 @@ def test_schema_and_expectations_pin_capability_and_hosted_data_controls() -> No
         "aggregate_reconciliation",
     } <= names
 
+
+def test_capability_gate_requires_exact_installed_contract_identity() -> None:
+    capability = {
+        "schema": CAPABILITY_SCHEMA,
+        "summary_schema": SUMMARY_SCHEMA,
+        "capability_version": CAPABILITY_VERSION,
+        "fixture_manifest_sha256": fixture_manifest_digest(),
+        "accepting": True,
+    }
+
+    assert capability_accepts_summary(capability)
+    for changed in (
+        {**capability, "accepting": False},
+        {**capability, "capability_version": 2},
+        {**capability, "fixture_manifest_sha256": "0" * 64},
+        {**capability, "unknown": "field"},
+        None,
+    ):
+        assert not capability_accepts_summary(changed)
+
+
+def test_summary_builder_is_retry_stable_and_capability_gated() -> None:
+    lifecycle = {
+        "schema": "code_mower.remote_session.v1",
+        "state": "complete",
+        "reason": "none",
+        "next_action": "none",
+        "counts": {"dispatch": 1, "message": 1, "cancel": 0, "collect": 1},
+    }
+    values = {
+        "logical_session": "private-slack-session-reference",
+        "repo_slug": "example/project",
+        "provider": "devin",
+        "lifecycle": lifecycle,
+        "observed_at": datetime(2026, 9, 21, 7, 0, tzinfo=UTC),
+        "pr_number": 921,
+        "head_sha": "a" * 40,
+        "pr_state": "open",
+        "elapsed_seconds": 60.0,
+        "usage_acu": 0.25,
+    }
+    first = build_control_surface_summary(**values)
+    second = build_control_surface_summary(**values)
+
+    assert first == second
+    assert first["dimensions"]["session"] == opaque_session(values["logical_session"])
+    assert values["logical_session"] not in json.dumps(first)
+    assert gated_control_surface_summary(None, **values) is None
+    capability = {
+        "schema": CAPABILITY_SCHEMA,
+        "summary_schema": SUMMARY_SCHEMA,
+        "capability_version": CAPABILITY_VERSION,
+        "fixture_manifest_sha256": fixture_manifest_digest(),
+        "accepting": True,
+    }
+    assert gated_control_surface_summary(capability, **values) == first
+
+
+def test_slack_lifecycle_uses_existing_local_board_adapter() -> None:
+    binding = WorkBinding(
+        session_id="a" * 32,
+        work_id="work1",
+        repository="example/project",
+        worktree_id="sha256:" + "b" * 64,
+    )
+    lifecycle = {
+        "schema": "code_mower.remote_session.v1",
+        "state": "waiting_for_user",
+        "reason": "user_input_required",
+        "next_action": "none",
+        "counts": {"dispatch": 1, "message": 0, "cancel": 0, "collect": 0},
+    }
+
+    run = slack_board_run(
+        logical_session="private-slack-session-reference",
+        binding=binding,
+        provider="codex",
+        observed_at=datetime(2026, 9, 21, 7, 0, tzinfo=UTC),
+        lifecycle=lifecycle,
+    )
+
+    assert run.binding == binding
+    assert run.phase == "waiting_for_user"
+    assert run.source_kind == "remote_session"
+    assert run.lifecycle == lifecycle
