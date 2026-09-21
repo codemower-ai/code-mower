@@ -342,11 +342,13 @@ def _extract_code_mower_labels(lineage_config: Mapping[str, Any] | None) -> set[
             labels.update(_text(label).lower() for label in builder_labels.keys())
 
             for label, lane in builder_labels.items():
-                label_suffix = _text(label).lower().removeprefix("builder:")
-                if label_suffix:
-                    labels.add(f"dispatched:{label_suffix}")
-                lane_lower = _text(lane).lower()
-                labels.add(f"dispatched:{lane_lower}")
+                label_lower = _text(label).lower()
+                if label_lower.startswith("builder:"):
+                    label_suffix = label_lower.removeprefix("builder:")
+                    if label_suffix:
+                        labels.add(f"dispatched:{label_suffix}")
+                    lane_lower = _text(lane).lower()
+                    labels.add(f"dispatched:{lane_lower}")
 
     lanes = lineage_config.get("lanes", {})
     if isinstance(lanes, Mapping):

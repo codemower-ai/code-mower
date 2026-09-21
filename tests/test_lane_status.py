@@ -1196,7 +1196,6 @@ class ListenerInventoryAvailabilityTests(TestCase):
             raise lane_status.LaneStatusUnavailable("unexpected gh call")
 
         config = policy()
-        config["builder_identity"]["labels"]["builder:cursor"] = "cursor"
         config["builder_identity"]["labels"]["builder:grok-bot"] = "cursor"
         from code_mower import config as policy_config
         self.assertEqual(policy_config.validate_config(config), [])
@@ -1394,3 +1393,44 @@ class ListenerInventoryAvailabilityTests(TestCase):
         pr = report["remote"]["pull_requests"][0]
         self.assertEqual(pr["lineage"]["status"], "unknown")
         self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable")
+
+    def test_non_builder_identity_label_does_not_generate_dispatch_claim(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 999,
+                        "title": "Custom identity PR",
+                        "url": "https://github.com/owner/repo/pull/999",
+                        "headRefName": "feature/custom",
+                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                        "author": {"login": "developer"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [{"name": "dispatched:custom-bot"}],
+                        "statusCheckRollup": [],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            if args[0] == "api" and "/comments?" in args[1]:
+                return []
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        config = policy()
+        config["builder_identity"]["labels"]["identity:custom-bot"] = "custom"
+        from code_mower import config as policy_config
+        self.assertEqual(policy_config.validate_config(config), [])
+
+        report = lane_status.collect_status(
+            lineage_config=config,
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        self.assertEqual(pr["lineage"]["status"], "unmanaged")
+        self.assertEqual(pr["lineage"]["reason"], "no_code_mower_provenance")
