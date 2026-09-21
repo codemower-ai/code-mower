@@ -462,8 +462,8 @@ its existing fields and check IDs, reports `local_paths: redacted`, and replaces
 local config, executable, checkout, workflow, and packaged-template paths with
 `[local path hidden]`. Maintained copy/paste commands also pass `--share-safe`
 explicitly. For private local debugging, `--include-local-paths` restores the
-legacy values and reports `local_paths: shown`; review that output locally and
-do not attach or upload it.
+legacy values and the legacy top-level key set for strict machine consumers;
+review that output locally and do not attach or upload it.
 
 In those observer/coordinator postures, missing local wrapper environment
 variables and missing `DISPATCH_TOKEN` setup are surfaced as owner setup or

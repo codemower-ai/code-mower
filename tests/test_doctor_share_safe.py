@@ -69,7 +69,7 @@ class DoctorShareSafeTests(TestCase):
         report = _report()
         payload = doctor_report_payload(report, include_local_paths=True)
 
-        self.assertEqual(payload["local_paths"], "shown")
+        self.assertNotIn("local_paths", payload)
         self.assertEqual(payload["config_path"], report.config_path)
         self.assertEqual(
             payload["checks"][0]["detail"]["executable"],
@@ -123,7 +123,7 @@ class DoctorShareSafeTests(TestCase):
 
         self.assertEqual(safe["local_paths"], "redacted")
         self.assertNotIn("example-person", json.dumps(safe))
-        self.assertEqual(local["local_paths"], "shown")
+        self.assertNotIn("local_paths", local)
         self.assertIn("example-person", json.dumps(local))
 
     def test_share_safe_flag_redacts_non_adoption_json(self) -> None:

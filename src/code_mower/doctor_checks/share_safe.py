@@ -103,8 +103,12 @@ def doctor_report_payload(
 ) -> dict[str, Any]:
     """Serialize one report with an explicit, backward-compatible path policy."""
 
-    rendered = report if include_local_paths else share_safe_doctor_report(report)
+    if include_local_paths:
+        # This is the exact legacy object for closed machine consumers. The
+        # share-safe form adds one policy marker; the explicit debug opt-in
+        # restores both the old values and the old top-level key set.
+        return report.as_dict()
     return {
-        **rendered.as_dict(),
-        "local_paths": "shown" if include_local_paths else "redacted",
+        **share_safe_doctor_report(report).as_dict(),
+        "local_paths": "redacted",
     }
