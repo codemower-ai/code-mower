@@ -129,6 +129,11 @@
     },
     {
       "kind": "doc",
+      "source": "docs/control-surface-telemetry.md",
+      "target": "docs/control-surface-telemetry.md"
+    },
+    {
+      "kind": "doc",
       "source": "docs/devin-peer-support-qualification.md",
       "target": "docs/devin-peer-support-qualification.md"
     },

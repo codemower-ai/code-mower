@@ -698,6 +698,7 @@ PACKAGE_FILES = (
     ("docs/cloud-benchmarking.md", "docs/cloud-benchmarking.md", "doc"),
     ("docs/repo-strategy.md", "docs/repo-strategy.md", "doc"),
     ("docs/commercial-boundary.md", "docs/commercial-boundary.md", "doc"),
+    ("docs/control-surface-telemetry.md", "docs/control-surface-telemetry.md", "doc"),
     ("docs/public-release-checklist.md", "docs/public-release-checklist.md", "doc"),
     ("docs/operational-evidence.md", "docs/operational-evidence.md", "doc"),
     ("docs/release-qualification.md", "docs/release-qualification.md", "doc"),

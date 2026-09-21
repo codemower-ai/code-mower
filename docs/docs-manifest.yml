@@ -61,6 +61,8 @@ documents:
   status: supporting
 - path: docs/commercial-boundary.md
   status: supporting
+- path: docs/control-surface-telemetry.md
+  status: supporting
 - path: docs/context-connections.md
   status: supporting
 - path: docs/context-delivery.md
