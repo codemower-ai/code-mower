@@ -385,6 +385,10 @@ def _pr_decision(
     except ContractError:
         valid_lineage = False
     base["lineage"] = {key: lineage.get(key) for key in ("status", "reason", "contributors", "current_writer")}
+    if lineage.get("status") == "unmanaged":
+        return {**base, "lane_id": "", "decision_state": "unmanaged",
+                "next_action": "not a Code Mower PR", "next_detail": "lineage unmanaged: " + str(lineage.get("reason", "no_code_mower_provenance")),
+                "stop_condition": "unmanaged", "owner_action_kind": "", "merge_method": ""}
     if not valid_lineage:
         return {**base, "lane_id": "", "decision_state": "owner_action",
                 "next_action": "owner action required", "next_detail": "lineage " + str(lineage.get("status", "unknown")),

@@ -324,6 +324,60 @@ def _author(pr: Mapping[str, Any]) -> str:
     return _text(author.get("login")) if isinstance(author, Mapping) else _text(author)
 
 
+def _has_code_mower_claim(
+    *,
+    labels: Sequence[str],
+    author: str,
+    branch: str,
+    checks: Sequence[Mapping[str, str]],
+    identity: Any,
+    has_lineage_markers: bool,
+) -> bool:
+    """Check if a PR has any Code Mower provenance claim.
+
+    Returns True if the PR has configured builder/dispatch/audit labels, a mapped
+    author, a configured branch prefix, Code Mower checks, or readable lineage
+    markers. Returns False for ordinary PRs with no Code Mower involvement.
+    """
+    if not identity or not getattr(identity, "enabled", False):
+        return False
+
+    label_set = set(_text(label).lower() for label in labels)
+    author_lower = _text(author).lower()
+    branch_lower = _text(branch).lower()
+
+    configured_labels = {_text(label).lower() for label, _ in getattr(identity, "labels", [])}
+    if label_set & configured_labels:
+        return True
+
+    if label_set & {"dispatched:codex", "dispatched:claude", "dispatched:cursor", "dispatched:devin", "dispatched:gitar", "dispatched:muse"}:
+        return True
+
+    for label in label_set:
+        if label.startswith("needs-") and label.endswith("-audit"):
+            return True
+        if label.endswith("-audit-done") or label.endswith("-audit-blocked"):
+            return True
+
+    configured_authors = {_text(account).lower() for account, _ in getattr(identity, "authors", [])}
+    if author_lower in configured_authors:
+        return True
+
+    configured_prefixes = tuple(_text(prefix).lower() for prefix, _ in getattr(identity, "branch_prefixes", []))
+    if configured_prefixes and any(branch_lower.startswith(prefix) for prefix in configured_prefixes):
+        return True
+
+    check_names_lower = [check.get("name", "").lower() for check in checks]
+    for name in check_names_lower:
+        if any(term in name for term in CHECK_TERMS):
+            return True
+
+    if has_lineage_markers:
+        return True
+
+    return False
+
+
 def _summarize_pr(
     repo: str,
     pr: Mapping[str, Any],
@@ -432,6 +486,8 @@ def _remote(
                 "next_action": "pass --config code-mower.yml to evaluate lineage",
             }
             continue
+        identity = None
+        has_lineage_markers = False
         try:
             if policy_config.validate_config(lineage_config):
                 raise ContractError("Trusted validated status policy required")
@@ -451,8 +507,9 @@ def _remote(
                 budget -= 1
                 return gh_json_runner(["api", f"repos/{target.repo}/issues/{target.pr_number}/comments?per_page={size}&page={number}"])
             history = lineage_history(page)
-            _, decision = lineage_decision(target, identity, authority, history,
+            chain, decision = lineage_decision(target, identity, authority, history,
                 author=raw_author["login"], labels=[item["name"] for item in raw_labels])
+            has_lineage_markers = bool(chain.episodes) if hasattr(chain, "episodes") else False
             pr["lineage"] = lineage_projection(decision)
             pr["lineage"]["repo"] = target.repo
             pr["lineage"]["pr_number"] = target.pr_number
@@ -462,6 +519,20 @@ def _remote(
                 str(lane.get("author_lane") or lane.get("trailer_lane") or lane.get("provider") or key)
                 for key, lane in lanes.items() if isinstance(lane, Mapping)
                 and admit(decision, str(lane.get("author_lane") or lane.get("trailer_lane") or lane.get("provider") or key))})
+            if pr["lineage"]["status"] == "ready" and pr["lineage"]["reason"] == "no_identity" and not pr["lineage"]["contributors"]:
+                label_names = [item.get("name", "") for item in raw_labels if isinstance(item, Mapping)]
+                checks = _checks(raw_pr.get("statusCheckRollup"))
+                has_claim = _has_code_mower_claim(
+                    labels=label_names,
+                    author=raw_author["login"],
+                    branch=target.branch,
+                    checks=checks,
+                    identity=identity,
+                    has_lineage_markers=has_lineage_markers,
+                )
+                if not has_claim:
+                    pr["lineage"] = {"status": "unmanaged", "reason": "no_code_mower_provenance",
+                                     "current_writer": None, "contributors": [], "admitted_reviewers": []}
         except LaneStatusUnavailable:
             pr["lineage"] = {
                 "status": "unavailable",
@@ -472,11 +543,31 @@ def _remote(
                 "next_action": "restore readable lineage metadata and rerun status",
             }
         except (ValueError, KeyError, TypeError, RuntimeError):
-            pr["lineage"] = {"status": "unknown", "reason": "lineage_unreadable",
-                             "current_writer": None, "contributors": [], "admitted_reviewers": []}
+            raw_labels = raw_pr.get("labels") if isinstance(raw_pr.get("labels"), list) else []
+            label_names = [item.get("name", "") for item in raw_labels if isinstance(item, Mapping)]
+            raw_author = raw_pr.get("author")
+            author_login = raw_author.get("login", "") if isinstance(raw_author, Mapping) else ""
+            branch = _text(raw_pr.get("headRefName"))
+            checks = _checks(raw_pr.get("statusCheckRollup"))
+            has_claim = _has_code_mower_claim(
+                labels=label_names,
+                author=author_login,
+                branch=branch,
+                checks=checks,
+                identity=identity,
+                has_lineage_markers=has_lineage_markers,
+            )
+            if has_claim:
+                pr["lineage"] = {"status": "unknown", "reason": "lineage_unreadable",
+                                 "current_writer": None, "contributors": [], "admitted_reviewers": []}
+            else:
+                pr["lineage"] = {"status": "unmanaged", "reason": "no_code_mower_provenance",
+                                 "current_writer": None, "contributors": [], "admitted_reviewers": []}
         if pr["lineage"]["status"] == "unavailable":
             pr["next_action"] = str(pr["lineage"]["next_action"])
             pr["next_detail"] = "lineage unavailable: " + pr["lineage"]["reason"]
+        elif pr["lineage"]["status"] == "unmanaged":
+            pass
         elif pr["lineage"]["status"] != "ready":
             pr["next_action"] = "owner action required"
             pr["next_detail"] = "lineage " + pr["lineage"]["status"] + ": " + pr["lineage"]["reason"]

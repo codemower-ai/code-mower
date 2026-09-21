@@ -864,3 +864,114 @@ class ListenerInventoryAvailabilityTests(TestCase):
         inventory = lane_status.local_listener_inventory(command_runner)
 
         self.assertEqual((inventory["available"], inventory["listeners"]), (False, []))
+
+    def test_pr_with_no_code_mower_markers_is_unmanaged(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 42,
+                        "title": "Regular human PR",
+                        "url": "https://github.com/owner/repo/pull/42",
+                        "headRefName": "feature/my-work",
+                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                        "author": {"login": "human-contributor"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [],
+                        "statusCheckRollup": [],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            if args[0] == "api" and "/comments?" in args[1]:
+                return []
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        report = lane_status.collect_status(
+            lineage_config=policy({}),
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        self.assertEqual(pr["lineage"]["status"], "unmanaged")
+        self.assertEqual(pr["lineage"]["reason"], "no_code_mower_provenance")
+        self.assertNotEqual(pr["next_action"], "owner action required")
+
+    def test_dependabot_pr_is_unmanaged(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 99,
+                        "title": "Bump dependency version",
+                        "url": "https://github.com/owner/repo/pull/99",
+                        "headRefName": "dependabot/npm_and_yarn/deps-1234",
+                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                        "author": {"login": "dependabot[bot]"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [{"name": "dependencies"}],
+                        "statusCheckRollup": [],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            if args[0] == "api" and "/comments?" in args[1]:
+                return []
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        report = lane_status.collect_status(
+            lineage_config=policy({}),
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        self.assertEqual(pr["lineage"]["status"], "unmanaged")
+        self.assertEqual(pr["lineage"]["reason"], "no_code_mower_provenance")
+        self.assertNotEqual(pr["next_action"], "owner action required")
+
+    def test_pr_with_builder_label_but_unreadable_lineage_is_actionable(self) -> None:
+        def gh_json(args: list[str]) -> object:
+            if args[:2] == ["pr", "list"]:
+                return [
+                    {
+                        "number": 55,
+                        "title": "Malformed Code Mower PR",
+                        "url": "https://github.com/owner/repo/pull/55",
+                        "headRefName": "codex/work",
+                        "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                        "author": {"login": "source-bot"},
+                        "isDraft": False,
+                        "mergeStateStatus": "CLEAN",
+                        "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                        "labels": [{"name": "builder:codex"}],
+                        "statusCheckRollup": [],
+                    }
+                ]
+            if args[:2] == ["run", "list"]:
+                return []
+            if args[0] == "api" and "/comments?" in args[1]:
+                raise RuntimeError("Simulated history fetch failure")
+            raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+        report = lane_status.collect_status(
+            lineage_config=policy({}),
+            repo="owner/repo",
+            gh_json_runner=gh_json,
+            command_runner=lambda _args: _completed(""),
+            now=NOW,
+        )
+
+        pr = report["remote"]["pull_requests"][0]
+        self.assertEqual(pr["lineage"]["status"], "unknown")
+        self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable")
+        self.assertEqual(pr["next_action"], "owner action required")
