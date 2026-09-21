@@ -251,8 +251,7 @@ def _has_code_mower_check_claim(raw: Any) -> bool:
             value = check.get(field)
             if not isinstance(value, str):
                 continue
-            check_name = value.strip().casefold()
-            if "code-mower" in check_name or check_name.startswith("code_mower"):
+            if _is_code_mower_check_identity(value):
                 return True
         app = check.get("app")
         if isinstance(app, Mapping):
@@ -263,6 +262,19 @@ def _has_code_mower_check_claim(raw: Any) -> bool:
                 if _normalized_app_identity(value) == "code-mower":
                     return True
     return False
+
+
+def _is_code_mower_check_identity(value: str) -> bool:
+    """Match the normalized Code Mower check namespace at an exact boundary."""
+
+    normalized = re.sub(r"\s+", " ", value.strip().casefold()).replace("_", "-")
+    if normalized.startswith("code mower"):
+        normalized = "code-mower" + normalized.removeprefix("code mower")
+    return (
+        normalized == "code-mower"
+        or normalized.startswith("code-mower/")
+        or normalized.startswith("code-mower ")
+    )
 
 
 def _normalized_app_identity(value: str) -> str:

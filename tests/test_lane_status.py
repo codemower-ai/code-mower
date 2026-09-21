@@ -1786,6 +1786,83 @@ class ListenerInventoryAvailabilityTests(TestCase):
         self.assertEqual(pr["lineage"]["status"], "unavailable")
         self.assertEqual(pr["lineage"]["reason"], "lineage_unreadable")
 
+    def test_exact_check_identity_namespace_controls_provenance_claim(self) -> None:
+        cases = (
+            ("name", "code-mower/gate", True),
+            ("context", " CODE_MOWER/GATE ", True),
+            ("workflowName", "Code Mower CI", True),
+            ("workflowName", "code_mower local audit request", True),
+            ("name", "code-mower", True),
+            ("name", "not-code-mower/gate", False),
+            ("context", "code-mower-simulator", False),
+            ("workflowName", "third-party code-mower compatibility", False),
+            ("name", "code_mower_simulator", False),
+            ("context", "code-mowerish/gate", False),
+            ("workflowName", "Not Code Mower CI", False),
+        )
+
+        for field, value, expected in cases:
+            with self.subTest(field=field, value=value):
+                self.assertEqual(
+                    lane_status._has_code_mower_check_claim([{field: value}]),
+                    expected,
+                )
+
+    def test_check_identity_lookalikes_remain_unmanaged_for_all_history_states(self) -> None:
+        lookalikes = (
+            {"__typename": "CheckRun", "name": "not-code-mower/gate"},
+            {"__typename": "StatusContext", "context": "code-mower-simulator"},
+            {
+                "__typename": "CheckRun",
+                "name": "package",
+                "workflowName": "third-party code-mower compatibility",
+            },
+        )
+
+        for raw_check in lookalikes:
+            for history_available in (True, False):
+                with self.subTest(raw_check=raw_check, history_available=history_available):
+                    def gh_json(
+                        args: list[str],
+                        raw_check: dict[str, object] = raw_check,
+                        history_available: bool = history_available,
+                    ) -> object:
+                        if args[:2] == ["pr", "list"]:
+                            return [
+                                {
+                                    "number": 340,
+                                    "title": "Ordinary PR with unrelated check identity",
+                                    "url": "https://github.com/owner/repo/pull/340",
+                                    "headRefName": "feature/test",
+                                    "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
+                                    "author": {"login": "developer"},
+                                    "isDraft": False,
+                                    "mergeStateStatus": "CLEAN",
+                                    "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
+                                    "labels": [],
+                                    "statusCheckRollup": [raw_check],
+                                }
+                            ]
+                        if args[:2] == ["run", "list"]:
+                            return []
+                        if args[0] == "api" and "/comments?" in args[1]:
+                            if history_available:
+                                return []
+                            raise lane_status.LaneStatusUnavailable("history unavailable")
+                        raise lane_status.LaneStatusUnavailable("unexpected gh call")
+
+                    report = lane_status.collect_status(
+                        lineage_config=policy(),
+                        repo="owner/repo",
+                        gh_json_runner=gh_json,
+                        command_runner=lambda _args: _completed(""),
+                        now=NOW,
+                    )
+
+                    pr = report["remote"]["pull_requests"][0]
+                    self.assertEqual(pr["lineage"]["status"], "unmanaged")
+                    self.assertEqual(pr["lineage"]["reason"], "no_code_mower_provenance")
+
     def test_malformed_check_collection_or_identity_remains_actionable(self) -> None:
         malformed_rollups = (
             {"name": "code-mower/gate"},
@@ -1958,10 +2035,13 @@ class ListenerInventoryAvailabilityTests(TestCase):
             ({"slug": "code-mower"}, "unavailable"),
             ({"name": "Code Mower"}, "unavailable"),
             ({"slug": "CODE_MOWER", "name": "Code Mower"}, "unavailable"),
+            ({"slug": "code.mower"}, "unavailable"),
             ({"slug": "not-code-mower"}, "unmanaged"),
             ({"slug": "code-mower-simulator"}, "unmanaged"),
+            ({"name": "Third Party Code Mower"}, "unmanaged"),
             ({"slug": "github-actions", "name": "GitHub Actions"}, "unmanaged"),
             ({"slug": "github-actions", "name": "Code Mower"}, "unknown"),
+            ({"slug": "code-mower", "name": "Code Mower Simulator"}, "unknown"),
         )
 
         for app, expected_status in cases:
