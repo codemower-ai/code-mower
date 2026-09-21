@@ -40,8 +40,8 @@ Want to try Code Mower for 10 minutes?
 It is an OSS local-first tool for setting up AI peer-programmer/reviewer lanes
 on your real codebase, with optional privacy-first cloud reporting.
 
-After v1.5.1 is published, start here:
-https://github.com/codemower-ai/code-mower/blob/v1.5.1/docs/try-in-10-minutes.md
+After v1.5.2 is published, start here:
+https://github.com/codemower-ai/code-mower/blob/v1.5.2/docs/try-in-10-minutes.md
 
 Cloud sharing is optional. The default bundle excludes source code, raw diffs,
 model transcripts, raw stdout/stderr, auth output, and secrets.

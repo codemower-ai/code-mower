@@ -10,7 +10,15 @@ import re
 import subprocess
 import sys
 
-from release_candidate import GRAPHIFY_CHECKS, NAMES, REHEARSAL_SCHEMA, verify, verify_rehearsal
+from release_candidate import (
+    GRAPHIFY_CHECKS,
+    NAMES,
+    RELEASE,
+    REHEARSAL_SCHEMA,
+    VERSION,
+    verify,
+    verify_rehearsal,
+)
 
 
 # This program runs under the fresh venv's -I interpreter. It imports only the
@@ -214,7 +222,7 @@ def rehearse(dist, sha, work):
     py = fresh / "bin/python"
     pip(py, "install", "--no-cache-dir", "--index-url", "https://pypi.org/simple/", wheel)
     pip(py, "check")
-    assert cli(py, "--version").strip() == "code-mower 1.5.1"
+    assert cli(py, "--version").strip() == f"code-mower {VERSION}"
     installed(py, """
 import importlib.util
 import code_mower
@@ -301,20 +309,22 @@ Path(sys.argv[1]).write_text(json.dumps(value))
     old = work / "rollback-artifact"
     old.mkdir()
     pip(py, "download", "--no-cache-dir", "--index-url", "https://pypi.org/simple/",
-        "--only-binary=:all:", "--no-deps", "--dest", old, "code-mower==1.4.2")
-    old_wheel, = old.glob("code_mower-1.4.2-*.whl")
+        "--only-binary=:all:", "--no-deps", "--dest", old,
+        f"code-mower=={RELEASE.previous_version}")
+    old_wheel, = old.glob(f"code_mower-{RELEASE.previous_version}-*.whl")
     old_digest = hashlib.sha256(old_wheel.read_bytes()).hexdigest()
-    assert old_digest == "f8bf24dd8a982ed5ab28302e837cd5d2aeece6d984ed1c44fcb4688c3fb7a522"
+    assert old_digest == RELEASE.previous_wheel_sha256
     pip(py, "install", "--no-cache-dir", "--index-url", "https://pypi.org/simple/", old_wheel)
-    assert cli(py, "--version").strip() == "code-mower 1.4.2"
+    assert cli(py, "--version").strip() == f"code-mower {RELEASE.previous_version}"
     pip(py, "install", "--no-index", "--no-deps", "--upgrade", wheel)
-    assert cli(py, "--version").strip() == "code-mower 1.5.1"
+    assert cli(py, "--version").strip() == f"code-mower {VERSION}"
     assert before == state_hashes()
-    checks.append("upgrade_1_4_2_to_exact_wheel_preserves_synthetic_state")
+    prior = RELEASE.previous_version.replace(".", "_")
+    checks.append(f"upgrade_{prior}_to_exact_wheel_preserves_synthetic_state")
     pip(py, "install", "--no-index", "--no-deps", "--force-reinstall", old_wheel)
-    assert cli(py, "--version").strip() == "code-mower 1.4.2"
+    assert cli(py, "--version").strip() == f"code-mower {RELEASE.previous_version}"
     assert before == state_hashes()
-    checks.append("disposable_rollback_to_digest_verified_1_4_2_preserves_state")
+    checks.append(f"disposable_rollback_to_digest_verified_{prior}_preserves_state")
     pip(py, "uninstall", "--yes", "code-mower")
     installed(py, "import importlib.util\nassert importlib.util.find_spec('code_mower') is None")
     assert before == state_hashes()

@@ -9,6 +9,15 @@ later entries are regular releases.
 
 No additional changes recorded.
 
+## 1.5.2 — documentation and repository maintenance
+
+Documentation ownership, maintained user journeys, release identity, and package templates now have one validated source each. See [release notes](docs/v152-release-notes.md) and the [qualification contract](docs/v152-qualification.md).
+
+- Classify every document as canonical, supporting, frozen, or archived; generate the documentation index; and enforce ownership, links, frozen hashes, and current-pin rules in CI (#1074).
+- Consolidate installation, first use, upgrades, Board operation, and troubleshooting into one maintained journey while removing copied setup blocks (#1075).
+- Drive release identity, candidate construction, documentation rendering, and qualification from `release.yml` (#1076).
+- Author package templates only in `src/code_mower/templates/`, project consumer paths during materialization, and verify fresh-package byte parity (#1077).
+
 ## 1.5.1 — release
 
 Cross-provider installation, audit provenance, safe initialization, remote-observer diagnostics, and Board/status clarity. See [release notes](docs/v151-release-notes.md) and the [qualification contract](docs/v151-qualification.md).

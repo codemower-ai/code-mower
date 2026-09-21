@@ -145,7 +145,7 @@ For a scriptable inventory across all local listeners, use:
 code-mower board list --json
 ```
 
-`board list` is a global local inventory in v1.5.1; it does not accept
+`board list` is a global local inventory in v1.5.2; it does not accept
 `--repo`. Filter the returned rows by their identity-verified `repo` field.
 Each responsive row reports `serving_version`, `installed_version`,
 `restart_recommended`, `managed`, and its service label when managed.
@@ -159,7 +159,7 @@ curl -fsS http://127.0.0.1:PORT/api/status | python3 -m json.tool
 In `/api/status`, inspect `board.version.serving_version`,
 `board.version.installed_version`, and `board.version.restart_recommended`.
 `GET /api/identity` is the smaller identity and version probe. Do not infer the
-version from the static HTML or from `lanes status`; neither is the v1.5.1
+version from the static HTML or from `lanes status`; neither is the v1.5.2
 version-verification contract.
 When restart is recommended, stop the old Board process and start it again:
 
@@ -229,7 +229,7 @@ If pipx should own the command, reinstall the exact release with cache bypass:
 
 ```bash
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.5.1
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.5.2
 hash -r
 code-mower --version
 ```
@@ -240,7 +240,7 @@ path:
 
 ```bash
 pipx uninstall code-mower
-uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.5.1
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.5.2
 hash -r
 command -v code-mower
 code-mower --version

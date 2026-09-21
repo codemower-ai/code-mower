@@ -42,8 +42,8 @@ REHEARSAL_CHECKS = (
     "all_green_offline_snapshot_cannot_claim_live_readiness",
     "offline_disabled_snapshot_and_local_manifest_removal",
     *GRAPHIFY_CHECKS,
-    "upgrade_1_4_2_to_exact_wheel_preserves_synthetic_state",
-    "disposable_rollback_to_digest_verified_1_4_2_preserves_state",
+    f"upgrade_{RELEASE.previous_version.replace('.', '_')}_to_exact_wheel_preserves_synthetic_state",
+    f"disposable_rollback_to_digest_verified_{RELEASE.previous_version.replace('.', '_')}_preserves_state",
     "uninstall_preserves_synthetic_state",
 )
 

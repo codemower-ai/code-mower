@@ -127,7 +127,7 @@ Then run code-mower lanes status --repo OWNER/REPO and, when useful, start or
 check the local Board with code-mower board serve --repo OWNER/REPO. Verify
 Board versions with the global code-mower board list --json inventory, the
 known listener's /api/identity or /api/status response, or code-mower board
-service status --json. In v1.5.1, do not pass --repo to board list and do not
+service status --json. In v1.5.2, do not pass --repo to board list and do not
 use lanes status or static Board HTML as version evidence.
 
 If any step needs the owner, stop with a numbered click-list. Include exact
