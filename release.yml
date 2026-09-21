@@ -1,0 +1,34 @@
+schema: code_mower.release.v1
+version: 1.5.1
+previous_version: 1.5.0
+tag: v1.5.1
+package_spec: code-mower==1.5.1
+stage: stable
+python:
+  minimum: "3.12"
+  tested:
+    - "3.12"
+    - "3.13"
+    - "3.14"
+documents:
+  notes: docs/v151-release-notes.md
+  qualification: docs/v151-qualification.md
+  runbook: docs/v151-release-runbook.md
+  installation: docs/install.md
+  publication: docs/pypi-release.md
+required_modules:
+  - context_graph_lifecycle.py
+  - context_graph_query.py
+  - context_graph_command.py
+  - context_graph_connection.py
+  - slack_setup.py
+  - slack_readiness.py
+  - supervisor_contract_v2.py
+  - templates/slack/hosted-app-manifest.json
+required_docs:
+  - docs/v151-release-notes.md
+  - docs/v151-qualification.md
+  - docs/v151-release-runbook.md
+  - docs/slack-setup.md
+  - docs/graphify-setup.md
+rehearsal_schema: code_mower.release_rehearsal.v1

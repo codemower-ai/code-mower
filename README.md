@@ -9,15 +9,15 @@ Code Mower is supervised-pilot, bring-your-own-agent-loop software.
 It is not a drop-in unattended merge gate. Humans still own credentials,
 repository policy, reviewer promotion, and exceptional decisions.
 
+<!-- code-mower:release-facts:start -->
 This source defines Code Mower `v1.5.1`, with package spec
 `code-mower==1.5.1`. Confirm the release tag on GitHub Releases and the package
-version on the selected index before using an index install command; source
-version and publication state are separate facts. See the
-[v1.5.1 release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v151-release-notes.md)
+version on the selected index before using an index install command; source version
+and publication state are separate facts.
+Python 3.12 or newer is required.
+See the [release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v151-release-notes.md)
 and [qualification contract](https://github.com/codemower-ai/code-mower/blob/main/docs/v151-qualification.md).
-After publication, the GitHub Release and linked release issue carry the
-observed source SHA, artifact digests, canary outcomes, publication run and
-reinstall evidence.
+<!-- code-mower:release-facts:end -->
 Historical v1.4.x artifacts and qualification records remain unchanged.
 The v1.4.2 release did not claim the bounded hosted Devin canary tracked by
 [#951](https://github.com/codemower-ai/code-mower/issues/951); that result is

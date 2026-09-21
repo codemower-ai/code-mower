@@ -31,3 +31,18 @@ authority for bytes already published.
 The generated [documentation index](README.md) is committed so GitHub and
 source distributions remain readable without a documentation service. Edit
 canonical ownership in the manifest rather than editing the table directly.
+
+Current release identity follows the same single-owner rule. Edit `release.yml`
+when a release version, tag, package pin, supported Python set, or current
+release-document path changes, then render and verify its maintained Markdown
+regions:
+
+```bash
+python scripts/render_release.py
+python scripts/render_release.py --check
+```
+
+The renderer owns only the explicitly marked regions in `README.md`,
+`docs/install.md`, and `docs/pypi-release.md`. Versioned release notes,
+qualification records, and runbooks remain authored evidence; freezing them in
+`docs/docs-manifest.yml` prevents later release work from rewriting history.

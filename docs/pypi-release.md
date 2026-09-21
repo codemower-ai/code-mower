@@ -1,24 +1,18 @@
 # PyPI Release Runbook
 
-Code Mower users install from PyPI. For v1.5.1, build the immutable merge-SHA
-candidate first, qualify those bytes through #918 and explicitly authorized
-#920, then tag and publish the unchanged SHA through #923. The final candidate
-head must include the five reliability revisions tracked by #1050 and the
-reviewed release documentation. The release
-workflow retrieves the retained candidate and verifies it without rebuilding.
-Follow the [v1.5.1 runbook](v151-release-runbook.md) and
-[qualification contract](v151-qualification.md); observed evidence belongs on
-#923 and the GitHub Release.
-The v1.4.2 post-merge section below is preserved historical evidence.
+<!-- code-mower:release-facts:start -->
+Code Mower users install from PyPI. For the current release, build the immutable
+merge-SHA candidate first, qualify those retained bytes, then tag and publish the
+unchanged SHA. The release workflow retrieves and verifies the candidate without
+rebuilding. Follow the [v1.5.1 runbook](v151-release-runbook.md) and
+[qualification contract](v151-qualification.md); observed evidence belongs on the release
+issue and GitHub Release.
 
 ```bash
 CODE_MOWER_PYTHON="$(command -v python3.12)"
 pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.1
 ```
-
-v1.4.2 is published; its steps below are the executed record of that release.
-They are not the v1.5.1 candidate-first sequence. All mutating steps require the
-supervisor and the recorded owner release decision.
+<!-- code-mower:release-facts:end -->
 
 <a id="v140-post-merge-release-runbook"></a>
 

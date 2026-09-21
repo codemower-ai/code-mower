@@ -328,6 +328,11 @@
       "target": "pyproject.toml"
     },
     {
+      "kind": "release-metadata",
+      "source": "release.yml",
+      "target": "release.yml"
+    },
+    {
       "kind": "tooling",
       "source": "requirements/requirements.txt",
       "target": "requirements/requirements.txt"
@@ -1556,6 +1561,11 @@
       "kind": "core",
       "source": "src/code_mower/release_identity.py",
       "target": "src/code_mower/release_identity.py"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/release_metadata.py",
+      "target": "src/code_mower/release_metadata.py"
     },
     {
       "kind": "core",
