@@ -1145,7 +1145,7 @@ class ListenerInventoryAvailabilityTests(TestCase):
                         "isDraft": False,
                         "mergeStateStatus": "CLEAN",
                         "updatedAt": NOW.isoformat().replace("+00:00", "Z"),
-                        "labels": [{"name": "dispatched:cursor"}],
+                        "labels": [{"name": "dispatched:codex"}],
                         "statusCheckRollup": [],
                     }
                 ]
@@ -1155,13 +1155,12 @@ class ListenerInventoryAvailabilityTests(TestCase):
                 raise RuntimeError("Simulated error")
             raise lane_status.LaneStatusUnavailable("unexpected gh call")
 
-        config_with_lanes = policy({})
-        config_with_lanes["lanes"] = {
-            "cursor": {"dispatch_label": "dispatched:cursor"}
-        }
+        config = policy()
+        from code_mower import config as policy_config
+        self.assertEqual(policy_config.validate_config(config), [])
 
         report = lane_status.collect_status(
-            lineage_config=config_with_lanes,
+            lineage_config=config,
             repo="owner/repo",
             gh_json_runner=gh_json,
             command_runner=lambda _args: _completed(""),
@@ -1178,7 +1177,7 @@ class ListenerInventoryAvailabilityTests(TestCase):
                 return [
                     {
                         "number": 444,
-                        "title": "Legacy dispatch",
+                        "title": "Legacy dispatch alias",
                         "url": "https://github.com/owner/repo/pull/444",
                         "headRefName": "feature/legacy",
                         "headRefOid": "abcdef0123456789abcdef0123456789abcdef01",
@@ -1196,16 +1195,13 @@ class ListenerInventoryAvailabilityTests(TestCase):
                 raise RuntimeError("Simulated error")
             raise lane_status.LaneStatusUnavailable("unexpected gh call")
 
-        config_with_alias = policy({})
-        config_with_alias["lanes"] = {
-            "cursor": {
-                "dispatch_label": "dispatched:cursor",
-                "dispatch_labels": ["dispatched:grok-bot"]
-            }
-        }
+        config = policy()
+        config["builder_identity"]["labels"]["builder:cursor"] = "cursor"
+        from code_mower import config as policy_config
+        self.assertEqual(policy_config.validate_config(config), [])
 
         report = lane_status.collect_status(
-            lineage_config=config_with_alias,
+            lineage_config=config,
             repo="owner/repo",
             gh_json_runner=gh_json,
             command_runner=lambda _args: _completed(""),
@@ -1240,10 +1236,21 @@ class ListenerInventoryAvailabilityTests(TestCase):
                 raise RuntimeError("Simulated error")
             raise lane_status.LaneStatusUnavailable("unexpected gh call")
 
-        config_with_audit = policy({})
+        config_with_audit = policy()
         config_with_audit["lanes"] = {
-            "codex": {"audit_need": "needs-codex-audit"}
+            "codex": {
+                "type": "audit",
+                "driver": "local_cli",
+                "provider": "codex",
+                "labels": {
+                    "needs": "needs-codex-audit",
+                    "done": "codex-audit-done",
+                    "blocked": "codex-audit-blocked"
+                }
+            }
         }
+        from code_mower import config as policy_config
+        self.assertEqual(policy_config.validate_config(config_with_audit), [])
 
         report = lane_status.collect_status(
             lineage_config=config_with_audit,
@@ -1281,10 +1288,21 @@ class ListenerInventoryAvailabilityTests(TestCase):
                 return []
             raise lane_status.LaneStatusUnavailable("unexpected gh call")
 
-        config_with_codex_audit = policy({})
+        config_with_codex_audit = policy()
         config_with_codex_audit["lanes"] = {
-            "codex": {"audit_need": "needs-codex-audit"}
+            "codex": {
+                "type": "audit",
+                "driver": "local_cli",
+                "provider": "codex",
+                "labels": {
+                    "needs": "needs-codex-audit",
+                    "done": "codex-audit-done",
+                    "blocked": "codex-audit-blocked"
+                }
+            }
         }
+        from code_mower import config as policy_config
+        self.assertEqual(policy_config.validate_config(config_with_codex_audit), [])
 
         report = lane_status.collect_status(
             lineage_config=config_with_codex_audit,

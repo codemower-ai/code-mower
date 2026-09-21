@@ -340,6 +340,15 @@ def _extract_code_mower_labels(lineage_config: Mapping[str, Any] | None) -> set[
         builder_labels = builder_identity.get("labels", {})
         if isinstance(builder_labels, Mapping):
             labels.update(_text(label).lower() for label in builder_labels.keys())
+            
+            builder_lanes = set(_text(lane).lower() for lane in builder_labels.values())
+            for lane in builder_lanes:
+                labels.add(f"dispatched:{lane}")
+            
+            LEGACY_DISPATCH_ALIASES = {"cursor": ("dispatched:grok-bot",)}
+            for lane in builder_lanes:
+                aliases = LEGACY_DISPATCH_ALIASES.get(lane, ())
+                labels.update(_text(alias).lower() for alias in aliases)
 
     lanes = lineage_config.get("lanes", {})
     if isinstance(lanes, Mapping):
@@ -347,25 +356,12 @@ def _extract_code_mower_labels(lineage_config: Mapping[str, Any] | None) -> set[
             if not isinstance(lane_data, Mapping):
                 continue
 
-            dispatch_label = lane_data.get("dispatch_label", "")
-            if dispatch_label:
-                labels.add(_text(dispatch_label).lower())
-
-            dispatch_labels = lane_data.get("dispatch_labels", [])
-            if isinstance(dispatch_labels, (list, tuple)):
-                labels.update(_text(label).lower() for label in dispatch_labels if label)
-
-            audit_need = lane_data.get("audit_need", "")
-            if audit_need:
-                labels.add(_text(audit_need).lower())
-
-            blocked_label = lane_data.get("blocked", "")
-            if blocked_label:
-                labels.add(_text(blocked_label).lower())
-
-            done_label = lane_data.get("done", "")
-            if done_label:
-                labels.add(_text(done_label).lower())
+            lane_labels = lane_data.get("labels", {})
+            if isinstance(lane_labels, Mapping):
+                for label_type in ("needs", "done", "blocked"):
+                    label = lane_labels.get(label_type, "")
+                    if label:
+                        labels.add(_text(label).lower())
 
     return labels
 
