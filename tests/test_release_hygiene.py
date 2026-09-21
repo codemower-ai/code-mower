@@ -5585,15 +5585,20 @@ printf 'repo:%s:%s:%s\\n' "${lane}" "${stdin_flag}" "${token}"
             with self.subTest(target=target):
                 self.assertIn(target, packaged_targets)
 
-    def test_package_helper_splits_preserve_legacy_tools_sources(self) -> None:
+    def test_package_helpers_use_existing_canonical_sources(self) -> None:
         packaged_sources_by_target = {
             target: source for source, target, _ in code_mower_package.PACKAGE_FILES
         }
+        for source in packaged_sources_by_target.values():
+            with self.subTest(source=source):
+                self.assertTrue((ROOT / source).is_file())
         expected_sources = {
-            "src/code_mower/package_content.py": "tools/code_mower_package_content.py",
-            "src/code_mower/package_manifest.py": "tools/code_mower_package_manifest.py",
-            "src/code_mower/package_rendering.py": "tools/code_mower_package_rendering.py",
-            "src/code_mower/package_static.py": "tools/code_mower_package_static.py",
+            "src/code_mower/package.py": "src/code_mower/package.py",
+            "src/code_mower/package_content.py": "src/code_mower/package_content.py",
+            "src/code_mower/package_manifest.py": "src/code_mower/package_manifest.py",
+            "src/code_mower/package_rendering.py": "src/code_mower/package_rendering.py",
+            "src/code_mower/package_static.py": "src/code_mower/package_static.py",
+            "src/code_mower/prompts.py": "src/code_mower/prompts.py",
             "src/code_mower/versioning.py": "tools/code_mower_versioning.py",
         }
         for target, source in expected_sources.items():

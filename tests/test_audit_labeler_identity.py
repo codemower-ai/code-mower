@@ -43,7 +43,6 @@ TRUSTED_WORKFLOWS = (
     ".github/workflows/codex-audit-labeler.yml",
 )
 LABELER_TEMPLATES = (
-    "templates/workflows/trailer-comment-labeler.yml.j2",
     "src/code_mower/templates/workflows/trailer-comment-labeler.yml.j2",
 )
 
