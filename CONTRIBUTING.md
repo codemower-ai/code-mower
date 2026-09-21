@@ -62,6 +62,21 @@ published toy repositories. Do not add:
 Calibration evidence should be summarized or anonymized unless the repository
 owner has intentionally published the underlying corpus.
 
+## Documentation
+
+Every Markdown file under `docs/` is classified in
+`docs/docs-manifest.yml`. Read `docs/documentation-lifecycle.md` before adding,
+moving, or changing release-sensitive documentation. Run these checks before
+opening a documentation pull request:
+
+```bash
+python -m code_mower.docs_lifecycle
+python -m code_mower.migration release-readiness --json
+```
+
+After changing canonical ownership, regenerate the committed documentation
+index with `python -m code_mower.docs_lifecycle --write-index`.
+
 ## Pull Request Shape
 
 Keep changes focused. Prefer small PRs that improve one of:

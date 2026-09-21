@@ -36,6 +36,10 @@ jobs:
       - name: Privacy scan
         run: python scripts/privacy_scan.py
 
+      - name: Documentation lifecycle
+        if: matrix.python-version == '3.12'
+        run: python -m code_mower.docs_lifecycle --json
+
       - name: Unit tests
         run: python -m unittest discover -s tests
 
