@@ -152,7 +152,7 @@ class GraphifyGuidanceTests(unittest.TestCase):
 
 class LegacyProvenanceGuidanceTests(unittest.TestCase):
     def test_pr_workflow_emits_only_skipped_guidance_without_trusted_inputs(self):
-        template = (ROOT / "templates/workflows/builder-provenance.yml.j2").read_text()
+        template = (ROOT / "src/code_mower/templates/workflows/builder-provenance.yml.j2").read_text()
         workflow = yaml.safe_load(template)
         self.assertEqual(workflow[True], {"pull_request": {
             "types": ["opened", "edited", "synchronize", "reopened", "ready_for_review"],

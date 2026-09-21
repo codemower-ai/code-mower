@@ -105,8 +105,8 @@ private host, database, secrets, or deployment.
    The command creates only a mode-0600 static manifest, refusing existing files
    and symlinks. It performs no network request, credential lookup, OAuth,
    policy change, or service installation. The
-   `templates/slack/app-manifest.json` file belongs to the standalone OSS
-   `/code-mower` request seam; `hosted-app-manifest.json` belongs to this
+   authored `src/code_mower/templates/slack/app-manifest.json` file belongs to
+   the standalone OSS `/code-mower` request seam; `hosted-app-manifest.json` belongs to this
    operator-owned `/codemower` deployment path.
 
 2. An authorized app administrator imports the generated manifest into the

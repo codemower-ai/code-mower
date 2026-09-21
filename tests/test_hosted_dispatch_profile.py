@@ -176,8 +176,6 @@ class HostedDispatchProfileTests(unittest.TestCase):
             self.assertNotIn("review", lowered)
         # The shipped templates agree with the registry.
         for relative in (
-            "templates/providers/cursor_cloud_agent.yml",
-            "templates/providers.yml",
             "src/code_mower/templates/providers.yml",
         ):
             text = (ROOT / relative).read_text(encoding="utf-8")
@@ -187,8 +185,6 @@ class HostedDispatchProfileTests(unittest.TestCase):
 
     def test_devin_catalogs_declare_the_api_campaign_transport(self) -> None:
         for relative in (
-            "templates/providers/devin.yml",
-            "templates/providers.yml",
             "src/code_mower/templates/providers.yml",
         ):
             text = (ROOT / relative).read_text(encoding="utf-8")

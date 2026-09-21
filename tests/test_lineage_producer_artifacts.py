@@ -60,7 +60,7 @@ class ArtifactTests(unittest.TestCase):
                 self.assertRegex(digest, r'^[0-9a-f]{64}\Z', f'{path}: malformed accepted source digest')
         files = baseline['unchanged_files']
         self.assertIsInstance(files, dict, 'Accepted unchanged-file baseline must be a mapping')
-        self.assertEqual(len(files), 17, 'Accepted unchanged-file inventory must contain all 17 files')
+        self.assertEqual(len(files), 16, 'Accepted unchanged-file inventory must contain all 16 files')
         for path, digest in files.items():
             self.assertIsInstance(path, str, 'Accepted file path must be text')
             self.assertIsInstance(digest, str, f'{path}: accepted file digest must be text')
@@ -69,9 +69,10 @@ class ArtifactTests(unittest.TestCase):
         # PR #1003's integration work order (issuecomment-5708285589) accepts both
         # #951's CI qualification and #1004 / PR #1005's regenerated audit labelers.
         # #1014 additionally authorizes the exact release-workflow identity gate
-        # documented beside the fixture. Other digests and inventory are unchanged.
+        # documented beside the fixture. Issue #1073 removes the retired top-level
+        # runner-template mirror; the authored package template remains unchanged.
         self.assertEqual(hashlib.sha256(serialized).hexdigest(),
-                         '68acdf1d9b17a04205928b9e17a172bf793605a09c3749c2b616dfb113b65cb2',
+                         'a0924fbf72f6d6c92b510f40eb76e61722f5086583bfe9127fba090cf3bb0114',
                          'Complete accepted baseline differs from the independently approved value')
         return baseline
 
@@ -246,10 +247,12 @@ print(init._render_workflow_template(source.read_text(), {}), end='')
                         self.assertEqual(requested_pages, [[str(page)] for page in range(1, 10)])
                         self.assertNotIn(['10'], requested_pages)
 
-    def test_manifest_mirror_core_and_existing_definition_parity(self):
+    def test_manifest_package_core_and_existing_definition_parity(self):
         for asset in ASSETS:
-            self.assertEqual((ROOT/"templates"/asset).read_bytes(), (ROOT/"src/code_mower/templates"/asset).read_bytes())
-            self.assertEqual((ROOT/"templates"/asset).read_bytes(), (self.installed/"code_mower/templates"/asset).read_bytes())
+            self.assertEqual(
+                (ROOT / "src/code_mower/templates" / asset).read_bytes(),
+                (self.installed / "code_mower/templates" / asset).read_bytes(),
+            )
         for path in ("src/code_mower/builder_lineage.py", "tools/builder_lineage.py"):
             self.assertEqual(hashlib.sha256((ROOT/path).read_bytes()).hexdigest(), CORE_HASH)
         for path, baseline in self.accepted_baseline()['modules'].items():
@@ -283,7 +286,7 @@ print(init._render_workflow_template(source.read_text(), {}), end='')
         # Existing live inputs match the accepted baseline, including explicitly
         # approved workflow updates documented alongside the fixture.
         paths = ['src/code_mower/init.py', 'tools/lanes/run_mac_lane.sh',
-                 'templates/lanes/run_mac_lane.sh', 'src/code_mower/templates/lanes/run_mac_lane.sh']
+                 'src/code_mower/templates/lanes/run_mac_lane.sh']
         paths.extend(p.relative_to(ROOT).as_posix() for p in (ROOT/'.github/workflows').glob('*'))
         baseline = self.accepted_baseline()['unchanged_files']
         # #1022 explicitly adds verified local-audit publication and updates its
@@ -310,7 +313,7 @@ print(init._render_workflow_template(source.read_text(), {}), end='')
             '.github/workflows/release-candidate.yml',
         }, 'Actual init/runner/workflow inventory differs from accepted baseline, #1022 and #1027')
         activated = {'src/code_mower/init.py', 'tools/lanes/run_mac_lane.sh',
-            'templates/lanes/run_mac_lane.sh', 'src/code_mower/templates/lanes/run_mac_lane.sh',
+            'src/code_mower/templates/lanes/run_mac_lane.sh',
             '.github/workflows/code-mower-gate.yml'} | publication_workflows | release_workflows
         for path in paths:
             if path not in activated:

@@ -300,5 +300,4 @@ ACCEPTED_BASELINE = {'accepted_base': 'e818a3b639dfe903bdc16aff3674af98a5a08233'
                      '.github/workflows/release.yml': '36b0a3d70c4f51aea240c54ab5c896313dd933c25626f5d2a6053374ed098208',
                      'src/code_mower/init.py': '429d12d80f9c9b43dc65781ccd8ee65d7994a45c4652a0a2705c0fcf369e265b',
                      'src/code_mower/templates/lanes/run_mac_lane.sh': '89139edb988d58104972c06ed7eeb5dc598804e001b8d9df2249ad4e4a101a5b',
-                     'templates/lanes/run_mac_lane.sh': '89139edb988d58104972c06ed7eeb5dc598804e001b8d9df2249ad4e4a101a5b',
                      'tools/lanes/run_mac_lane.sh': '8b2475bde3c95b3fdb1d8f3c118a006364cc000a637c1a1f3ca80825c73b6506'}}

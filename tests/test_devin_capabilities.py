@@ -26,13 +26,13 @@ STARTER = ROOT / "src/code_mower/templates/code-mower.example.yml"
 
 class DevinCapabilityTests(unittest.TestCase):
     def test_registry_and_every_catalog_share_safe_defaults(self):
-        catalog = config.load_config(ROOT / "templates/providers.yml")["provider_templates"]
-        packaged = config.load_config(ROOT / "src/code_mower/templates/providers.yml")["provider_templates"]
+        catalog = config.load_config(
+            ROOT / "src/code_mower/templates/providers.yml"
+        )["provider_templates"]
         for transport in TRANSPORTS.values():
             name = transport.review_lane
             reference = participants.reference_review_config(name)
-            standalone = config.load_config(ROOT / f"templates/providers/{name}.yml")[name]
-            for lane in (reference, catalog[name], packaged[name], standalone):
+            for lane in (reference, catalog[name]):
                 self.assertFalse(lane["merge_authority"])
                 self.assertTrue(lane["informational"])
                 self.assertFalse(lane["enabled_by_default"])

@@ -60,10 +60,11 @@ PR authors, body links and branch prefixes cannot supply authority, policy or
 transport. `builder auto-record` requires all four inputs and checks its PR JSON
 against the selected target before recording attribution.
 
-The legacy `templates/workflows/builder-provenance.yml.j2` PR workflow now uploads
-only an explicit **skipped** guidance summary. It installs no package and records
-no builder sidecar. Use the separately staged
-[`builder-lineage-producer.yml.j2`](../templates/workflows/builder-lineage-producer.yml.j2)
+The authored
+`src/code_mower/templates/workflows/builder-provenance.yml.j2` PR workflow now
+uploads only an explicit **skipped** guidance summary. It installs no package
+and records no builder sidecar. Use the separately staged
+[`builder-lineage-producer.yml.j2`](../src/code_mower/templates/workflows/builder-lineage-producer.yml.j2)
 and its required `target_json`, `policy_json`, `authority_json`, and
 `transport_json` inputs for reviewed integration by a trusted caller. That
 producer owns the explicit-input contract; do not derive these inputs from PR

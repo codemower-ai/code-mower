@@ -169,17 +169,13 @@ class ReadmeLinkTests(unittest.TestCase):
 
 
 class PackagedTemplateConsistencyTests(unittest.TestCase):
-    LANE_README = "templates/lanes/README.md"
-    PACKAGED_LANE_README = "src/code_mower/templates/lanes/README.md"
+    LANE_README = "src/code_mower/templates/lanes/README.md"
 
-    def test_repo_and_packaged_lane_readme_are_identical(self):
-        self.assertEqual(_read(self.LANE_README), _read(self.PACKAGED_LANE_README))
-
-    def test_both_lane_readmes_document_the_supported_never_expiry(self):
-        for relative in (self.LANE_README, self.PACKAGED_LANE_README):
-            with self.subTest(template=relative):
-                self.assertIn("`YYYY-MM-DD`, or `never` for a non-expiring token.",
-                              _read(relative))
+    def test_authored_lane_readme_documents_the_supported_never_expiry(self):
+        self.assertIn(
+            "`YYYY-MM-DD`, or `never` for a non-expiring token.",
+            _read(self.LANE_README),
+        )
 
     def test_never_expiry_is_what_init_actually_advertises(self):
         init_source = _read("src/code_mower/init.py")

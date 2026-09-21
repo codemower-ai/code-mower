@@ -27,8 +27,8 @@ from lineage_producer_fixtures import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNNERS = (ROOT/"tools/lanes/run_mac_lane.sh", ROOT/"templates/lanes/run_mac_lane.sh",
-           ROOT/"src/code_mower/templates/lanes/run_mac_lane.sh")
+RUNNERS = (ROOT / "tools/lanes/run_mac_lane.sh",
+           ROOT / "src/code_mower/templates/lanes/run_mac_lane.sh")
 DOTTED = "owner/repo.example"
 #: A legal slug whose pasted identity LineageRound already accepted, so private
 #: lineage records for it hold that exact stable writer.
@@ -201,8 +201,12 @@ class RunnerWiring(unittest.TestCase):
                 # provider whose supervised round would be refused anyway.
                 self.assertIn("no canonical lineage writer identity for ${REPO}", text)
 
-    def test_template_copies_stay_identical(self):
-        self.assertEqual(RUNNERS[1].read_bytes(), RUNNERS[2].read_bytes())
+    def test_authored_template_is_rendered_for_the_runtime(self):
+        runtime = RUNNERS[0].read_text(encoding="utf-8")
+        authored = RUNNERS[1].read_text(encoding="utf-8")
+        self.assertIn("__LANE_MAC_RUNNER_ALLOWED_CASE__", authored)
+        self.assertNotIn("__LANE_MAC_RUNNER_ALLOWED_CASE__", runtime)
+        self.assertIn('case "$LANE" in codex|claude)', runtime)
 
     def test_an_installed_cli_without_the_derivation_is_refused_as_uncapable(self):
         from code_mower.builder_lineage import ContractError

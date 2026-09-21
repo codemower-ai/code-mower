@@ -1874,7 +1874,7 @@
     },
     {
       "kind": "config",
-      "source": "tools/reviewer_value_report.example.md",
+      "source": "src/code_mower/templates/reviewer-value-report.example.md",
       "target": "src/code_mower/templates/reviewer-value-report.example.md"
     },
     {
@@ -2024,17 +2024,17 @@
     },
     {
       "kind": "config",
-      "source": "templates/builder-experiment.example.json",
+      "source": "src/code_mower/templates/builder-experiment.example.json",
       "target": "templates/builder-experiment.example.json"
     },
     {
       "kind": "config",
-      "source": "templates/calibration-corpus.example.json",
+      "source": "src/code_mower/templates/calibration-corpus.example.json",
       "target": "templates/calibration-corpus.example.json"
     },
     {
       "kind": "config",
-      "source": "templates/calibration-corpus.json",
+      "source": "src/code_mower/templates/calibration-corpus.json",
       "target": "templates/calibration-corpus.json"
     },
     {
@@ -2044,12 +2044,12 @@
     },
     {
       "kind": "config",
-      "source": "templates/context-packs.example.json",
+      "source": "src/code_mower/templates/context-packs.example.json",
       "target": "templates/context-packs.example.json"
     },
     {
       "kind": "config",
-      "source": "templates/cursor/BUGBOT.md",
+      "source": "src/code_mower/templates/cursor/BUGBOT.md",
       "target": "templates/cursor/BUGBOT.md"
     },
     {
@@ -2084,7 +2084,7 @@
     },
     {
       "kind": "template",
-      "source": "templates/lanes/lineage-producer.sh",
+      "source": "src/code_mower/templates/lanes/lineage-producer.sh",
       "target": "templates/lanes/lineage-producer.sh"
     },
     {
@@ -2194,17 +2194,17 @@
     },
     {
       "kind": "config",
-      "source": "templates/reviewer-spend.example.json",
+      "source": "src/code_mower/templates/reviewer-spend.example.json",
       "target": "templates/reviewer-spend.example.json"
     },
     {
       "kind": "config",
-      "source": "tools/reviewer_value_report.example.md",
+      "source": "src/code_mower/templates/reviewer-value-report.example.md",
       "target": "templates/reviewer-value-report.example.md"
     },
     {
       "kind": "template",
-      "source": "templates/slack/app-manifest.json",
+      "source": "src/code_mower/templates/slack/app-manifest.json",
       "target": "templates/slack/app-manifest.json"
     },
     {
@@ -2219,7 +2219,7 @@
     },
     {
       "kind": "template",
-      "source": "templates/workflows/builder-lineage-producer.yml.j2",
+      "source": "src/code_mower/templates/workflows/builder-lineage-producer.yml.j2",
       "target": "templates/workflows/builder-lineage-producer.yml.j2"
     },
     {

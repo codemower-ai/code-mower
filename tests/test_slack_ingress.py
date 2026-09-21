@@ -469,11 +469,9 @@ class SlackIngressTests(unittest.TestCase):
 
     def test_manifest_package_and_stdlib_import(self):
         from code_mower.package_manifest import PACKAGE_FILES
-        manifest = json.loads((ROOT / 'templates/slack/app-manifest.json').read_text())
+        manifest = json.loads((ROOT / 'src/code_mower/templates/slack/app-manifest.json').read_text())
         self.assertEqual(manifest['oauth_config'], {'scopes': {'bot': ['commands']}})
         self.assertNotIn('event_subscriptions', manifest['settings'])
-        self.assertEqual((ROOT / 'templates/slack/app-manifest.json').read_bytes(),
-                         (ROOT / 'src/code_mower/templates/slack/app-manifest.json').read_bytes())
         targets = {target for _, target, _ in PACKAGE_FILES}
         self.assertTrue({'src/code_mower/slack_ingress.py', 'templates/slack/app-manifest.json',
                          'docs/slack-ingress.md'} <= targets)

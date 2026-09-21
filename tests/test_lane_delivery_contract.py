@@ -23,8 +23,7 @@ from code_mower import lane_delivery
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNNER_TEMPLATE = ROOT / "templates/lanes/run_mac_lane.sh"
-PACKAGED_RUNNER_TEMPLATE = ROOT / "src/code_mower/templates/lanes/run_mac_lane.sh"
+RUNNER_TEMPLATE = ROOT / "src/code_mower/templates/lanes/run_mac_lane.sh"
 REPO_RUNNER = ROOT / "tools/lanes/run_mac_lane.sh"
 SHA_A = "a" * 40
 SHA_B = "b" * 40
@@ -1421,12 +1420,6 @@ class DeliveryOutcomeRecordTests(unittest.TestCase):
 
 
 class RunnerScriptContractTests(unittest.TestCase):
-    def test_template_copies_stay_identical(self) -> None:
-        self.assertEqual(
-            RUNNER_TEMPLATE.read_text(encoding="utf-8"),
-            PACKAGED_RUNNER_TEMPLATE.read_text(encoding="utf-8"),
-        )
-
     def test_issue_target_prompts_require_the_closing_reference(self) -> None:
         # Delivery is observed through GitHub closingIssuesReferences, so a
         # cold issue-target prompt has to name the exact closing reference the
@@ -1454,7 +1447,7 @@ class RunnerScriptContractTests(unittest.TestCase):
             cfg = config.load_config(ROOT/"src/code_mower/templates/code-mower.example.yml")
             init.apply_init_plan(init.render_init_plan(cfg, package_mode=True, repo_root=ROOT, builders=init._parse_builder_lanes("codex,claude")),
                                  generated, source_root=ROOT)
-            for path in (RUNNER_TEMPLATE, PACKAGED_RUNNER_TEMPLATE, REPO_RUNNER,
+            for path in (RUNNER_TEMPLATE, REPO_RUNNER,
                          generated/"tools/lanes/run_mac_lane.sh"):
                 with self.subTest(path=str(path)):
                     text = path.read_text(encoding="utf-8")
@@ -1856,7 +1849,7 @@ class RunnerScriptContractTests(unittest.TestCase):
         # declared a bounded outcome and created nothing, so it has to read the
         # same file the runner brokers. Two spellings of the path would leave a
         # declared no-creation round failing its own launcher again.
-        for path in (RUNNER_TEMPLATE, PACKAGED_RUNNER_TEMPLATE, REPO_RUNNER):
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
             with self.subTest(path=path.name):
                 self.assertIn(
                     'lane_outcome_file="${work}/'
@@ -1993,9 +1986,8 @@ class PrePushGuardTests(unittest.TestCase):
         )
 
     def test_every_runner_copy_installs_the_same_guard(self) -> None:
-        packaged = _pre_push_hook(PACKAGED_RUNNER_TEMPLATE)
-        self.assertEqual(_pre_push_hook(RUNNER_TEMPLATE), packaged)
-        self.assertEqual(self.hook, packaged)
+        authored = _pre_push_hook(RUNNER_TEMPLATE)
+        self.assertEqual(self.hook, authored)
 
     def test_guard_installation_discards_heads_recorded_by_a_prior_run(self) -> None:
         branch = "fix/MB-9506-nv-accessible-label"
@@ -2044,7 +2036,7 @@ class PrePushGuardTests(unittest.TestCase):
         self.assertEqual(pushed.returncode, 1)
         self.assertIn("does not match the inspected head", pushed.stderr)
 
-        for path in (RUNNER_TEMPLATE, PACKAGED_RUNNER_TEMPLATE, REPO_RUNNER):
+        for path in (RUNNER_TEMPLATE, REPO_RUNNER):
             with self.subTest(path=path):
                 installer = _pre_push_installer(path)
                 self.assertIn('mktemp "${guard_ledger}.new.XXXXXX"', installer)

@@ -89,7 +89,7 @@ src/code_mower/
   tracker_*.py, jira_*.py        work-item contracts and guarded Jira operations
   cloud.py, cloud_client/        export, upload, setup, and metadata operations
   package_*.py, migration_*.py   generated package and rehearsal support
-  templates/                     generated config, workflows, prompts, wrappers
+  templates/                     authored config, workflows, prompts, wrappers
 tests/                           behavior, privacy, and release-hygiene tests
 scripts/                         smoke, privacy, fresh-clone, and Python helpers
 docs/                            current guides and historical release records

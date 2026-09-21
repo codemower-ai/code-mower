@@ -13,17 +13,14 @@ MUTABLE_ACTION_RE = re.compile(r"uses:\s+[^@\s]+@(?:v\d|release/)")
 HARDCODED_SSH_GITHUB_RE = re.compile(r"git@github\.com:[^{}\s]+")
 RUNNER_CONTEXT_RE = re.compile(r"\$\{\{\s*runner\.")
 PRIVATE_SHADOW_TARGETS = (
-    "templates/workflows/private-standalone-shadow.yml.j2",
     "src/code_mower/templates/workflows/private-standalone-shadow.yml.j2",
 )
 STATIC_WORKFLOW_SOURCES = (
     ".github/workflows/ci.yml",
     ".github/workflows/release.yml",
     "src/code_mower/package.py",
-    "src/code_mower/package_content.py",
 )
 WORKFLOW_TEMPLATE_DIRS = (
-    "templates/workflows",
     "src/code_mower/templates/workflows",
 )
 
@@ -84,20 +81,6 @@ def main() -> int:
             errors.append(f"{rel_path}: hard-codes a private SSH GitHub repository URL")
         if "{% raw %}${{ secrets.CODE_MOWER_STANDALONE_DEPLOY_KEY }}{% endraw %}" not in text:
             errors.append(f"{rel_path}: GitHub secret expression is not Jinja-raw protected")
-
-    package_content_text = (ROOT / "src/code_mower/package_content.py").read_text(
-        encoding="utf-8"
-    )
-    if "code_mower_standalone_repo_url" not in package_content_text:
-        errors.append("src/code_mower/package_content.py: generated private shadow template is not parameterized")
-    if "code_mower_standalone_package_repo_url" not in package_content_text:
-        errors.append("src/code_mower/package_content.py: generated private shadow template lacks package repo URL")
-    if "package-install-rehearsal" not in package_content_text:
-        errors.append("src/code_mower/package_content.py: generated private shadow template lacks package-install rehearsal")
-    if 'code_mower_ref="${CODE_MOWER_STANDALONE_REF:-}"' not in package_content_text:
-        errors.append("src/code_mower/package_content.py: package rehearsal does not honor CODE_MOWER_STANDALONE_REF env override")
-    if HARDCODED_SSH_GITHUB_RE.search(package_content_text):
-        errors.append("src/code_mower/package_content.py: hard-codes a private SSH GitHub repository URL")
 
     if errors:
         print("package workflow guard failed:", file=sys.stderr)
