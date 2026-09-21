@@ -379,10 +379,20 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
         self.assertIn("doctor.campaign.storage", {check.name for check in checks})
         self.assertIn("doctor.campaign.cloud_upload", {check.name for check in checks})
 
-    def test_empty_effective_provider_scope_skips_observer_campaign_readiness(self) -> None:
+    def test_out_of_profile_configured_adapter_skips_observer_campaign_readiness(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             checks = check_adoption_campaign_readiness(
-                config={},
+                config={
+                    "lanes": {
+                        "codex": {
+                            "provider_config": {
+                                "campaign_adapter_argv": ["{command}", "qualify"]
+                            }
+                        }
+                    }
+                },
                 repo_root=Path(tmp),
                 adoption_posture="orchestrator-only",
                 providers=[],
@@ -393,6 +403,11 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
         )
         self.assertEqual(readiness.status, STATUS_SKIP)
         self.assertEqual(readiness.detail.get("provider_readiness"), {})
+        intent = next(
+            check for check in checks if check.name == "doctor.campaign.intent"
+        )
+        self.assertEqual(intent.detail.get("campaign_intent"), "none")
+        self.assertEqual(intent.detail.get("configured_campaign_providers"), [])
         self.assertFalse(
             any(check.status == STATUS_WARN for check in checks),
         )

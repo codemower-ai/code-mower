@@ -27,10 +27,10 @@ leak.
 Release-campaign authentication is only part of adoption doctor when the run
 carries *campaign intent*: the operator asked for it explicitly
 (``doctor --campaign``), the repository configures a campaign adapter for at
-least one lane in ``code-mower.yml``, or campaign storage holds a campaign
-that is not complete. Ordinary reviewer/orchestrator adoption of a repository
-with none of those never turns an unused release capability into an owner
-action: every local provider's authentication check is reported as a
+least one provider in the effective operation scope, or campaign storage holds
+a campaign that is not complete. Ordinary reviewer/orchestrator adoption of a
+repository with none of those never turns an unused release capability into
+an owner action: every local provider's authentication check is reported as a
 non-blocking, provider-neutral ``not_requested`` skip and no login probe runs.
 """
 
@@ -187,15 +187,31 @@ def resolve_campaign_intent(
     config: Mapping[str, Any] | None,
     repo_root: Path | None,
     explicit: bool = False,
+    providers: Sequence[str] | None = None,
 ) -> CampaignIntent:
     """Apply the one rule deciding whether campaign auth is part of this run.
 
-    In priority order: an explicit request, a repository lane that configures
-    a campaign adapter, or a stored campaign that is not complete. Maintained
-    built-in adapters in the provider registry are a capability, not intent,
-    so a repository that never mentions campaigns gets none.
+    In priority order: an explicit request, an effective provider that
+    configures a campaign adapter, or a stored campaign that is not complete.
+    Passing ``providers`` scopes only configured intent; explicit and active
+    campaign intent remain operation-wide. Maintained built-in adapters in the
+    provider registry are a capability, not intent, so a repository that never
+    mentions campaigns gets none.
     """
     configured = _configured_campaign_providers(config, repo_root)
+    if providers is not None:
+        from code_mower.release_campaigns import resolve_provider_lane
+
+        scoped_providers: set[str] = set()
+        for provider in providers:
+            try:
+                canonical, _lane = resolve_provider_lane(provider)
+            except ValueError:
+                continue
+            scoped_providers.add(canonical)
+        configured = tuple(
+            provider for provider in configured if provider in scoped_providers
+        )
     active = _active_campaign_count(repo_root)
     if explicit:
         reason = CAMPAIGN_INTENT_EXPLICIT

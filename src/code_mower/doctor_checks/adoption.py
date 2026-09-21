@@ -758,6 +758,7 @@ def check_adoption_campaign_readiness(
         config=config,
         repo_root=root,
         explicit=campaign_requested,
+        providers=providers,
     )
     checks.append(_campaign_intent_check(campaign_intent))
     provider_readiness: dict[str, dict[str, Any]] = {}
