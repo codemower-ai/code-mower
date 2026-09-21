@@ -22,7 +22,6 @@ from code_mower.doctor_checks.self_hosted_runner import (
     _runner_labels_from_github,
     _runner_root_from_command,
 )
-from code_mower.doctor_checks.runner import _provider_templates_source_root
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -86,11 +85,6 @@ def _runner_config(label: str = "sample-app-audit") -> dict[str, object]:
             }
         },
     }
-
-
-class ProviderTemplateSourceTests(unittest.TestCase):
-    def test_source_checkout_uses_canonical_package_template_root(self) -> None:
-        self.assertEqual(_provider_templates_source_root(), ROOT / "src/code_mower")
 
 
 def _write_runner_plist(home: Path, payload: dict[str, object]) -> Path:

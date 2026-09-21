@@ -829,7 +829,7 @@ class DoctorRegistryTests(unittest.TestCase):
         self.assertEqual(hygiene_checks["claude_audit"].status, "pass")
         self.assertTrue(hygiene_checks["codex"].detail["workflow_exists"])
 
-    def test_runner_doctor_uses_repository_template_source_root(self) -> None:
+    def test_runner_doctor_uses_canonical_package_template_source_root(self) -> None:
         from code_mower.doctor_checks import runner as doctor_runner
 
         with mock.patch.object(
@@ -844,7 +844,10 @@ class DoctorRegistryTests(unittest.TestCase):
                 runner=True,
             )
 
-        self.assertEqual(runner_checks.call_args.kwargs["provider_templates_root"], ROOT)
+        self.assertEqual(
+            runner_checks.call_args.kwargs["provider_templates_root"],
+            ROOT / "src/code_mower",
+        )
 
     def test_real_config_requires_configured_stale_workflow_file(self) -> None:
         with tempfile.TemporaryDirectory() as root:
