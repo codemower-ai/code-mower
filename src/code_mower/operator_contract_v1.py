@@ -77,6 +77,8 @@ def qualification_semantic_errors(
             errors.append("failed qualification must be denied")
         if reason not in {"evidence_failed", "capability_missing"}:
             errors.append("failed qualification has a contradictory reason")
+        elif reason == "evidence_failed" and not isinstance(evidence, Mapping):
+            errors.append("failed evidence must retain the evidence record")
     elif status == "stale":
         if decision != "denied" or reason != "evidence_stale":
             errors.append("stale qualification must be denied as stale")
@@ -100,6 +102,8 @@ def qualification_semantic_errors(
         missing = sorted(set(required) - set(declared))
         if missing and status == "qualified":
             errors.append("qualified provider is missing required capabilities")
+        if status == "failed" and reason == "capability_missing" and not missing:
+            errors.append("capability-missing status has no missing capability")
     return tuple(errors)
 
 
@@ -107,12 +111,24 @@ def action_intent_semantic_errors(
     record: Mapping[str, Any],
     *,
     current_work_generation: int,
+    current_lease_epoch: int | None = None,
+    current_fence_token: str | None = None,
 ) -> tuple[str, ...]:
-    """Check the durable work-generation binding for an action intent."""
+    """Check durable generation and optional reconciliation-lease bindings."""
 
+    errors: list[str] = []
     if record.get("work_generation") != current_work_generation:
-        return ("action intent belongs to a stale work generation",)
-    return ()
+        errors.append("action intent belongs to a stale work generation")
+    authority = record.get("reconciliation_authority")
+    if isinstance(authority, Mapping):
+        if current_lease_epoch is None or current_fence_token is None:
+            errors.append("reconciliation authority must be compared with the current lease")
+        elif (
+            authority.get("lease_epoch") != current_lease_epoch
+            or authority.get("fence_token") != current_fence_token
+        ):
+            errors.append("reconciliation authority does not match the current lease")
+    return tuple(errors)
 
 
 def _records_by_schema(records: Sequence[Mapping[str, Any]]) -> dict[str, list[Mapping[str, Any]]]:

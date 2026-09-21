@@ -173,6 +173,8 @@ class OperatorContractV1Tests(unittest.TestCase):
                 return action_intent_semantic_errors(
                     document,
                     current_work_generation=generation,
+                    current_lease_epoch=context.get("current_lease_epoch"),
+                    current_fence_token=context.get("current_fence_token"),
                 )
         return ()
 
@@ -309,10 +311,13 @@ class OperatorContractV1Tests(unittest.TestCase):
                     )
                     document = record["document"]
                     if document.get("schema") == "code_mower.operatorActionIntent.v1":
+                        authority = document.get("reconciliation_authority") or {}
                         self.assertEqual(
                             action_intent_semantic_errors(
                                 document,
                                 current_work_generation=4,
+                                current_lease_epoch=authority.get("lease_epoch"),
+                                current_fence_token=authority.get("fence_token"),
                             ),
                             (),
                         )

@@ -86,9 +86,10 @@ state. A prepared, never-dispatched intent whose generation, fence, or target
 head is stale is abandoned. An already-dispatched unknown intent retains its
 immutable original dispatch fence and stays unknown. The new holder records a
 separate current `reconciliation_authority` and reconciles it without
-redispatch. Takeover first increments the epoch, then recovers all nonterminal
-intents; it never creates a replacement intent merely because the previous
-process disappeared.
+redispatch. The semantic check compares that authority with the current durable
+lease rather than trusting the record's `current` label. Takeover first
+increments the epoch, then recovers all nonterminal intents; it never creates a
+replacement intent merely because the previous process disappeared.
 
 Lease time is an availability mechanism. Fencing is the correctness mechanism.
 Clock skew, delayed workers, and a process resuming after expiry must therefore
@@ -99,10 +100,11 @@ fail the fencing comparison even when they locally believe the lease is valid.
 Before any remote mutation, the Operator atomically persists a
 `code_mower.operatorActionIntent.v1` record. Its `action_id`, operation,
 request digest, idempotency key, work generation, exact target head, dispatch
-lease epoch, dispatch fence token, and current budget are immutable dispatch
-inputs. Re-delivery of the same idempotency key and request digest returns the
-recorded outcome. Reuse of the key with a different digest is a policy error.
-A generation mismatch rejects dispatch, retry, and result commit rather than
+lease epoch, and dispatch fence token are immutable dispatch inputs. Budget
+counters are durable and cumulative across the intent's transitions.
+Re-delivery of the same idempotency key and request digest returns the recorded
+outcome. Reuse of the key with a different digest is a policy error. A
+generation mismatch rejects dispatch, retry, and result commit rather than
 letting an intent from an earlier admission act on current work.
 
 An intent starts `prepared` with `not_attempted` certainty. The runtime may
@@ -166,8 +168,10 @@ The schema binds each status to a matching decision, reason, and evidence
 shape. The normative `qualification_semantic_errors` check additionally
 requires `observed_at < expires_at`, rejects future or expired observations,
 applies the policy's maximum evidence age at an explicit durable-store `now`,
-and verifies that every required capability was declared. Callers use that
-shared check instead of defining their own clock or expiry ordering.
+and verifies that every required capability was declared. Failed-evidence
+records retain the evidence that failed, and `capability_missing` names an
+actual declaration gap. Callers use that shared check instead of defining
+their own clock or expiry ordering.
 
 Codex and Claude are the initial qualified targets represented by the accepted
 fixtures. Devin is represented as pending until equivalent evidence exists;
