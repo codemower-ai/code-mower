@@ -81,11 +81,11 @@ before any init --apply. Preserve repository policy and copy only the intended
 generated files in the upgrade PR.
 
 Run the posture-appropriate doctor:
-- local reviewer/builder machine: code-mower doctor --adoption --repo OWNER/REPO --json
-- hosted builder or observer: code-mower doctor --adoption --hosted-builders --repo OWNER/REPO --json
-- orchestrator-only host: code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO --json
-- remote-only host with no checkout config: code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO --json
-- supervised pilot readiness: code-mower doctor --supervised-pilot --repo OWNER/REPO --json
+- local reviewer/builder machine: code-mower doctor --adoption --repo OWNER/REPO --json --share-safe
+- hosted builder or observer: code-mower doctor --adoption --hosted-builders --repo OWNER/REPO --json --share-safe
+- orchestrator-only host: code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO --json --share-safe
+- remote-only host with no checkout config: code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO --json --share-safe
+- supervised pilot readiness: code-mower doctor --supervised-pilot --repo OWNER/REPO --json --share-safe
 
 Read the posture-scoped summary first by rerunning the same posture with
 --concise instead of --json: every check still runs, and the summary leads with
@@ -99,10 +99,11 @@ checks. Repository Actions secret and variable presence still comes from the
 target repository through `gh`; that is separate from `GITHUB_TOKEN` or local
 checkout-path requirements used by direct local-audit wrappers.
 
-That packaged-starter remote-observer JSON uses stable package labels and does
-not include local config, executable, checkout, or workflow paths. Other doctor
-JSON can contain local paths; review or redact it before attaching or uploading
-it.
+Adoption and hosted-posture output is share-safe by default. The explicit
+`--share-safe` in this maintained prompt makes that boundary reviewable: local
+config, executable, checkout, workflow, and packaged-template paths retain
+their fields but use `[local path hidden]`. Use `--include-local-paths` only for
+private local debugging; do not attach that form to an issue or upload it.
 
 Provider selection and a working CLI do not qualify an orchestrator. Devin is
 currently limited to bounded builder work and informational review; use a

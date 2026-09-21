@@ -43,6 +43,9 @@ _evaluate_json_probe = _doctor_checks.evaluate_json_probe
 _local_cli_probe_remediation = _doctor_checks.local_cli_probe_remediation
 render_doctor_summary = _doctor_checks.render_doctor_summary
 render_doctor_text = _doctor_checks.render_doctor_text
+doctor_report_payload = _doctor_checks.doctor_report_payload
+redact_local_path_text = _doctor_checks.redact_local_path_text
+share_safe_doctor_report = _doctor_checks.share_safe_doctor_report
 resolve_doctor_config_path = _doctor_checks.resolve_doctor_config_path
 resolve_doctor_config_path_for_script = _doctor_checks.resolve_doctor_config_path_for_script
 resolve_doctor_provider_templates_path = _doctor_checks.resolve_doctor_provider_templates_path
@@ -111,7 +114,9 @@ def _doctor_config_source_label(
     return "repository_config"
 
 
-def _doctor_config_error_message(exc: Exception, *, config_arg: str) -> str:
+def _doctor_config_error_message(
+    exc: Exception, *, config_arg: str, include_local_paths: bool = True
+) -> str:
     requested = str(config_arg)
     lines = [
         f"error: {exc}",
@@ -129,7 +134,8 @@ def _doctor_config_error_message(exc: Exception, *, config_arg: str) -> str:
             "the repository checkout with `code-mower doctor --adoption "
             "--repo OWNER/REPO`."
         )
-    return "\n".join(lines)
+    message = "\n".join(lines)
+    return message if include_local_paths else redact_local_path_text(message)
 
 
 _DOCTOR_COMPAT_EXPORTS = (
@@ -358,6 +364,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             "remaining warnings by group"
         ),
     )
+    path_group = parser.add_mutually_exclusive_group()
+    path_group.add_argument(
+        "--share-safe",
+        action="store_true",
+        help=(
+            "redact local config, checkout, executable, workflow, and template "
+            "paths from text and JSON output"
+        ),
+    )
+    path_group.add_argument(
+        "--include-local-paths",
+        action="store_true",
+        help=(
+            "include local diagnostic paths; adoption and hosted postures redact "
+            "them by default"
+        ),
+    )
     detail_group.add_argument(
         "--advanced",
         action="store_true",
@@ -375,6 +398,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.adoption = True
     if args.adoption:
         args.preflight = True
+    include_local_paths = args.include_local_paths or not (
+        args.share_safe
+        or args.adoption
+        or args.adoption_posture in {"hosted-builders", "orchestrator-only"}
+    )
     cloud_explicit = "--cloud" in raw_args
     runtime_probe_explicit = "--probe-runtime" in raw_args
     explicit_config = args.config is not None
@@ -461,7 +489,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             **({'context_state_dir': args.context_state_dir} if args.context_state_dir is not None else {}),
         )
     except (code_mower_config.ConfigError, ValueError) as exc:
-        print(_doctor_config_error_message(exc, config_arg=args.config), file=sys.stderr)
+        print(
+            _doctor_config_error_message(
+                exc,
+                config_arg=args.config,
+                include_local_paths=include_local_paths,
+            ),
+            file=sys.stderr,
+        )
         return 1
 
     if args.operational_evidence is not None:
@@ -489,12 +524,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     # modes keep the full text view: a concise run only changes what a default
     # text run reads first.
     concise = args.concise and not args.advanced and not args.campaign
+    output_report = (
+        report if include_local_paths else share_safe_doctor_report(report)
+    )
     if args.json:
-        print(json.dumps(report.as_dict(), indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                doctor_report_payload(report, include_local_paths=include_local_paths),
+                indent=2,
+                sort_keys=True,
+            )
+        )
     elif concise:
-        print(render_doctor_summary(report), end="")
+        print(render_doctor_summary(output_report), end="")
     else:
-        print(render_doctor_text(report), end="")
+        print(render_doctor_text(output_report), end="")
     if report.failures:
         return 1
     if args.strict and report.warnings:

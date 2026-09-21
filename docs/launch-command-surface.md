@@ -23,7 +23,7 @@ The default `code-mower next-steps` and `code-mower --help` focus on this path.
 | `code-mower lanes status --repo OWNER/REPO` | Show active PR lanes, gate/check state, local board/process hints, stale audit requeue guidance, and the next action. | no | GitHub optional |
 | `code-mower productivity report --repo OWNER/REPO` | Summarize local Board history, reviewer spend, provider scorecards, promotion caveats, quality catches, fix rounds, owner actions, and optional cloud aggregate productivity events. | no | no |
 | `code-mower board serve --repo OWNER/REPO` | Serve redacted lane status plus owner queue and local verdict/spend timelines in a local read-only browser board. | no | GitHub optional |
-| `code-mower doctor --adoption --repo OWNER/REPO --json` | Check Python, GitHub, provider CLIs, cloud token posture, and private-repo cost traps. | no | optional GitHub/provider probes |
+| `code-mower doctor --adoption --repo OWNER/REPO --json --share-safe` | Check Python, GitHub, provider CLIs, cloud token posture, and private-repo cost traps with local paths redacted. | no | optional GitHub/provider probes |
 | `code-mower next-steps --profile recommended --repo OWNER/REPO` | Print the next recommended setup actions. | no | no |
 
 ## Later Workflows
@@ -54,7 +54,8 @@ Select any additional builder or reviewer explicitly.
 | `code-mower board events` | Print recent local board-history events without calling GitHub. | no | no |
 | `code-mower board doctor --repo OWNER/REPO` | Diagnose Board inputs, local history, gate alerts, owner queue, and optional agent cards with redacted local paths by default. | no | GitHub optional |
 | `code-mower board reset --repo OWNER/REPO --yes` | Delete only the local Board history file after explicit confirmation. | yes, local only | no |
-| `code-mower doctor --adoption --hosted-builders --repo OWNER/REPO --json` | Check hosted-builder or orchestrator setup without requiring local Codex/Claude CLIs on this machine. | no | optional GitHub/provider probes |
+| `code-mower doctor --adoption --hosted-builders --repo OWNER/REPO --json --share-safe` | Check hosted-builder or orchestrator setup without requiring local Codex/Claude CLIs on this machine; local paths stay redacted. | no | optional GitHub/provider probes |
+| `code-mower doctor --adoption --repo OWNER/REPO --json --include-local-paths` | Restore local diagnostic path values for private debugging; do not attach or upload this output. | no | optional GitHub/provider probes |
 | `code-mower doctor --supervised-pilot --repo OWNER/REPO --json` | Summarize manual-pilot readiness with blockers, owner actions, warnings, promotion to-dos, cloud token, and Board visibility. | no | optional GitHub/provider probes |
 | `code-mower doctor --promoted-pilot --repo OWNER/REPO --json` | Check the stricter posture needed before green audits may drive auto-merge. | no | optional GitHub/provider probes |
 | `code-mower migration setup-drift --repo-path .` | Classify existing generated setup files before an upgrade PR without printing source or diffs. | no | no |

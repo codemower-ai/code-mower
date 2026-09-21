@@ -384,8 +384,8 @@ shows `"app_id": 15368`, remove and re-add the required check from Any source.
 Now run the preflight:
 
 ```bash
-code-mower doctor --adoption --repo OWNER/REPO --json
-code-mower doctor --supervised-pilot --repo OWNER/REPO --json
+code-mower doctor --adoption --repo OWNER/REPO --json --share-safe
+code-mower doctor --supervised-pilot --repo OWNER/REPO --json --share-safe
 ```
 
 `doctor --adoption` is the recommended early-adopter preset for GitHub auth,
