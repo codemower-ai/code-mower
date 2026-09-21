@@ -1,8 +1,7 @@
 # Early Adopter Invite Runbook
 
-Source target: v1.5.1 supervised-pilot baseline. Release invitations and pinned
-index installs target `code-mower==1.5.1` after confirming that version is
-visible on the selected package index.
+Release invitations use the current supervised-pilot baseline. The maintained
+[install guide](install.md) owns the exact package pin and index checks.
 
 Use this runbook for the first 5-10 friendly users before widening Code Mower
 to 20-50 early OSS users.
@@ -52,14 +51,8 @@ model transcripts, raw stdout/stderr, auth output, and secrets.
 
 Before inviting a user:
 
-1. Verify the tagged install command in a fresh repo:
-
-   ```bash
-   python3.12 --version
-   export CODE_MOWER_PYTHON="$(command -v python3.12)"
-   pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.1
-   code-mower --version
-   ```
+1. Complete the cold-install path in [Install And Bootstrap](install.md) on a
+   fresh machine or environment, including its path and version checks.
 
 2. Confirm CodeMower.com health:
 

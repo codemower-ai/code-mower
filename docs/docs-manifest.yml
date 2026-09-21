@@ -103,7 +103,8 @@ documents:
 - path: docs/first-user-demo-transcript.md
   status: supporting
 - path: docs/first-user-install-rehearsal.md
-  status: supporting
+  status: canonical
+  subject: install-rehearsal
 - path: docs/friendly-user-rollout-v05.md
   status: supporting
 - path: docs/github-setup.md
@@ -173,12 +174,14 @@ documents:
   status: canonical
   subject: release-process
 - path: docs/pypi-release.md
-  status: supporting
+  status: canonical
+  subject: package-publication
 - path: docs/quickstart.md
   status: canonical
   subject: quickstart
 - path: docs/release-history.md
-  status: supporting
+  status: canonical
+  subject: release-history
 - path: docs/release-qualification.md
   status: supporting
 - path: docs/repo-strategy.md

@@ -1,14 +1,13 @@
 # Friendly-User Rollout Plan
 
-Source target: v1.5.1 supervised-pilot baseline. Release invitations and pinned
-index installs target `code-mower==1.5.1` after confirming that version is
-visible on the selected package index.
+Release invitations use the current supervised-pilot baseline. The maintained
+[install guide](install.md) owns the exact package pin and index checks.
 
 This is the operating plan for the first 5-10 friendly users before Code Mower
 widens to 20-50 early adopters.
 
-The filename is historical from the v0.5 planning pass. The live target in this
-document is the current v1.5.1 supervised-pilot release.
+The filename is historical from the v0.5 planning pass. This document now links
+to the maintained setup contracts rather than carrying a release-specific copy.
 
 Code Mower is supervised-pilot, bring-your-own-agent-loop software for teams willing to
 calibrate reviewers. It is not a drop-in autonomous merge gate.
@@ -26,20 +25,9 @@ the private history behind Code Mower:
 
 ## Current Baseline
 
-Use the current release install pin unless a newer release is explicitly called
-out in the invite:
-
-```bash
-python3.12 --version
-export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.1
-```
-
-This source defines Code Mower `v1.5.1`, with package spec
-`code-mower==1.5.1`. Confirm the release tag on GitHub Releases and the package
-version on the selected index before using an index install command; source
-version and publication state are separate facts. After publication, see the
-[v1.5.1 release](https://github.com/codemower-ai/code-mower/releases/tag/v1.5.1).
+Complete [Install And Bootstrap](install.md), then follow the
+[Quickstart](quickstart.md). Those guides own the current release identity,
+install commands, authentication, generated setup, and first audit loop.
 
 ## Invite Criteria
 
