@@ -1,4 +1,4 @@
-"""Build once, inspect, and verify an exact-source v1.5.1 artifact pair.
+"""Build once, inspect, and verify the current exact-source artifact pair.
 
 This script never tags, publishes, contacts Slack or invokes a provider. The
 candidate workflow supplies the merged PR identity; local builds are rehearsals.
@@ -17,18 +17,19 @@ import sys
 import tarfile
 import zipfile
 
-VERSION = "1.5.1"
+SOURCE_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SOURCE_ROOT / "src"))
+
+from code_mower.release_metadata import load_release_metadata  # noqa: E402
+
+
+RELEASE = load_release_metadata(SOURCE_ROOT)
+VERSION = RELEASE.version
 SCHEMA = "code_mower.release_candidate.v1"
-NAMES = (f"code_mower-{VERSION}-py3-none-any.whl", f"code_mower-{VERSION}.tar.gz")
-MODULES = (
-    "context_graph_lifecycle.py", "context_graph_query.py", "context_graph_command.py",
-    "context_graph_connection.py",
-    "slack_setup.py", "slack_readiness.py", "supervisor_contract_v2.py",
-    "templates/slack/hosted-app-manifest.json",
-)
-DOCS = ("v151-release-notes.md", "v151-qualification.md", "v151-release-runbook.md",
-        "slack-setup.md", "graphify-setup.md")
-REHEARSAL_SCHEMA = "code_mower.v151_rehearsal.v1"
+NAMES = RELEASE.distribution_names
+MODULES = RELEASE.required_modules
+DOCS = tuple(Path(path).relative_to("docs").as_posix() for path in RELEASE.required_docs)
+REHEARSAL_SCHEMA = RELEASE.rehearsal_schema
 CANARY_EQUIVALENCE_SCHEMA = "code_mower.canary_candidate_equivalence.v1"
 GRAPHIFY_CHECKS = (
     "graphify_doc_ref_excluded_reader_available",
@@ -46,20 +47,15 @@ REHEARSAL_CHECKS = (
     "uninstall_preserves_synthetic_state",
 )
 
-# A one-release exception for carrying already accepted paid canary outcomes
-# across the reviewed release-closeout changes. Every wheel member outside
-# these audit/release/documentation surfaces must remain byte-identical. Keep
-# this list narrow: Slack, supervisor, provider, entry-point and dependency
-# changes must force new live canaries under a new explicit authorization.
+# Only audit, release, and current-release documentation may differ when
+# comparing retained candidates. Slack, supervisor, provider, entry-point and
+# dependency changes force new live canaries under a new authorization.
 CANARY_EQUIVALENCE_ALLOWED_WHEEL_CHANGES = frozenset({
     "code_mower/audit_publication.py",
     "code_mower/release_readiness.py",
     "code_mower/templates/workflows/local-audit-publication.yml.j2",
     "code_mower/templates/workflows/trailer-comment-labeler.yml.j2",
-    f"code_mower-{VERSION}.data/data/share/code-mower/docs/graphify-setup.md",
-    f"code_mower-{VERSION}.data/data/share/code-mower/docs/v151-qualification.md",
-    f"code_mower-{VERSION}.data/data/share/code-mower/docs/v151-release-notes.md",
-    f"code_mower-{VERSION}.data/data/share/code-mower/docs/v151-release-runbook.md",
+    *(f"code_mower-{VERSION}.data/data/share/code-mower/docs/{doc}" for doc in DOCS),
     f"code_mower-{VERSION}.dist-info/METADATA",
     f"code_mower-{VERSION}.dist-info/RECORD",
 })
@@ -174,9 +170,8 @@ def compare_canary_surface(prior_dist: Path, final_dist: Path, prior_sha: str,
     """Attest that a final candidate did not change the paid-canary surface.
 
     This does not qualify either candidate or replace final-candidate private
-    acceptance. It only establishes that already accepted live canaries may be
-    carried across the bounded v1.5.0 release-closeout delta documented in the
-    qualification contract.
+    acceptance. It only establishes that product and dependency surfaces are
+    byte-identical across a bounded release-closeout delta.
     """
     require(prior_sha != final_sha, "candidate comparison requires distinct source SHAs")
     prior = verify(prior_dist, prior_sha, candidate=True)
@@ -234,7 +229,7 @@ def build(source: Path, dist: Path, sha: str, release_pr: int | None):
     require(not dist.exists(), "output already exists; never overwrite an artifact pair")
     require(not dist.is_relative_to(source), "build output must be outside the source checkout")
     run(sys.executable, str(source / "src/code_mower/release_identity.py"),
-        "--repo", str(source), "--tag", "v" + VERSION)
+        "--repo", str(source), "--tag", RELEASE.tag)
     dist.mkdir(parents=True)
     # Stable archive timestamps; dependency downloads are package build tools only.
     env = dict(os.environ, SOURCE_DATE_EPOCH=run("git", "show", "-s", "--format=%ct", sha, cwd=source))

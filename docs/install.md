@@ -1,14 +1,12 @@
 # Install And Bootstrap
 
-v1.5.1 uses the exact install pin `code-mower==1.5.1`. Confirm that version is
-published on the selected index, then verify the command path and version after
-installing. The [v1.5.1 qualification contract](v151-qualification.md) defines
-the required evidence. After publication, the GitHub Release and linked release
-issue carry the observed source SHA, artifact digests, canary outcomes,
-publication run and reinstall evidence. Use the
-[candidate runbook](v151-release-runbook.md) for
-prepublication local-wheel rehearsals. Offline preparation does not establish
-live Slack readiness.
+<!-- code-mower:release-facts:start -->
+v1.5.1 uses the exact install pin `code-mower==1.5.1` and requires Python
+3.12 or newer. Confirm that version is published on the selected index, then
+verify the command path and version after installing. The
+[qualification contract](v151-qualification.md) defines the required evidence. Use the
+[candidate runbook](v151-release-runbook.md) for prepublication local-wheel rehearsals.
+<!-- code-mower:release-facts:end -->
 
 
 Code Mower requires Python 3.12 or newer. Use one install path per machine or

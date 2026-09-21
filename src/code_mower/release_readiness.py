@@ -14,6 +14,7 @@ import yaml
 from . import __version__
 from . import docs_lifecycle
 from . import package as package_module
+from . import release_metadata as release_metadata_module
 from .release_identity import check_release_identity
 from . import versioning as code_mower_versioning
 
@@ -27,7 +28,6 @@ RELEASE_DOC_PATHS = (
     "docs/pypi-release.md",
     "docs/public-release-checklist.md",
     "docs/release-qualification.md",
-    "docs/v151-release-runbook.md",
 )
 REQUIRED_PUBLIC_PACKAGE_SPEC_DOC_PATHS = (
     "README.md",
@@ -1237,9 +1237,16 @@ def _release_tag_for_version(version: str) -> str:
 
 
 def _release_docs(repo_path: Path) -> dict[str, str]:
+    paths = list(RELEASE_DOC_PATHS)
+    try:
+        metadata = release_metadata_module.load_release_metadata(repo_path)
+    except release_metadata_module.ReleaseMetadataError:
+        metadata = None
+    if metadata is not None:
+        paths.extend(metadata.documents.values())
     return {
         relative_path: _read_text_if_exists(repo_path / relative_path)
-        for relative_path in RELEASE_DOC_PATHS
+        for relative_path in dict.fromkeys(paths)
     }
 
 
@@ -1494,18 +1501,21 @@ def _job_text(job: Any) -> str:
 
 
 def _candidate_runbook_checks(repo_path: Path) -> tuple[list[str], list[str]]:
-    """The v1.5.1 sequence qualifies the merge-SHA artifacts before tagging.
+    """The current sequence qualifies merge-SHA artifacts before tagging.
 
-    The v1.4 post-publication campaign runbook stays historical. Checking its
-    ordering against a new version would require tagging before qualification.
-    These are static documentation checks, not private acceptance evidence.
+    Versioned runbooks stay historical. These are static documentation checks,
+    not private acceptance evidence.
     """
-    text = _read_text_if_exists(repo_path / "docs/v151-release-runbook.md")
+    try:
+        metadata = release_metadata_module.load_release_metadata(repo_path)
+    except release_metadata_module.ReleaseMetadataError as exc:
+        return [f"valid {release_metadata_module.MANIFEST_PATH}: {exc}"], []
+    text = _read_text_if_exists(repo_path / metadata.documents["runbook"])
     order = (
         "## 1. Review and merge", "## 2. Build and retain",
         "gh workflow run release-candidate.yml", "## 3. Qualify the exact candidate",
         "## 4. Observe the bounded hosted Board canary", "## 5. Owner decision",
-        'git tag -a v1.5.1 "$RELEASE_SHA"',
+        f'git tag -a {metadata.tag} "$RELEASE_SHA"',
         "-f publish_testpypi=false -f publish_pypi=false",
         "-f publish_testpypi=false -f publish_pypi=true",
         "## 6. Independent canonical reinstall",
@@ -1515,8 +1525,8 @@ def _candidate_runbook_checks(repo_path: Path) -> tuple[list[str], list[str]]:
         "--json mergeCommit --jq '.mergeCommit.oid'",
         "--require-candidate", "candidate.json", "rehearsal.json",
         '-f candidate_run_id="$CANDIDATE_RUN_ID"',
-        'test "$(git rev-list -n 1 v1.5.1)" = "$RELEASE_SHA"',
-        "fresh install without uv or pipx", "upgrade from v1.5.0",
+        f'test "$(git rev-list -n 1 {metadata.tag})" = "$RELEASE_SHA"',
+        "fresh install without uv or pipx", f"upgrade from v{metadata.previous_version}",
         "remote observer", "safe init", "Graphify", "basic Slack lifecycle",
         "single-lane", "multi-lane", "aggregate campaign ACU",
         "provider exit", "authorized usage", "settled usage",
@@ -1546,6 +1556,12 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     testpypi_job_text = _job_text(testpypi_job)
     pypi_job_text = _job_text(pypi_job)
     docs = _release_docs(repo_path)
+    try:
+        current_release = release_metadata_module.load_release_metadata(repo_path)
+        release_manifest_error = ""
+    except release_metadata_module.ReleaseMetadataError as exc:
+        current_release = None
+        release_manifest_error = str(exc)
     public_hygiene_docs = {
         relative_path: _read_text_if_exists(repo_path / relative_path)
         for relative_path in PUBLIC_HYGIENE_DOC_PATHS
@@ -1610,7 +1626,14 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
     )
     if candidate_workflow_used:
         missing_runbook_markers, missing_runbook_assertions = _candidate_runbook_checks(repo_path)
-        runbook_markers = ("docs/v151-release-runbook.md: candidate, private acceptance, canaries, tag, publish",)
+        current_runbook = (
+            current_release.documents["runbook"]
+            if current_release is not None
+            else release_metadata_module.MANIFEST_PATH
+        )
+        runbook_markers = (
+            f"{current_runbook}: candidate, private acceptance, canaries, tag, publish",
+        )
         runbook_assertions = ("merge SHA and retained artifact binding; explicit owner gates",)
         # Legacy checks above describe the preserved v1.4 publication procedure.
         # The new procedure has its own ordered gates and artifact assertions.
@@ -1680,7 +1703,32 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
         if terms
     }
 
-    documentation_checks = []
+    release_manifest_problems = []
+    if release_manifest_error:
+        release_manifest_problems.append(release_manifest_error)
+    elif current_release is not None:
+        if current_release.version != version:
+            release_manifest_problems.append(
+                f"release.yml version {current_release.version} != package version {version}"
+            )
+        if current_release.tag != release_tag:
+            release_manifest_problems.append(
+                f"release.yml tag {current_release.tag} != package tag {release_tag}"
+            )
+        if current_release.package_spec != package_index_spec:
+            release_manifest_problems.append(
+                "release.yml package_spec does not match the package version"
+            )
+
+    documentation_checks = [
+        _release_check(
+            check_id="release-metadata",
+            title="Current release metadata is valid and matches the package identity",
+            status="pass" if not release_manifest_problems else "fail",
+            evidence=release_metadata_module.MANIFEST_PATH,
+            detail={"problems": release_manifest_problems},
+        )
+    ]
     if docs_lifecycle_report is not None:
         documentation_checks.append(
             _release_check(
@@ -2141,7 +2189,14 @@ def render_release_readiness(repo_path: Path) -> dict[str, Any]:
             "title": "After merge: build once, then #918 and explicitly authorized #920 before tagging/publication",
             "command": 'gh workflow run release-candidate.yml --repo codemower-ai/code-mower --ref main '
                        '-f expected_sha="$RELEASE_SHA" -f release_pr="$RELEASE_PR"',
-            "url": "https://github.com/codemower-ai/code-mower/blob/main/docs/v151-release-runbook.md",
+            "url": (
+                "https://github.com/codemower-ai/code-mower/blob/main/"
+                + (
+                    current_release.documents["runbook"]
+                    if current_release is not None
+                    else release_metadata_module.MANIFEST_PATH
+                )
+            ),
         })
     incomplete_dispatch_actions = _incomplete_dispatch_actions(workflow, next_actions)
     incomplete_documented_dispatches = _incomplete_documented_dispatches(workflow, docs)

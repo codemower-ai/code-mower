@@ -16,16 +16,19 @@ import zipfile
 
 import yaml
 
-from code_mower import __version__, release_readiness
+from code_mower import __version__, release_metadata, release_readiness
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("release_candidate", ROOT / "scripts/release_candidate.py")
 candidate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(candidate)
-spec = importlib.util.spec_from_file_location("rehearse_v151", ROOT / "scripts/rehearse_v151.py")
+spec = importlib.util.spec_from_file_location("rehearse_release", ROOT / "scripts/rehearse_release.py")
 rehearsal = importlib.util.module_from_spec(spec)
 with patch.dict(sys.modules, {"release_candidate": candidate}):
     spec.loader.exec_module(rehearsal)
+spec = importlib.util.spec_from_file_location("render_release", ROOT / "scripts/render_release.py")
+release_renderer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(release_renderer)
 SHA = "a" * 40
 
 
@@ -344,7 +347,7 @@ class WorkflowBindingTests(unittest.TestCase):
         self.assertEqual(job["steps"][0]["with"]["ref"], "${{ env.SOURCE_SHA }}")
         commands = "\n".join(step.get("run", "") for step in job["steps"])
         self.assertIn("python scripts/release_candidate.py build", commands)
-        self.assertIn('python scripts/rehearse_v151.py --dist "$RUNNER_TEMP/rehearsal-dist"', commands)
+        self.assertIn('python scripts/rehearse_release.py --dist "$RUNNER_TEMP/rehearsal-dist"', commands)
         self.assertNotIn("--release-pr", commands)
         self.assertIn("release_rehearsal", jobs["package"]["needs"])
         self.assertIn('test "${{ needs.release_rehearsal.result }}" = "success"', jobs["package"]["steps"][0]["run"])
@@ -373,9 +376,83 @@ class OfflineGuardTests(unittest.TestCase):
                 self.assertEqual(result.returncode == 0, allowed)
 
 
+class VersionNeutralReleaseMetadataTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        documents = {
+            "notes": "docs/v200-release-notes.md",
+            "qualification": "docs/v200-qualification.md",
+            "runbook": "docs/v200-release-runbook.md",
+            "installation": "docs/install.md",
+            "publication": "docs/pypi-release.md",
+        }
+        required_docs = [*documents.values(), "docs/slack-setup.md"]
+        for relative in required_docs:
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("synthetic\n")
+        marker_region = (
+            f"{release_renderer.START}\nstale\n{release_renderer.END}\n"
+        )
+        (self.root / "README.md").write_text(marker_region)
+        (self.root / "docs/install.md").write_text(marker_region)
+        (self.root / "docs/pypi-release.md").write_text(marker_region)
+        self.manifest = {
+            "schema": release_metadata.SCHEMA,
+            "version": "2.0.0",
+            "previous_version": "1.9.0",
+            "tag": "v2.0.0",
+            "package_spec": "code-mower==2.0.0",
+            "stage": "candidate",
+            "python": {"minimum": "3.13", "tested": ["3.13", "3.14"]},
+            "documents": documents,
+            "required_modules": ["release_metadata.py"],
+            "required_docs": required_docs,
+            "rehearsal_schema": "code_mower.release_rehearsal.v1",
+        }
+        (self.root / release_metadata.MANIFEST_PATH).write_text(
+            yaml.safe_dump(self.manifest, sort_keys=False)
+        )
+
+    def test_future_release_identity_and_artifact_names_come_from_manifest(self):
+        metadata = release_metadata.load_release_metadata(self.root)
+        self.assertEqual(metadata.tag, "v2.0.0")
+        self.assertEqual(metadata.package_spec, "code-mower==2.0.0")
+        self.assertEqual(
+            metadata.distribution_names,
+            ("code_mower-2.0.0-py3-none-any.whl", "code_mower-2.0.0.tar.gz"),
+        )
+
+    def test_renderer_updates_regions_and_check_detects_drift(self):
+        changed = release_renderer.render(self.root, check=False)
+        self.assertEqual(changed, ["README.md", "docs/install.md", "docs/pypi-release.md"])
+        self.assertEqual(release_renderer.render(self.root, check=True), [])
+        readme = (self.root / "README.md").read_text()
+        self.assertIn("Code Mower `v2.0.0`", readme)
+        self.assertIn("Python 3.13 or newer", readme)
+        (self.root / "README.md").write_text(readme.replace("v2.0.0", "v2.0.1"))
+        with self.assertRaisesRegex(ValueError, "README.md"):
+            release_renderer.render(self.root, check=True)
+
+    def test_mismatched_tag_or_package_spec_is_rejected(self):
+        for field, value in (("tag", "v2.0.1"), ("package_spec", "code-mower==2.0.1")):
+            broken = dict(self.manifest, **{field: value})
+            (self.root / release_metadata.MANIFEST_PATH).write_text(
+                yaml.safe_dump(broken, sort_keys=False)
+            )
+            with self.subTest(field=field), self.assertRaisesRegex(
+                release_metadata.ReleaseMetadataError, "must match version"
+            ):
+                release_metadata.load_release_metadata(self.root)
+
+
 class ReleaseContractTests(unittest.TestCase):
     def test_identity_and_readiness(self):
         self.assertEqual(__version__, "1.5.1")
+        self.assertEqual(release_metadata.load_release_metadata(ROOT).version, __version__)
+        self.assertEqual(release_renderer.render(ROOT, check=True), [])
         self.assertEqual(release_readiness.render_release_readiness(ROOT)["status"], "pass")
 
     def test_removing_exact_candidate_qualification_or_moving_tag_first_blocks(self):

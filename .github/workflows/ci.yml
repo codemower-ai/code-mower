@@ -40,6 +40,10 @@ jobs:
         if: matrix.python-version == '3.12'
         run: python -m code_mower.docs_lifecycle --json
 
+      - name: Current release documentation
+        if: matrix.python-version == '3.12'
+        run: python scripts/render_release.py --check
+
       - name: Unit tests
         run: python -m unittest discover -s tests
 
@@ -110,12 +114,12 @@ jobs:
       - name: Build a pre-merge rehearsal pair
         # No --release-pr: these bytes are explicitly ineligible for publication.
         run: |
-          python -m pip install build twine
+          python -m pip install build twine PyYAML packaging
           python scripts/release_candidate.py build --source "$GITHUB_WORKSPACE" \
             --source-sha "$SOURCE_SHA" --dist "$RUNNER_TEMP/rehearsal-dist"
       - name: Rehearse the exact installed wheel offline
         run: |
-          python scripts/rehearse_v151.py --dist "$RUNNER_TEMP/rehearsal-dist" \
+          python scripts/rehearse_release.py --dist "$RUNNER_TEMP/rehearsal-dist" \
             --source-sha "$SOURCE_SHA" --work-dir "$RUNNER_TEMP/rehearsal"
       - name: Upload sanitized pre-merge evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
