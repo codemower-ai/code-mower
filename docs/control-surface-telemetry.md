@@ -57,6 +57,15 @@ exact closed object:
 Every field must match, and unknown fields fail closed. A missing capability,
 version mismatch, digest mismatch, or `accepting: false` leaves operation local
 only. Client rollback stops new emission without rewriting accepted rows.
+The client reads this object from
+`GET /api/health` at `capabilities.control_surface_session_summary`; the cloud
+doctor exposes an accepted exact match in its service-check detail.
+
+After acceptance, the producer emits the first observation and then only a
+meaningful lifecycle, operation-count, owner-action, or pull-request change.
+Timestamp-only changes and changing elapsed time or usage on a nonterminal
+session do not create another event. Terminal elapsed-time or usage changes
+remain meaningful reconciliation evidence.
 
 The hosted service must vendor the five packaged resources byte-for-byte,
 scope repository identity through authenticated tenant policy, and implement
@@ -69,4 +78,3 @@ The fixture manifest hashes exact UTF-8 file bytes. It does not hash itself;
 the hosted capability advertises the SHA-256 of the manifest bytes separately.
 After qualification, changing the schema or any fixture requires a new schema
 or manifest version. Do not refresh hashes in place to accept changed meaning.
-

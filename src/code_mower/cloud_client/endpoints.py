@@ -8,6 +8,8 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from code_mower.control_surface_summary import capability_from_health
+
 
 DEFAULT_HEALTH_PATH = "/api/health"
 DEFAULT_DASHBOARD_PATH = "/dashboard"
@@ -100,6 +102,9 @@ def probe_cloud_service(endpoint: str, *, timeout: float) -> dict[str, Any]:
         for key in ("app", "supabaseConfigured"):
             if key in parsed and isinstance(parsed[key], str | bool | int | float):
                 detail[key] = parsed[key]
+        summary_capability = capability_from_health(parsed)
+        if summary_capability is not None:
+            detail["control_surface_session_summary"] = summary_capability
         return {
             "name": "service",
             "status": "pass",

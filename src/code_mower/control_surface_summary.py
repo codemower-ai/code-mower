@@ -311,6 +311,18 @@ def capability_accepts_summary(value: object) -> bool:
     )
 
 
+def capability_from_health(value: object) -> dict[str, Any] | None:
+    """Read only the exact capability from the hosted health response."""
+
+    if not isinstance(value, Mapping):
+        return None
+    capabilities = value.get("capabilities")
+    if not isinstance(capabilities, Mapping):
+        return None
+    candidate = capabilities.get(EVENT_TYPE)
+    return dict(candidate) if capability_accepts_summary(candidate) else None
+
+
 def opaque_session(logical_session: str) -> str:
     """Derive a stable unlinkable cloud key, never reuse a Slack/provider id."""
 
@@ -426,6 +438,60 @@ def gated_control_surface_summary(
     if not capability_accepts_summary(capability):
         return None
     return build_control_surface_summary(**summary)
+
+
+def _transition_identity(value: Mapping[str, Any]) -> tuple[Any, ...]:
+    dimensions = value["dimensions"]
+    metrics = value["metrics"]
+    return (
+        value["repo_slug"],
+        value["provider"],
+        *(
+            dimensions.get(key)
+            for key in (
+                "session",
+                "state",
+                "outcome",
+                "owner_action",
+                "pr_number",
+                "head_sha",
+                "pr_state",
+            )
+        ),
+        *(
+            metrics.get(f"{key}_count")
+            for key in ("dispatch", "message", "cancel", "collect")
+        ),
+        (
+            metrics.get("elapsed_seconds")
+            if dimensions["state"] in {"complete", "failed", "terminated", "archived"}
+            else None
+        ),
+        (
+            metrics.get("usage_acu")
+            if dimensions["state"] in {"complete", "failed", "terminated", "archived"}
+            else None
+        ),
+    )
+
+
+def gated_control_surface_transition(
+    capability: object,
+    previous: Mapping[str, Any] | None = None,
+    **summary: Any,
+) -> dict[str, Any] | None:
+    """Emit only a meaningful lifecycle/count/PR change after capability acceptance."""
+
+    current = gated_control_surface_summary(capability, **summary)
+    if current is None:
+        return None
+    if previous is None:
+        return current
+    try:
+        validate_control_surface_summary(previous)
+    except ValueError:
+        return current
+    return None if _transition_identity(previous) == _transition_identity(current) else current
 
 
 def slack_board_run(

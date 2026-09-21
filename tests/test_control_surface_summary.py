@@ -5,11 +5,13 @@ import importlib.resources
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
 from code_mower.cloud_client.errors import CloudBundleError
 from code_mower.cloud_client.events import validate_cloud_event
+from code_mower.cloud_client.endpoints import probe_cloud_service
 from code_mower.board_local_observation import WorkBinding
 from code_mower.control_surface_summary import (
     CAPABILITY_SCHEMA,
@@ -18,8 +20,10 @@ from code_mower.control_surface_summary import (
     SUMMARY_SCHEMA,
     build_control_surface_summary,
     capability_accepts_summary,
+    capability_from_health,
     fixture_manifest_digest,
     gated_control_surface_summary,
+    gated_control_surface_transition,
     opaque_session,
     slack_board_run,
     validate_control_surface_summary,
@@ -139,6 +143,9 @@ def test_capability_gate_requires_exact_installed_contract_identity() -> None:
     }
 
     assert capability_accepts_summary(capability)
+    assert capability_from_health(
+        {"capabilities": {EVENT_TYPE: capability}}
+    ) == capability
     for changed in (
         {**capability, "accepting": False},
         {**capability, "capability_version": 2},
@@ -147,6 +154,7 @@ def test_capability_gate_requires_exact_installed_contract_identity() -> None:
         None,
     ):
         assert not capability_accepts_summary(changed)
+        assert capability_from_health({"capabilities": {EVENT_TYPE: changed}}) is None
 
 
 def test_summary_builder_is_retry_stable_and_capability_gated() -> None:
@@ -184,6 +192,62 @@ def test_summary_builder_is_retry_stable_and_capability_gated() -> None:
         "accepting": True,
     }
     assert gated_control_surface_summary(capability, **values) == first
+
+    later = {**values, "observed_at": datetime(2026, 9, 21, 7, 1, tzinfo=UTC)}
+    assert gated_control_surface_transition(capability, first, **later) is None
+    changed = {
+        **later,
+        "lifecycle": {
+            **lifecycle,
+            "counts": {**lifecycle["counts"], "message": 2},
+        },
+    }
+    assert gated_control_surface_transition(capability, first, **changed) is not None
+    assert gated_control_surface_transition(capability, {"invalid": True}, **later) is not None
+
+
+def test_health_probe_exposes_only_the_exact_summary_capability() -> None:
+    capability = {
+        "schema": CAPABILITY_SCHEMA,
+        "summary_schema": SUMMARY_SCHEMA,
+        "capability_version": CAPABILITY_VERSION,
+        "fixture_manifest_sha256": fixture_manifest_digest(),
+        "accepting": True,
+    }
+
+    class FakeResponse:
+        def __init__(self, body: dict[str, object]) -> None:
+            self.body = body
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(self.body).encode()
+
+        def getcode(self) -> int:
+            return 200
+
+    accepted = {"capabilities": {EVENT_TYPE: capability}}
+    with mock.patch(
+        "urllib.request.urlopen", return_value=FakeResponse(accepted)
+    ):
+        check = probe_cloud_service("https://codemower.com/api/ingest", timeout=1)
+    assert check["detail"][EVENT_TYPE] == capability
+
+    mismatched = {
+        "capabilities": {
+            EVENT_TYPE: {**capability, "fixture_manifest_sha256": "0" * 64}
+        }
+    }
+    with mock.patch(
+        "urllib.request.urlopen", return_value=FakeResponse(mismatched)
+    ):
+        check = probe_cloud_service("https://codemower.com/api/ingest", timeout=1)
+    assert EVENT_TYPE not in check["detail"]
 
 
 def test_slack_lifecycle_uses_existing_local_board_adapter() -> None:
