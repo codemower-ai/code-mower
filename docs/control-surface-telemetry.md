@@ -26,7 +26,9 @@ available elapsed-time or Devin ACU measurements. The producer hashes its
 local logical session into a 32-character key before building the event. It
 never forwards a Slack identity or provider session reference.
 
-The closed validator rejects unknown root, dimension, and metric fields. Task
+The closed validator rejects unknown root, dimension, metric, and tool
+provenance fields. Tool provenance is limited to the fixed Code Mower reporter
+identity, a bounded package version, and a coarse local/CI runtime category. Task
 text, messages, answers, prompts, response URLs, Slack identities, source,
 diffs, transcripts, tokens, paths, context or graph data, provider references,
 and raw output cannot enter this event.

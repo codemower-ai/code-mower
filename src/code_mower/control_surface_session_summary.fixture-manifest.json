@@ -4,10 +4,10 @@
   "encoding": "utf-8",
   "files": [
     {
-      "bytes": 16933,
+      "bytes": 16945,
       "path": "control_surface_session_summary.accepted.json",
       "role": "accepted",
-      "sha256": "f6629a2561068fd1ca495cc7e028bc527840fb6ed13ef4f182593ca2a4b0ab38"
+      "sha256": "62fa33e2df67106096baf0e017a85f8eaeb47a7ccbc0396425b6a3a937e45735"
     },
     {
       "bytes": 1869,
@@ -16,16 +16,16 @@
       "sha256": "01c8e9bb26f60fb8163a69801070ab6eabeadf20c271a41455634063966c7a21"
     },
     {
-      "bytes": 27228,
+      "bytes": 29149,
       "path": "control_surface_session_summary.rejected.json",
       "role": "rejected",
-      "sha256": "0a3f0293bab4b45a08d6f6a2559b0a3e5cafd3c457dde4297b896af10ddbb6fe"
+      "sha256": "9c40cf77d056ae1665bed3366cd7297739fc27ff3b4533ee89493b0c684825bc"
     },
     {
-      "bytes": 6001,
+      "bytes": 7583,
       "path": "control_surface_session_summary.schema.json",
       "role": "schema",
-      "sha256": "88823fc7fd523411b5abeb3a6c38ba741672f99d16c6db7e133b274d6de7c2c2"
+      "sha256": "a3b75f6f229a709ad0c225d217436e025856dee948b40120d3d2f92109c395fd"
     }
   ],
   "schema": "code_mower.controlSurfaceSessionFixtureManifest.v1"

@@ -453,7 +453,7 @@
           "control_surface": "slack",
           "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "outcome": "unknown",
-          "owner_action": "none",
+          "owner_action": "inspect_provider",
           "pr_number": "921",
           "pr_state": "open",
           "privacy_classification": "metadata_only",

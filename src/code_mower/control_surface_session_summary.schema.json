@@ -231,6 +231,73 @@
       "const": ""
     },
     "tool": {
+      "additionalProperties": false,
+      "properties": {
+        "integration": {
+          "const": "code-mower slack lifecycle"
+        },
+        "lens": {
+          "const": ""
+        },
+        "model": {
+          "const": ""
+        },
+        "model_source": {
+          "const": "not_applicable"
+        },
+        "model_version_raw": {
+          "const": ""
+        },
+        "prompt_pack_version": {
+          "const": ""
+        },
+        "provider": {
+          "const": "code-mower"
+        },
+        "role": {
+          "const": "reporter"
+        },
+        "runtime_environment": {
+          "enum": [
+            "ci",
+            "github-actions",
+            "local"
+          ]
+        },
+        "schema": {
+          "const": "code_mower.toolProvenance.v1"
+        },
+        "source": {
+          "const": "code-mower slack lifecycle"
+        },
+        "tool_name": {
+          "const": "code-mower"
+        },
+        "tool_version": {
+          "maxLength": 64,
+          "pattern": "^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$",
+          "type": "string"
+        },
+        "version_source": {
+          "const": "package_version"
+        }
+      },
+      "required": [
+        "integration",
+        "lens",
+        "model",
+        "model_source",
+        "model_version_raw",
+        "prompt_pack_version",
+        "provider",
+        "role",
+        "runtime_environment",
+        "schema",
+        "source",
+        "tool_name",
+        "tool_version",
+        "version_source"
+      ],
       "type": "object"
     }
   },
@@ -255,7 +322,7 @@
   "x-code-mower-invariants": [
     "status equals dimensions.state",
     "complete=>succeeded, failed=>failed, terminated=>cancelled, every other state=>unknown",
-    "owner_action is derived from the validated local lifecycle reason",
+    "owner_action is derived from the validated local lifecycle reason; archived may require inspect_provider when result is not ready",
     "head_sha and pr_state require pr_number",
     "usage_acu is allowed only for devin and only when already observed"
   ]

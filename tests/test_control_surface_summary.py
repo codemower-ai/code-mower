@@ -63,7 +63,7 @@ class ControlSurfaceSummaryTests(TestCase):
     def test_all_canonical_rejected_events_fail_closed(self) -> None:
         rows = _fixture("rejected")["events"]
 
-        assert len(rows) == 16
+        assert len(rows) == 17
         for row in rows:
             with self.assertRaises(CloudBundleError):
                 validate_control_surface_summary(row["event"])
@@ -203,6 +203,43 @@ class ControlSurfaceSummaryTests(TestCase):
         }
         assert gated_control_surface_transition(capability, first, **changed) is not None
         assert gated_control_surface_transition(capability, {"invalid": True}, **later) is not None
+
+
+    def test_archived_result_not_ready_is_a_valid_provider_owner_action(self) -> None:
+        lifecycle = {
+            "schema": "code_mower.remote_session.v1",
+            "state": "archived",
+            "reason": "result_not_ready",
+            "next_action": "inspect_provider",
+            "counts": {"dispatch": 1, "message": 0, "cancel": 0, "collect": 0},
+        }
+
+        event = build_control_surface_summary(
+            logical_session="archived-session",
+            repo_slug="example/project",
+            provider="devin",
+            lifecycle=lifecycle,
+            observed_at=datetime(2026, 9, 21, 7, 0, tzinfo=UTC),
+        )
+
+        assert event["dimensions"]["state"] == "archived"
+        assert event["dimensions"]["owner_action"] == "inspect_provider"
+        validate_control_surface_summary(event)
+        assert validate_cloud_event(event) == event
+
+
+    def test_tool_provenance_is_closed_and_rejects_forbidden_nested_content(self) -> None:
+        event = _fixture("accepted")["events"][0]["event"]
+        for tool in (
+            {**event["tool"], "message": "private Slack message"},
+            {**event["tool"], "details": {"prompt": "private prompt"}},
+            {**event["tool"], "runtime_environment": "developer-laptop"},
+        ):
+            changed = {**event, "tool": tool}
+            with self.assertRaises(CloudBundleError):
+                validate_control_surface_summary(changed)
+            with self.assertRaises(CloudBundleError):
+                validate_cloud_event(changed)
 
 
     def test_health_probe_exposes_only_the_exact_summary_capability(self) -> None:

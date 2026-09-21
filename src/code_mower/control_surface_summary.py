@@ -107,12 +107,46 @@ OUTCOME_BY_STATE = {
     "terminated": "cancelled",
 }
 OWNER_ACTIONS_BY_STATE = {
+    "archived": frozenset({"none", "inspect_provider"}),
     "waiting_for_user": frozenset({"answer_question"}),
     "waiting_for_approval": frozenset({"respond_to_approval"}),
     "uncertain": frozenset({"inspect_provider"}),
     "failed": frozenset({"inspect_failure"}),
     "suspended": frozenset({"inspect_failure"}),
 }
+TOOL_FIELDS = frozenset(
+    {
+        "schema",
+        "role",
+        "tool_name",
+        "tool_version",
+        "provider",
+        "model",
+        "model_version_raw",
+        "model_source",
+        "version_source",
+        "integration",
+        "lens",
+        "runtime_environment",
+        "prompt_pack_version",
+        "source",
+    }
+)
+TOOL_CONSTANTS = {
+    "schema": "code_mower.toolProvenance.v1",
+    "role": "reporter",
+    "tool_name": "code-mower",
+    "provider": "code-mower",
+    "model": "",
+    "model_version_raw": "",
+    "model_source": "not_applicable",
+    "version_source": "package_version",
+    "integration": SOURCE,
+    "lens": "",
+    "prompt_pack_version": "",
+    "source": SOURCE,
+}
+TOOL_RUNTIME_ENVIRONMENTS = frozenset({"local", "ci", "github-actions"})
 PROVIDERS = frozenset(
     {
         "antigravity",
@@ -135,6 +169,7 @@ _REPO_SLUG = re.compile(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}")
 _SESSION = re.compile(r"[0-9a-f]{32}")
 _HEAD_SHA = re.compile(r"[0-9a-f]{40}")
 _PR_NUMBER = re.compile(r"[1-9][0-9]{0,9}")
+_TOOL_VERSION = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,63}")
 _CAPABILITY_FIELDS = frozenset(
     {
         "schema",
@@ -195,6 +230,23 @@ def _optional_metric(value: object, field: str) -> None:
         raise _error(f"metrics.{field} must be a finite non-negative number")
 
 
+def _validate_tool(value: object) -> None:
+    """Validate the closed, metadata-only Code Mower provenance object."""
+
+    if not isinstance(value, Mapping):
+        raise _error("tool must be an object")
+    _closed(value, TOOL_FIELDS, "tool")
+    if any(not isinstance(item, str) for item in value.values()):
+        raise _error("tool fields must be strings")
+    for field, expected in TOOL_CONSTANTS.items():
+        if value.get(field) != expected:
+            raise _error(f"tool.{field} does not match the v1 producer contract")
+    if value.get("runtime_environment") not in TOOL_RUNTIME_ENVIRONMENTS:
+        raise _error("tool.runtime_environment is not a supported coarse category")
+    if _TOOL_VERSION.fullmatch(value.get("tool_version", "")) is None:
+        raise _error("tool.tool_version must be a bounded package version")
+
+
 def validate_control_surface_summary(value: Mapping[str, Any]) -> None:
     """Validate the new event's complete closed shape and cross-field invariants."""
 
@@ -217,6 +269,7 @@ def validate_control_surface_summary(value: Mapping[str, Any]) -> None:
         raise _error("tenant identity must come from authenticated ingest")
     if value.get("source") != SOURCE or value.get("lens") != "":
         raise _error("producer provenance does not match the v1 contract")
+    _validate_tool(value.get("tool"))
     provider = value.get("provider")
     if not isinstance(provider, str) or (
         provider not in PROVIDERS and _CUSTOM_PROVIDER.fullmatch(provider) is None
