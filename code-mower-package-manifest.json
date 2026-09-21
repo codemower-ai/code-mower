@@ -189,6 +189,11 @@
     },
     {
       "kind": "doc",
+      "source": "docs/operator-contract-v1.md",
+      "target": "docs/operator-contract-v1.md"
+    },
+    {
+      "kind": "doc",
       "source": "docs/oss-v1-checklist.md",
       "target": "docs/oss-v1-checklist.md"
     },
@@ -1456,6 +1461,26 @@
       "kind": "core",
       "source": "src/code_mower/operational_evidence.py",
       "target": "src/code_mower/operational_evidence.py"
+    },
+    {
+      "kind": "template",
+      "source": "src/code_mower/operator_contract_v1.fixtures.json",
+      "target": "src/code_mower/operator_contract_v1.fixtures.json"
+    },
+    {
+      "kind": "core",
+      "source": "src/code_mower/operator_contract_v1.py",
+      "target": "src/code_mower/operator_contract_v1.py"
+    },
+    {
+      "kind": "schema",
+      "source": "src/code_mower/operator_policy_v1.schema.json",
+      "target": "src/code_mower/operator_policy_v1.schema.json"
+    },
+    {
+      "kind": "schema",
+      "source": "src/code_mower/operator_state_v1.schema.json",
+      "target": "src/code_mower/operator_state_v1.schema.json"
     },
     {
       "kind": "core",

@@ -54,6 +54,7 @@ where = ["src"]
     "docs/v152-release-notes.md",
     "docs/v152-qualification.md",
     "docs/v152-release-runbook.md",
+    "docs/operator-contract-v1.md",
     "docs/slack-setup.md",
     "docs/graphify-setup.md",
 ]

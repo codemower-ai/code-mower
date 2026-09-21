@@ -27,6 +27,7 @@ historical release evidence and are not current operating guidance.
 | Install Rehearsal | [First-User Install Rehearsal](first-user-install-rehearsal.md) |
 | Installation | [Install And Bootstrap](install.md) |
 | Jira | [Jira Cloud Setup](jira-cloud-setup.md) |
+| Operator Contract | [Operator contract v1](operator-contract-v1.md) |
 | Package Publication | [PyPI Release Runbook](pypi-release.md) |
 | Provider Selection | [Code Mower Provider Matrix](provider-matrix.md) |
 | Quickstart | [Code Mower Quickstart](quickstart.md) |

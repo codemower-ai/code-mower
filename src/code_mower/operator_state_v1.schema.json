@@ -1,0 +1,2256 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "code_mower.operator_state.v1",
+  "title": "Code Mower Operator v1 durable state and metadata projection contract",
+  "description": "Closed records for work lifecycle, singleton leases, durable mutation intent, and metadata-only projection.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/work_item"
+    },
+    {
+      "$ref": "#/$defs/lease"
+    },
+    {
+      "$ref": "#/$defs/action_intent"
+    },
+    {
+      "$ref": "#/$defs/projection"
+    }
+  ],
+  "$defs": {
+    "opaque_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "maxLength": 128
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "maxLength": 64
+    },
+    "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "maxLength": 40
+    },
+    "timestamp": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "lifecycle_state": {
+      "enum": [
+        "observed",
+        "admitted",
+        "claimed",
+        "executing",
+        "waiting_provider",
+        "reconciling",
+        "awaiting_review",
+        "awaiting_owner",
+        "completed",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "transition": {
+      "enum": [
+        "observed:admitted",
+        "observed:cancelled",
+        "admitted:claimed",
+        "admitted:awaiting_owner",
+        "admitted:cancelled",
+        "claimed:executing",
+        "claimed:awaiting_owner",
+        "claimed:cancelled",
+        "executing:waiting_provider",
+        "executing:reconciling",
+        "executing:awaiting_review",
+        "executing:awaiting_owner",
+        "executing:failed",
+        "executing:cancelled",
+        "waiting_provider:executing",
+        "waiting_provider:reconciling",
+        "waiting_provider:awaiting_review",
+        "waiting_provider:awaiting_owner",
+        "waiting_provider:failed",
+        "waiting_provider:cancelled",
+        "reconciling:executing",
+        "reconciling:awaiting_review",
+        "reconciling:awaiting_owner",
+        "reconciling:failed",
+        "reconciling:cancelled",
+        "awaiting_review:executing",
+        "awaiting_review:awaiting_owner",
+        "awaiting_review:completed",
+        "awaiting_review:failed",
+        "awaiting_review:cancelled",
+        "awaiting_owner:admitted",
+        "awaiting_owner:executing",
+        "awaiting_owner:cancelled"
+      ]
+    },
+    "stop_reason": {
+      "enum": [
+        "none",
+        "approval_required",
+        "budget_exhausted",
+        "capability_unqualified",
+        "credentials_unavailable",
+        "policy_denied",
+        "reconciliation_inconclusive",
+        "repository_not_allowed",
+        "stale_head",
+        "stale_lease",
+        "user_input_required",
+        "work_completed",
+        "work_failed",
+        "owner_cancelled"
+      ]
+    },
+    "work_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "tenant_id",
+        "repository_id",
+        "work_id",
+        "generation",
+        "state",
+        "terminal",
+        "last_transition",
+        "reason",
+        "owner_escalation_count",
+        "elapsed_seconds",
+        "spend_usd",
+        "owner_escalation_key",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.operatorWorkItem.v1"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/opaque_id"
+        },
+        "repository_id": {
+          "$ref": "#/$defs/opaque_id"
+        },
+        "work_id": {
+          "$ref": "#/$defs/opaque_id"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "state": {
+          "$ref": "#/$defs/lifecycle_state"
+        },
+        "terminal": {
+          "type": "boolean"
+        },
+        "last_transition": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/transition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/stop_reason"
+        },
+        "owner_escalation_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "owner_escalation_key": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "elapsed_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 604800
+        },
+        "spend_usd": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,5})\\.[0-9]{2}$",
+          "maxLength": 9
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "completed",
+                  "failed",
+                  "cancelled"
+                ]
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "terminal": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "observed",
+                  "admitted",
+                  "claimed",
+                  "executing",
+                  "waiting_provider",
+                  "reconciling",
+                  "awaiting_review",
+                  "awaiting_owner"
+                ]
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "terminal": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "awaiting_owner"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "enum": [
+                  "approval_required",
+                  "budget_exhausted",
+                  "capability_unqualified",
+                  "credentials_unavailable",
+                  "policy_denied",
+                  "reconciliation_inconclusive",
+                  "repository_not_allowed",
+                  "stale_head",
+                  "stale_lease",
+                  "user_input_required"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "observed"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "last_transition": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "admitted"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "last_transition": {
+                "enum": [
+                  "observed:admitted",
+                  "awaiting_owner:admitted"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "claimed"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "last_transition": {
+                "const": "admitted:claimed"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "executing"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "last_transition": {
+                "enum": [
+                  "claimed:executing",
+                  "waiting_provider:executing",
+                  "reconciling:executing",
+                  "awaiting_review:executing",
+                  "awaiting_owner:executing"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "waiting_provider"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "last_transition": {
+                "const": "executing:waiting_provider"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "reconciling"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "last_transition": {
+                "enum": [
+                  "executing:reconciling",
+                  "waiting_provider:reconciling"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "awaiting_review"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "last_transition": {
+                "enum": [
+                  "executing:awaiting_review",
+                  "waiting_provider:awaiting_review",
+                  "reconciling:awaiting_review"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "awaiting_owner"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "last_transition": {
+                "enum": [
+                  "admitted:awaiting_owner",
+                  "claimed:awaiting_owner",
+                  "executing:awaiting_owner",
+                  "waiting_provider:awaiting_owner",
+                  "reconciling:awaiting_owner",
+                  "awaiting_review:awaiting_owner"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "completed"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "last_transition": {
+                "const": "awaiting_review:completed"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "failed"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "last_transition": {
+                "enum": [
+                  "executing:failed",
+                  "waiting_provider:failed",
+                  "reconciling:failed",
+                  "awaiting_review:failed"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "cancelled"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "last_transition": {
+                "enum": [
+                  "observed:cancelled",
+                  "admitted:cancelled",
+                  "claimed:cancelled",
+                  "executing:cancelled",
+                  "waiting_provider:cancelled",
+                  "reconciling:cancelled",
+                  "awaiting_review:cancelled",
+                  "awaiting_owner:cancelled"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "owner_escalation_count": {
+                "minimum": 1
+              }
+            },
+            "required": [
+              "owner_escalation_count"
+            ]
+          },
+          "then": {
+            "properties": {
+              "owner_escalation_key": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "owner_escalation_count": {
+                "const": 0
+              }
+            },
+            "required": [
+              "owner_escalation_count"
+            ]
+          },
+          "then": {
+            "properties": {
+              "owner_escalation_key": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "observed"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "none"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "admitted"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "none"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "claimed"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "none"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "executing"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "none"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "waiting_provider"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "none"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "reconciling"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "none"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "awaiting_review"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "none"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "completed"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "work_completed"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "failed"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "work_failed"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "cancelled"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "owner_cancelled"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "lease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "tenant_id",
+        "repository_id",
+        "lease_id",
+        "holder_id",
+        "epoch",
+        "fence_token",
+        "state",
+        "acquired_at",
+        "renew_by",
+        "expires_at"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.operatorLease.v1"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/opaque_id"
+        },
+        "repository_id": {
+          "$ref": "#/$defs/opaque_id"
+        },
+        "lease_id": {
+          "$ref": "#/$defs/opaque_id"
+        },
+        "holder_id": {
+          "$ref": "#/$defs/opaque_id"
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "fence_token": {
+          "$ref": "#/$defs/digest"
+        },
+        "state": {
+          "enum": [
+            "active",
+            "expired",
+            "released"
+          ]
+        },
+        "acquired_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "renew_by": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "operation": {
+      "enum": [
+        "create_provider_session",
+        "message_provider_session",
+        "cancel_provider_session",
+        "create_branch",
+        "push_commit",
+        "open_or_update_pull_request",
+        "apply_workflow_label",
+        "request_review",
+        "post_bounded_status"
+      ]
+    },
+    "action_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt_count",
+        "reconciliation_count",
+        "elapsed_seconds",
+        "spend_usd"
+      ],
+      "properties": {
+        "attempt_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "reconciliation_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "elapsed_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 604800
+        },
+        "spend_usd": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,5})\\.[0-9]{2}$",
+          "maxLength": 9
+        }
+      }
+    },
+    "action_intent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "tenant_id",
+        "repository_id",
+        "work_id",
+        "work_generation",
+        "action_id",
+        "operation",
+        "idempotency_key",
+        "request_digest",
+        "lease_id",
+        "lease_epoch",
+        "fence_token",
+        "fence_status",
+        "reconciliation_authority",
+        "target_head_sha",
+        "head_status",
+        "state",
+        "certainty",
+        "reconciliation",
+        "next_action",
+        "remote_reference",
+        "budget",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.operatorActionIntent.v1"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/opaque_id"
+        },
+        "repository_id": {
+          "$ref": "#/$defs/opaque_id"
+        },
+        "work_id": {
+          "$ref": "#/$defs/opaque_id"
+        },
+        "action_id": {
+          "$ref": "#/$defs/opaque_id"
+        },
+        "operation": {
+          "$ref": "#/$defs/operation"
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/digest"
+        },
+        "request_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "lease_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "fence_token": {
+          "$ref": "#/$defs/digest"
+        },
+        "fence_status": {
+          "enum": [
+            "current",
+            "stale"
+          ]
+        },
+        "target_head_sha": {
+          "$ref": "#/$defs/head_sha"
+        },
+        "head_status": {
+          "enum": [
+            "current",
+            "stale"
+          ]
+        },
+        "state": {
+          "enum": [
+            "prepared",
+            "dispatched",
+            "succeeded",
+            "failed",
+            "uncertain",
+            "reconciling",
+            "abandoned"
+          ]
+        },
+        "certainty": {
+          "enum": [
+            "not_attempted",
+            "confirmed_success",
+            "confirmed_failure",
+            "unknown",
+            "not_applicable"
+          ]
+        },
+        "reconciliation": {
+          "enum": [
+            "not_required",
+            "required",
+            "in_progress",
+            "matched_success",
+            "matched_failure",
+            "needs_owner"
+          ]
+        },
+        "next_action": {
+          "enum": [
+            "dispatch",
+            "retry",
+            "reconcile",
+            "owner_action",
+            "abandon",
+            "none"
+          ]
+        },
+        "remote_reference": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/opaque_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "budget": {
+          "$ref": "#/$defs/action_budget"
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "work_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "reconciliation_authority": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/reconciliation_authority"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lease_id": {
+          "$ref": "#/$defs/opaque_id"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "certainty": {
+                "const": "not_attempted"
+              }
+            },
+            "required": [
+              "certainty"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "const": "prepared"
+              },
+              "reconciliation": {
+                "const": "not_required"
+              },
+              "next_action": {
+                "const": "dispatch"
+              },
+              "remote_reference": {
+                "type": "null"
+              },
+              "reconciliation_authority": {
+                "type": "null"
+              },
+              "fence_status": {
+                "const": "current"
+              },
+              "head_status": {
+                "const": "current"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "certainty": {
+                "const": "unknown"
+              }
+            },
+            "required": [
+              "certainty"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "dispatched",
+                  "uncertain",
+                  "reconciling"
+                ]
+              },
+              "reconciliation": {
+                "enum": [
+                  "required",
+                  "in_progress",
+                  "needs_owner"
+                ]
+              },
+              "next_action": {
+                "enum": [
+                  "reconcile",
+                  "owner_action"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "certainty": {
+                "const": "confirmed_success"
+              }
+            },
+            "required": [
+              "certainty"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "const": "succeeded"
+              },
+              "reconciliation": {
+                "enum": [
+                  "not_required",
+                  "matched_success"
+                ]
+              },
+              "next_action": {
+                "const": "none"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "certainty": {
+                "const": "confirmed_failure"
+              }
+            },
+            "required": [
+              "certainty"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "const": "failed"
+              },
+              "reconciliation": {
+                "enum": [
+                  "not_required",
+                  "matched_failure"
+                ]
+              },
+              "next_action": {
+                "enum": [
+                  "retry",
+                  "owner_action",
+                  "none"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "certainty": {
+                "const": "not_applicable"
+              }
+            },
+            "required": [
+              "certainty"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "const": "abandoned"
+              },
+              "reconciliation": {
+                "const": "not_required"
+              },
+              "next_action": {
+                "const": "abandon"
+              },
+              "reconciliation_authority": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "allOf": [
+              {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "fence_status": {
+                        "const": "stale"
+                      }
+                    },
+                    "required": [
+                      "fence_status"
+                    ]
+                  },
+                  {
+                    "properties": {
+                      "head_status": {
+                        "const": "stale"
+                      }
+                    },
+                    "required": [
+                      "head_status"
+                    ]
+                  }
+                ]
+              },
+              {
+                "properties": {
+                  "certainty": {
+                    "const": "not_applicable"
+                  }
+                },
+                "required": [
+                  "certainty"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "const": "abandoned"
+              },
+              "next_action": {
+                "const": "abandon"
+              },
+              "reconciliation_authority": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "allOf": [
+              {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "fence_status": {
+                        "const": "stale"
+                      }
+                    },
+                    "required": [
+                      "fence_status"
+                    ]
+                  },
+                  {
+                    "properties": {
+                      "head_status": {
+                        "const": "stale"
+                      }
+                    },
+                    "required": [
+                      "head_status"
+                    ]
+                  }
+                ]
+              },
+              {
+                "properties": {
+                  "certainty": {
+                    "enum": [
+                      "unknown",
+                      "confirmed_success",
+                      "confirmed_failure"
+                    ]
+                  }
+                },
+                "required": [
+                  "certainty"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "reconciliation_authority": {
+                "$ref": "#/$defs/reconciliation_authority"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "projection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "event_type",
+        "observed_at",
+        "tenant_id",
+        "repository_id",
+        "work_id",
+        "action_id",
+        "provider_id",
+        "role",
+        "state",
+        "reason",
+        "attempt_count",
+        "elapsed_seconds",
+        "spend_usd"
+      ],
+      "properties": {
+        "schema": {
+          "const": "code_mower.operatorProjection.v1"
+        },
+        "event_type": {
+          "enum": [
+            "work_state",
+            "lease_state",
+            "action_state",
+            "owner_action",
+            "qualification_state"
+          ]
+        },
+        "observed_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/opaque_id"
+        },
+        "repository_id": {
+          "$ref": "#/$defs/opaque_id"
+        },
+        "work_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/opaque_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "action_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/opaque_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/opaque_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "role": {
+          "oneOf": [
+            {
+              "enum": [
+                "orchestrator",
+                "builder",
+                "reviewer",
+                "merge_authority"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "enum": [
+            "observed",
+            "admitted",
+            "claimed",
+            "executing",
+            "waiting_provider",
+            "reconciling",
+            "awaiting_review",
+            "awaiting_owner",
+            "completed",
+            "failed",
+            "cancelled",
+            "active",
+            "expired",
+            "released",
+            "prepared",
+            "dispatched",
+            "succeeded",
+            "uncertain",
+            "abandoned",
+            "qualified",
+            "pending",
+            "stale"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "none",
+            "approval_required",
+            "budget_exhausted",
+            "capability_unqualified",
+            "credentials_unavailable",
+            "policy_denied",
+            "reconciliation_inconclusive",
+            "repository_not_allowed",
+            "stale_head",
+            "stale_lease",
+            "user_input_required",
+            "work_completed",
+            "work_failed",
+            "owner_cancelled",
+            "lease_acquired",
+            "lease_renewed",
+            "lease_expired",
+            "lease_released",
+            "dispatch_prepared",
+            "dispatch_started",
+            "remote_success",
+            "remote_failure",
+            "remote_unknown",
+            "reconciliation_started",
+            "reconciled_success",
+            "reconciled_failure",
+            "evidence_current",
+            "evidence_missing",
+            "evidence_failed",
+            "evidence_stale",
+            "capability_missing",
+            "human_merge_required"
+          ]
+        },
+        "attempt_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "elapsed_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 604800
+        },
+        "spend_usd": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,5})\\.[0-9]{2}$",
+          "maxLength": 9
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "event_type": {
+              "const": "work_state"
+            },
+            "work_id": {
+              "$ref": "#/$defs/opaque_id"
+            },
+            "action_id": {
+              "type": "null"
+            },
+            "provider_id": {
+              "type": "null"
+            },
+            "role": {
+              "type": "null"
+            },
+            "state": {
+              "enum": [
+                "observed",
+                "admitted",
+                "claimed",
+                "executing",
+                "waiting_provider",
+                "reconciling",
+                "awaiting_review",
+                "awaiting_owner",
+                "completed",
+                "failed",
+                "cancelled"
+              ]
+            },
+            "reason": {
+              "enum": [
+                "none",
+                "approval_required",
+                "budget_exhausted",
+                "capability_unqualified",
+                "credentials_unavailable",
+                "policy_denied",
+                "reconciliation_inconclusive",
+                "repository_not_allowed",
+                "stale_head",
+                "stale_lease",
+                "user_input_required",
+                "work_completed",
+                "work_failed",
+                "owner_cancelled"
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "observed"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "none"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "admitted"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "none"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "claimed"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "none"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "executing"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "none"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "waiting_provider"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "none"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "reconciling"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "none"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "awaiting_review"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "none"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "awaiting_owner"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "enum": [
+                      "approval_required",
+                      "budget_exhausted",
+                      "capability_unqualified",
+                      "credentials_unavailable",
+                      "policy_denied",
+                      "reconciliation_inconclusive",
+                      "repository_not_allowed",
+                      "stale_head",
+                      "stale_lease",
+                      "user_input_required"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "completed"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "work_completed"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "failed"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "work_failed"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "cancelled"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "owner_cancelled"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "properties": {
+            "event_type": {
+              "const": "lease_state"
+            },
+            "work_id": {
+              "type": "null"
+            },
+            "action_id": {
+              "type": "null"
+            },
+            "provider_id": {
+              "type": "null"
+            },
+            "role": {
+              "type": "null"
+            },
+            "state": {
+              "enum": [
+                "active",
+                "expired",
+                "released"
+              ]
+            },
+            "reason": {
+              "enum": [
+                "lease_acquired",
+                "lease_renewed",
+                "lease_expired",
+                "lease_released"
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "active"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "enum": [
+                      "lease_acquired",
+                      "lease_renewed"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "expired"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "lease_expired"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "released"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "lease_released"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "properties": {
+            "event_type": {
+              "const": "action_state"
+            },
+            "work_id": {
+              "$ref": "#/$defs/opaque_id"
+            },
+            "action_id": {
+              "$ref": "#/$defs/opaque_id"
+            },
+            "state": {
+              "enum": [
+                "prepared",
+                "dispatched",
+                "succeeded",
+                "failed",
+                "uncertain",
+                "reconciling",
+                "abandoned"
+              ]
+            },
+            "reason": {
+              "enum": [
+                "dispatch_prepared",
+                "dispatch_started",
+                "remote_success",
+                "remote_failure",
+                "remote_unknown",
+                "reconciliation_started",
+                "reconciled_success",
+                "reconciled_failure",
+                "stale_head",
+                "stale_lease",
+                "owner_cancelled"
+              ]
+            },
+            "provider_id": {
+              "$ref": "#/$defs/opaque_id"
+            },
+            "role": {
+              "enum": [
+                "orchestrator",
+                "builder",
+                "reviewer",
+                "merge_authority"
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "prepared"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "dispatch_prepared"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "dispatched"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "dispatch_started"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "succeeded"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "enum": [
+                      "remote_success",
+                      "reconciled_success"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "failed"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "enum": [
+                      "remote_failure",
+                      "reconciled_failure"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "uncertain"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "remote_unknown"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "reconciling"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "reconciliation_started"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "abandoned"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "enum": [
+                      "stale_head",
+                      "stale_lease",
+                      "owner_cancelled"
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "properties": {
+            "event_type": {
+              "const": "owner_action"
+            },
+            "work_id": {
+              "$ref": "#/$defs/opaque_id"
+            },
+            "provider_id": {
+              "type": "null"
+            },
+            "role": {
+              "type": "null"
+            },
+            "state": {
+              "enum": [
+                "awaiting_owner",
+                "cancelled"
+              ]
+            },
+            "reason": {
+              "enum": [
+                "approval_required",
+                "budget_exhausted",
+                "capability_unqualified",
+                "credentials_unavailable",
+                "policy_denied",
+                "reconciliation_inconclusive",
+                "repository_not_allowed",
+                "stale_head",
+                "stale_lease",
+                "user_input_required",
+                "owner_cancelled"
+              ]
+            },
+            "action_id": {
+              "type": "null"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "awaiting_owner"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "enum": [
+                      "approval_required",
+                      "budget_exhausted",
+                      "capability_unqualified",
+                      "credentials_unavailable",
+                      "policy_denied",
+                      "reconciliation_inconclusive",
+                      "repository_not_allowed",
+                      "stale_head",
+                      "stale_lease",
+                      "user_input_required"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "cancelled"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "owner_cancelled"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "properties": {
+            "event_type": {
+              "const": "qualification_state"
+            },
+            "work_id": {
+              "type": "null"
+            },
+            "action_id": {
+              "type": "null"
+            },
+            "provider_id": {
+              "$ref": "#/$defs/opaque_id"
+            },
+            "role": {
+              "enum": [
+                "orchestrator",
+                "builder",
+                "reviewer",
+                "merge_authority"
+              ]
+            },
+            "state": {
+              "enum": [
+                "qualified",
+                "pending",
+                "failed",
+                "stale"
+              ]
+            },
+            "reason": {
+              "enum": [
+                "evidence_current",
+                "evidence_missing",
+                "evidence_failed",
+                "evidence_stale",
+                "capability_missing",
+                "human_merge_required"
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "qualified"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "evidence_current"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "pending"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "enum": [
+                      "evidence_missing",
+                      "human_merge_required"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "failed"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "enum": [
+                      "evidence_failed",
+                      "capability_missing"
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "stale"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "reason": {
+                    "const": "evidence_stale"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "reconciliation_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lease_epoch",
+        "fence_token",
+        "fence_status"
+      ],
+      "properties": {
+        "lease_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "fence_token": {
+          "$ref": "#/$defs/digest"
+        },
+        "fence_status": {
+          "const": "current"
+        }
+      }
+    }
+  }
+}
