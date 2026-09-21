@@ -11,6 +11,10 @@ The machine-readable contract consists of
 `operator_contract_v1.fixtures.json` in the `code_mower` package. Every object
 is closed: an unknown field is invalid. A consumer must select behavior from
 the record's versioned `schema` value and fail closed on an unknown version.
+`operator_contract_v1.py` supplies the normative semantic checks for time,
+generation, and recovery transitions that portable JSON Schema cannot express.
+Consumers validate the closed record first and then apply those checks; schema
+validation alone does not grant authority.
 
 The record versions are `code_mower.operatorPolicy.v1`,
 `code_mower.operatorQualification.v1`, `code_mower.operatorWorkItem.v1`,
@@ -60,9 +64,11 @@ The Operator stops in `awaiting_owner` for required approval, exhausted budget,
 missing or stale qualification, unavailable credentials, policy denial,
 inconclusive reconciliation, a repository outside the allowlist, a stale
 head, a stale lease, or required user input. Escalations use a durable
-deduplication key and the configured count limit. Exhausting that limit leaves
-the item stopped; it does not create a new escalation channel or enlarge a
-budget.
+`owner_escalation_key` and the configured count limit. Redelivery and restart
+reuse that key, so the same stop does not create another owner notification.
+Exhausting that limit leaves the item stopped; it does not create a new
+escalation channel or enlarge a budget. Policy and work records use the same
+stop-reason vocabulary, including `stale_head` and `stale_lease`.
 
 ## Singleton lease and fencing
 
@@ -72,13 +78,17 @@ acquisition or takeover increments `epoch` and produces a new `fence_token`.
 Renewal retains both. A holder stops starting work before `renew_by` if renewal
 does not succeed, and it has no authority after `expires_at`.
 
-Every mutation intent binds the lease epoch and fencing token. The durable
-store and each mutation adapter compare them with the current lease immediately
-before dispatch and before committing an observed result. A stale holder may
-record that its intent was abandoned, but cannot dispatch, retry, or overwrite
-the new holder's state. Takeover first increments the epoch, then recovers all
-nonterminal intents; it never creates a replacement intent merely because the
-previous process disappeared.
+Every mutation intent binds the work generation, dispatch lease epoch, and
+dispatch fencing token. The durable store and each mutation adapter compare
+the generation and fence with current durable state immediately before
+dispatch. A stale holder cannot dispatch, retry, or overwrite the new holder's
+state. A prepared, never-dispatched intent whose generation, fence, or target
+head is stale is abandoned. An already-dispatched unknown intent retains its
+immutable original dispatch fence and stays unknown. The new holder records a
+separate current `reconciliation_authority` and reconciles it without
+redispatch. Takeover first increments the epoch, then recovers all nonterminal
+intents; it never creates a replacement intent merely because the previous
+process disappeared.
 
 Lease time is an availability mechanism. Fencing is the correctness mechanism.
 Clock skew, delayed workers, and a process resuming after expiry must therefore
@@ -88,10 +98,12 @@ fail the fencing comparison even when they locally believe the lease is valid.
 
 Before any remote mutation, the Operator atomically persists a
 `code_mower.operatorActionIntent.v1` record. Its `action_id`, operation,
-request digest, idempotency key, exact target head, lease epoch, fence token,
-and current budget are immutable dispatch inputs. Re-delivery of the same
-idempotency key and request digest returns the recorded outcome. Reuse of the
-key with a different digest is a policy error.
+request digest, idempotency key, work generation, exact target head, dispatch
+lease epoch, dispatch fence token, and current budget are immutable dispatch
+inputs. Re-delivery of the same idempotency key and request digest returns the
+recorded outcome. Reuse of the key with a different digest is a policy error.
+A generation mismatch rejects dispatch, retry, and result commit rather than
+letting an intent from an earlier admission act on current work.
 
 An intent starts `prepared` with `not_attempted` certainty. The runtime may
 dispatch it only while the lease fence and target head are current and a
@@ -110,8 +122,10 @@ intent cannot be used to bypass uncertainty.
 
 Restart loads nonterminal intents before admitting new work. Duplicate
 delivery, restart, and lease takeover therefore converge on the saved intent.
-A stale target head or stale fence abandons the intent and requires fresh
-observation; it never silently retargets a mutation.
+A stale target head or fence abandons a prepared intent and requires fresh
+observation. When dispatch already happened and certainty is unknown, the
+current holder instead reconciles the original immutable target and fence;
+neither path silently retargets or repeats a mutation.
 
 ## Budgets and failure semantics
 
@@ -128,8 +142,8 @@ Failures have these required outcomes:
 | --- | --- | --- |
 | Process restart after dispatch | Load the intent and reconcile | Blind retry |
 | Duplicate delivery | Return the idempotent recorded result | Second mutation |
-| Lease takeover | Increment epoch and fence the old holder | Accept the old token |
-| Stale head | Abandon and re-observe | Mutate the stale head |
+| Lease takeover | Increment epoch; abandon prepared intents and reconcile dispatched unknown intents under separate current authority | Accept the old token or blindly retry |
+| Stale head | Abandon before dispatch; reconcile an already-dispatched unknown effect against its immutable target | Mutate or silently retarget the stale head |
 | Provider timeout | Record unknown and reconcile | Assume failure |
 | Partial success | Reconcile each remote effect | Repeat the mutation set |
 | Budget exhaustion | Stop and escalate within the remaining limit | Implicitly extend budget |
@@ -147,6 +161,13 @@ provider identifier is opaque data, never a switch statement. Eligibility
 requires a capability declaration, deterministic harness result, exact-head
 result, policy decision, and unexpired evidence. Missing, failed, stale, or
 incomplete evidence is denied.
+
+The schema binds each status to a matching decision, reason, and evidence
+shape. The normative `qualification_semantic_errors` check additionally
+requires `observed_at < expires_at`, rejects future or expired observations,
+applies the policy's maximum evidence age at an explicit durable-store `now`,
+and verifies that every required capability was declared. Callers use that
+shared check instead of defining their own clock or expiry ordering.
 
 Codex and Claude are the initial qualified targets represented by the accepted
 fixtures. Devin is represented as pending until equivalent evidence exists;
@@ -193,6 +214,9 @@ receive an adapter-level authorization decision. Logs and errors follow the
 same metadata-only boundary.
 
 The canonical accepted and rejected fixtures are executable examples of these
-rules. Dependent implementations must consume them without weakening a rejected
-case, and must add implementation-specific failure injection without changing
-the meaning of the v1 records.
+rules. Each recovery fixture contains schema-valid before, required-after, and
+forbidden-after record sequences; `recovery_transition_errors` verifies their
+counter, identity, fencing, and certainty invariants. Dependent implementations
+must consume them without weakening a rejected case, and must add
+implementation-specific failure injection without changing the meaning of the
+v1 records.

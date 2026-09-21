@@ -1428,6 +1428,11 @@
       "target": "src/code_mower/operator_contract_v1.fixtures.json"
     },
     {
+      "kind": "core",
+      "source": "src/code_mower/operator_contract_v1.py",
+      "target": "src/code_mower/operator_contract_v1.py"
+    },
+    {
       "kind": "schema",
       "source": "src/code_mower/operator_policy_v1.schema.json",
       "target": "src/code_mower/operator_policy_v1.schema.json"

@@ -341,6 +341,7 @@ PACKAGE_FILES = (
     ("src/code_mower/review_authority.py", "src/code_mower/review_authority.py", "core"),
     ("src/code_mower/provider_capabilities.py", "src/code_mower/provider_capabilities.py", "core"),
     ("src/code_mower/provider_capabilities.schema.json", "src/code_mower/provider_capabilities.schema.json", "schema"),
+    ("src/code_mower/operator_contract_v1.py", "src/code_mower/operator_contract_v1.py", "core"),
     ("src/code_mower/operator_policy_v1.schema.json", "src/code_mower/operator_policy_v1.schema.json", "schema"),
     ("src/code_mower/operator_state_v1.schema.json", "src/code_mower/operator_state_v1.schema.json", "schema"),
     ("src/code_mower/operator_contract_v1.fixtures.json", "src/code_mower/operator_contract_v1.fixtures.json", "template"),

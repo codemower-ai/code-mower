@@ -122,6 +122,7 @@
         "last_transition",
         "reason",
         "owner_escalation_count",
+        "owner_escalation_key",
         "created_at",
         "updated_at"
       ],
@@ -172,6 +173,16 @@
         },
         "updated_at": {
           "$ref": "#/$defs/timestamp"
+        },
+        "owner_escalation_key": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "allOf": [
@@ -501,6 +512,44 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "owner_escalation_count": {
+                "minimum": 1
+              }
+            },
+            "required": [
+              "owner_escalation_count"
+            ]
+          },
+          "then": {
+            "properties": {
+              "owner_escalation_key": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "owner_escalation_count": {
+                "const": 0
+              }
+            },
+            "required": [
+              "owner_escalation_count"
+            ]
+          },
+          "then": {
+            "properties": {
+              "owner_escalation_key": {
+                "type": "null"
+              }
+            }
+          }
         }
       ]
     },
@@ -615,6 +664,7 @@
         "tenant_id",
         "repository_id",
         "work_id",
+        "work_generation",
         "action_id",
         "operation",
         "idempotency_key",
@@ -622,6 +672,7 @@
         "lease_epoch",
         "fence_token",
         "fence_status",
+        "reconciliation_authority",
         "target_head_sha",
         "head_status",
         "state",
@@ -739,6 +790,21 @@
         },
         "updated_at": {
           "$ref": "#/$defs/timestamp"
+        },
+        "work_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "reconciliation_authority": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/reconciliation_authority"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "allOf": [
@@ -766,6 +832,15 @@
               },
               "remote_reference": {
                 "type": "null"
+              },
+              "reconciliation_authority": {
+                "type": "null"
+              },
+              "fence_status": {
+                "const": "current"
+              },
+              "head_status": {
+                "const": "current"
               }
             }
           }
@@ -887,31 +962,48 @@
               },
               "next_action": {
                 "const": "abandon"
+              },
+              "reconciliation_authority": {
+                "type": "null"
               }
             }
           }
         },
         {
           "if": {
-            "anyOf": [
+            "allOf": [
               {
-                "properties": {
-                  "fence_status": {
-                    "const": "stale"
+                "anyOf": [
+                  {
+                    "properties": {
+                      "fence_status": {
+                        "const": "stale"
+                      }
+                    },
+                    "required": [
+                      "fence_status"
+                    ]
+                  },
+                  {
+                    "properties": {
+                      "head_status": {
+                        "const": "stale"
+                      }
+                    },
+                    "required": [
+                      "head_status"
+                    ]
                   }
-                },
-                "required": [
-                  "fence_status"
                 ]
               },
               {
                 "properties": {
-                  "head_status": {
-                    "const": "stale"
+                  "certainty": {
+                    "const": "not_applicable"
                   }
                 },
                 "required": [
-                  "head_status"
+                  "certainty"
                 ]
               }
             ]
@@ -923,6 +1015,60 @@
               },
               "next_action": {
                 "const": "abandon"
+              },
+              "reconciliation_authority": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "allOf": [
+              {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "fence_status": {
+                        "const": "stale"
+                      }
+                    },
+                    "required": [
+                      "fence_status"
+                    ]
+                  },
+                  {
+                    "properties": {
+                      "head_status": {
+                        "const": "stale"
+                      }
+                    },
+                    "required": [
+                      "head_status"
+                    ]
+                  }
+                ]
+              },
+              {
+                "properties": {
+                  "certainty": {
+                    "enum": [
+                      "unknown",
+                      "confirmed_success",
+                      "confirmed_failure"
+                    ]
+                  }
+                },
+                "required": [
+                  "certainty"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "reconciliation_authority": {
+                "$ref": "#/$defs/reconciliation_authority"
               }
             }
           }
@@ -1091,6 +1237,28 @@
           "type": "string",
           "pattern": "^(0|[1-9][0-9]{0,5})\\.[0-9]{2}$",
           "maxLength": 9
+        }
+      }
+    },
+    "reconciliation_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lease_epoch",
+        "fence_token",
+        "fence_status"
+      ],
+      "properties": {
+        "lease_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "fence_token": {
+          "$ref": "#/$defs/digest"
+        },
+        "fence_status": {
+          "const": "current"
         }
       }
     }
