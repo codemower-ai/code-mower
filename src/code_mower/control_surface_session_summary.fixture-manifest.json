@@ -16,10 +16,10 @@
       "sha256": "01c8e9bb26f60fb8163a69801070ab6eabeadf20c271a41455634063966c7a21"
     },
     {
-      "bytes": 27232,
+      "bytes": 27228,
       "path": "control_surface_session_summary.rejected.json",
       "role": "rejected",
-      "sha256": "13425843929101c5dac575238a5896e4a49737fb74fbab605fbbe36286e65760"
+      "sha256": "0a3f0293bab4b45a08d6f6a2559b0a3e5cafd3c457dde4297b896af10ddbb6fe"
     },
     {
       "bytes": 5278,

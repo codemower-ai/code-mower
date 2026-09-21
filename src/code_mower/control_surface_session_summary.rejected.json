@@ -224,7 +224,7 @@
         "graph": "graph",
         "install_id": "",
         "lens": "",
-        "local_path": "/Users/example/repo",
+        "local_path": "<personal-path>",
         "message": "private message",
         "metrics": {
           "cancel_count": 0,
