@@ -2731,19 +2731,16 @@ def restart_service(
         # bootstrapping it, which is what the runbook's restart has to do.
         if existing.loaded:
             ok, detail = provider.kickstart(spec.label)
+            action = "kickstart"
             restarted_message = "restarted the managed Board service in place and validated its binding"
         else:
             ok, detail = provider.bootstrap(spec.label)
+            action = "bootstrap"
             restarted_message = "loaded the installed definition, which was not running, and validated its binding"
-        if not ok:
-            return _operation_payload(
-                "apply_failed",
-                detail,
-                spec,
-                expected,
-                show_local_paths=show_local_paths,
-                known_paths=_provider_known_paths(provider, spec.label),
-            )
+        # Both launchd operations can complete before their command reports a
+        # timeout or permission-boundary failure. The provider return is not a
+        # terminal host state: re-read the complete binding before deciding
+        # whether this unchanged definition is healthy or unresolved.
         health = delayed_health(
             spec,
             provider=provider,
@@ -2755,12 +2752,6 @@ def restart_service(
             show_local_paths=show_local_paths,
             sleeper=sleeper,
             clock=clock,
-        )
-        status = "restarted" if health["state"] == "pass" else "delayed_health_failed"
-        message = (
-            restarted_message
-            if health["state"] == "pass"
-            else "the service restarted but its binding did not validate within the delayed health window"
         )
         final_binding = _final_binding_read(
             spec,
@@ -2774,9 +2765,39 @@ def restart_service(
         reconciled = _reconciliation(
             "new", final_binding, spec=spec, show_local_paths=show_local_paths
         )
-        if status == "restarted" and not reconciled["verified"]:
+        healthy = health["state"] == "pass" and bool(reconciled["verified"])
+        reconciled["delayed_health_verified"] = health["state"] == "pass"
+        if health["state"] != "pass" and reconciled["verified"]:
+            reconciled.update(
+                state="unresolved",
+                verified=False,
+                detail="the binding did not remain valid throughout the delayed health window",
+                recovery=_recovery_instruction(spec, show_local_paths=show_local_paths),
+            )
+        if healthy:
+            status = "restarted"
+            message = restarted_message
+            if not ok:
+                message += (
+                    f"; launchd reported {action} failure, but the installed definition and "
+                    "serving process were independently verified"
+                )
+        elif not ok:
+            status = "apply_failed"
+            message = (
+                (detail or f"launchd {action} failed")
+                + "; the installed binding could not be independently verified"
+            )
+        elif health["state"] != "pass":
+            status = "delayed_health_failed"
+            message = (
+                "the service restarted but its binding did not validate within the delayed "
+                "health window"
+            )
+        else:
             status = "delayed_health_failed"
             message = "the service passed delayed health but its final binding re-read did not validate"
+        provider_result = {"provider_detail": detail} if not ok else {}
         return _operation_payload(
             status,
             message,
@@ -2785,6 +2806,7 @@ def restart_service(
             delayed=health,
             show_local_paths=show_local_paths,
             reconciliation=reconciled,
+            **provider_result,
         )
     return _apply(
         spec,

@@ -2183,6 +2183,88 @@ class BoardServiceLifecycleTest(ServiceHarness):
             self.host.calls,
         )
 
+    def test_restart_reconciles_an_ambiguous_bootstrap_of_an_unloaded_definition(self) -> None:
+        spec = self.spec()
+        self.install(spec)
+        self.host.provider().bootout(spec.label)
+        definition = (self.root / f"{spec.label}.plist").read_text(encoding="utf-8")
+
+        class LoadsThenReportsFailure(board_service.LaunchdProvider):
+            def bootstrap(self, label: str) -> tuple[bool, str]:
+                super().bootstrap(label)
+                return False, "Bootstrap failed after registering the installed definition"
+
+        payload = self._restart_with(
+            LoadsThenReportsFailure(
+                command_runner=self.host.run,
+                root=self.root,
+                uid=self.host.uid,
+                platform="darwin",
+            ),
+            spec,
+        )
+
+        self.assertEqual(payload["status"], "restarted")
+        self.assertEqual(payload["delayed_health"]["state"], "pass")
+        self.assertEqual(payload["reconciliation"]["state"], "new")
+        self.assertTrue(payload["reconciliation"]["verified"])
+        self.assertTrue(payload["reconciliation"]["delayed_health_verified"])
+        self.assertIn("reported bootstrap failure", payload["message"])
+        self.assertIn("Bootstrap failed", payload["provider_detail"])
+        self.assertEqual(
+            payload["reconciliation"]["binding"]["failing_checks"], []
+        )
+        self.assertIn(spec.label, self.host.loaded)
+        self.assertEqual(
+            (self.root / f"{spec.label}.plist").read_text(encoding="utf-8"), definition
+        )
+
+    def test_restart_reports_an_unresolved_bootstrap_that_left_no_job(self) -> None:
+        spec = self.spec()
+        self.install(spec)
+        self.host.provider().bootout(spec.label)
+        self.host.bootstrap_failures.add(spec.label)
+
+        payload = self.restart(spec)
+
+        self.assertEqual(payload["status"], "apply_failed")
+        self.assertEqual(payload["delayed_health"]["state"], "fail")
+        self.assertEqual(payload["reconciliation"]["state"], "unresolved")
+        self.assertFalse(payload["reconciliation"]["verified"])
+        self.assertFalse(payload["reconciliation"]["delayed_health_verified"])
+        self.assertEqual(
+            payload["reconciliation"]["recovery"]["command"],
+            "code-mower board service restart --repo codemower-ai/code-mower "
+            "--repo-path . --host 127.0.0.1 --port 5332 --replace",
+        )
+        self.assertNotIn(spec.label, self.host.loaded)
+
+    def test_restart_reconciles_an_ambiguous_kickstart_as_healthy(self) -> None:
+        spec = self.spec()
+        self.install(spec)
+        first_pid = self.host.loaded[spec.label]
+
+        class RestartsThenReportsFailure(board_service.LaunchdProvider):
+            def kickstart(self, label: str) -> tuple[bool, str]:
+                super().kickstart(label)
+                return False, "Kickstart failed after restarting the installed job"
+
+        payload = self._restart_with(
+            RestartsThenReportsFailure(
+                command_runner=self.host.run,
+                root=self.root,
+                uid=self.host.uid,
+                platform="darwin",
+            ),
+            spec,
+        )
+
+        self.assertEqual(payload["status"], "restarted")
+        self.assertEqual(payload["reconciliation"]["state"], "new")
+        self.assertTrue(payload["reconciliation"]["verified"])
+        self.assertIn("reported kickstart failure", payload["message"])
+        self.assertNotEqual(self.host.loaded[spec.label], first_pid)
+
     def test_removal_that_cannot_delete_the_definition_is_not_reported_as_removed(self) -> None:
         self.install(self.spec())
 
