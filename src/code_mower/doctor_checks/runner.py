@@ -12,6 +12,7 @@ from code_mower import config as code_mower_config
 from .adoption import (
     PUBLIC_IDENTITY_VARIABLES,
     TRUSTED_AUDIT_AUTHOR_VARIABLES,
+    campaign_readiness_providers,
     check_adoption_campaign_readiness,
     check_adoption_posture_guidance,
     check_adoption_setup,
@@ -389,6 +390,12 @@ def run_doctor(
     if adoption and (not packaged_observer_plan or campaign):
         from code_mower import release_campaigns
 
+        campaign_providers = campaign_readiness_providers(
+            effective_lanes,
+            campaign_requested=campaign,
+            devin_requested=devin,
+        )
+
         checks.extend(
             check_adoption_campaign_readiness(
                 config=config,
@@ -404,6 +411,7 @@ def run_doctor(
                 # variable exported. Doctor and dispatch must not disagree.
                 gh_auth_probe=release_campaigns.run_gh_auth_probe,
                 campaign_requested=campaign,
+                providers=campaign_providers,
                 board_startup_grace=board_startup_grace,
             )
         )

@@ -14,6 +14,7 @@ from .cloud import (
 )
 from .adoption import (
     DEFAULT_CAMPAIGN_PROVIDERS,
+    campaign_readiness_providers,
     check_adoption_campaign_readiness,
     check_adoption_posture_guidance,
     check_adoption_setup,
@@ -140,6 +141,7 @@ __all__ = [
     "check_devin_readiness",
     "devin_readiness_selected",
     "DEFAULT_CAMPAIGN_PROVIDERS",
+    "campaign_readiness_providers",
     "check_adoption_campaign_readiness",
     "check_campaign_auth_readiness",
     "check_adoption_posture_guidance",

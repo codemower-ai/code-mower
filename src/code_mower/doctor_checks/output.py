@@ -37,7 +37,10 @@ def _format_status_summary(report: DoctorReport) -> str:
     if promotion_todos:
         parts.append(f"{promotion_todos} promotion todos")
     if report.warnings:
-        parts.append(f"{report.warnings} warnings")
+        warning_kind = (
+            "other warnings" if owner_actions or promotion_todos else "warnings"
+        )
+        parts.append(f"{report.warnings} {warning_kind}")
     skipped = sum(1 for check in report.checks if check.status == STATUS_SKIP)
     if skipped:
         parts.append(f"{skipped} skipped")
@@ -122,6 +125,7 @@ def render_doctor_summary(report: DoctorReport) -> str:
         lines.append("")
 
     remaining: list[str] = []
+    categorized_warnings = bool(report.owner_actions or report.promotion_todos)
     for group_id, checks in _group_checks(report.checks).items():
         counts = []
         promotion_todos = sum(1 for check in checks if is_promotion_todo_check(check))
@@ -133,7 +137,8 @@ def render_doctor_summary(report: DoctorReport) -> str:
         if promotion_todos:
             counts.append(f"{promotion_todos} promotion todos")
         if warnings:
-            counts.append(f"{warnings} warnings")
+            warning_kind = "other warnings" if categorized_warnings else "warnings"
+            counts.append(f"{warnings} {warning_kind}")
         if counts:
             label = GROUP_LABELS.get(group_id, group_id.title())
             remaining.append(f"- {label}: {', '.join(counts)}")
@@ -180,6 +185,7 @@ def render_doctor_text(report: DoctorReport) -> str:
         lines.append("No checks ran.")
         return "\n".join(lines) + "\n"
 
+    categorized_warnings = bool(report.owner_actions or report.promotion_todos)
     for group_id, checks in _group_checks(report.checks).items():
         checks = [check for check in checks if not _adoption_posture_hint(check)]
         if not checks:
@@ -200,7 +206,8 @@ def render_doctor_text(report: DoctorReport) -> str:
         if promotion_todos:
             summary.append(f"{promotion_todos} promotion todos")
         if warnings:
-            summary.append(f"{warnings} warnings")
+            warning_kind = "other warnings" if categorized_warnings else "warnings"
+            summary.append(f"{warnings} {warning_kind}")
         heading = GROUP_LABELS.get(group_id, group_id.title())
         if summary:
             heading = f"{heading} ({', '.join(summary)})"

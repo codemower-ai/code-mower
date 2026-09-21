@@ -17,6 +17,7 @@ from code_mower.doctor_checks import (
     STATUS_PASS,
     STATUS_SKIP,
     STATUS_WARN,
+    campaign_readiness_providers,
     check_adoption_campaign_readiness,
     doctor_check_group_id,
     run_doctor,
@@ -28,6 +29,28 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
         self.assertEqual(DEFAULT_CAMPAIGN_PROVIDERS, release_campaigns.DEFAULT_CAMPAIGN_PROVIDERS)
         self.assertIn("cursor_cloud_agent", DEFAULT_CAMPAIGN_PROVIDERS)
         self.assertNotIn("cursor_bugbot", DEFAULT_CAMPAIGN_PROVIDERS)
+
+    def test_effective_profile_scopes_campaign_provider_readiness(self) -> None:
+        providers = campaign_readiness_providers(
+            (
+                (
+                    "cursor_builder",
+                    {"provider": "cursor_cloud_agent", "driver": "hosted_bridge"},
+                ),
+                ("claude_review", {"provider": "claude", "driver": "manual"}),
+                ("greptile", {"provider": "greptile", "driver": "saas_event"}),
+            )
+        )
+
+        self.assertEqual(providers, ("cursor_cloud_agent",))
+        self.assertEqual(
+            campaign_readiness_providers((), campaign_requested=True),
+            DEFAULT_CAMPAIGN_PROVIDERS,
+        )
+        self.assertEqual(
+            campaign_readiness_providers((), devin_requested=True),
+            ("devin",),
+        )
 
     def test_campaign_adapter_passes_when_command_and_adapter_configured(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -326,6 +349,28 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
                     self.assertEqual(check.status, STATUS_SKIP)
                     self.assertTrue(check.detail.get("skipped"))
                     self.assertEqual(check.detail.get("adoption_posture"), posture)
+
+    def test_cursor_hosted_scope_emits_no_optional_provider_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checks = check_adoption_campaign_readiness(
+                config={"lanes": {"cursor_cloud_agent": {"enabled": True}}},
+                repo_root=Path(tmp),
+                adoption_posture="hosted-builders",
+                providers=["cursor_cloud_agent"],
+                env={},
+            )
+
+        provider_lanes = {
+            check.lane
+            for check in checks
+            if check.name.startswith("doctor.campaign.") and check.lane
+        }
+        self.assertEqual(provider_lanes, {"cursor_cloud_agent"})
+        self.assertFalse(
+            provider_lanes.intersection(
+                {"claude", "codex", "antigravity", "muse", "devin"}
+            )
+        )
 
     def test_campaign_credentials_passes_when_configured(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -900,7 +945,13 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
         )
         check_names = {c.name for c in report.checks}
         self.assertIn("doctor.campaign.adapter", check_names)
-        self.assertIn("doctor.campaign.credentials", check_names)
+        campaign_lanes = {
+            check.lane
+            for check in report.checks
+            if check.name.startswith("doctor.campaign.") and check.lane
+        }
+        self.assertEqual(campaign_lanes, {"claude", "codex"})
+        self.assertNotIn("doctor.campaign.credentials", check_names)
         self.assertIn("doctor.campaign.storage", check_names)
         self.assertIn("doctor.campaign.cloud_upload", check_names)
         self.assertIn("doctor.campaign.board_visibility", check_names)

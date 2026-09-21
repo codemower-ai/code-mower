@@ -196,20 +196,20 @@ def check_adoption_posture_guidance(
                 "adoption_posture": adoption_posture,
                 "local_provider_gap_lanes": gap_lanes,
                 "next_steps": [
-                    "rerun_orchestrator_only_if_this_host_only_coordinates",
                     "rerun_hosted_builders_if_this_host_observes_hosted_lanes",
+                    "rerun_orchestrator_only_if_this_host_only_coordinates",
                     "finish_local_cli_setup_if_this_host_runs_reviewers",
                 ],
                 "commands": [
-                    "code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO",
                     "code-mower doctor --adoption --hosted-builders --repo OWNER/REPO",
+                    "code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO",
                 ],
             },
             remediation=(
-                "If this host only coordinates work, rerun "
-                "`code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO`. "
-                "If it observes hosted builder lanes, rerun "
+                "If this host observes hosted builder lanes, rerun "
                 "`code-mower doctor --adoption --hosted-builders --repo OWNER/REPO`. "
+                "If it only coordinates work, rerun "
+                "`code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO`. "
                 "Only keep the default reviewer-gate posture on machines that "
                 "run local reviewer CLIs."
             ),
@@ -507,6 +507,49 @@ DEFAULT_CAMPAIGN_PROVIDERS = (
     "cursor_cloud_agent",
     "devin",
 )
+
+
+def campaign_readiness_providers(
+    lanes: Sequence[tuple[str, Mapping[str, Any]]],
+    *,
+    campaign_requested: bool = False,
+    devin_requested: bool = False,
+) -> tuple[str, ...]:
+    """Return canonical campaign providers selected by this doctor operation.
+
+    Ordinary adoption follows the effective profile instead of expanding back
+    to every optional campaign provider. An explicit ``--campaign`` operation
+    retains the release command's documented default provider set, while an
+    explicit ``--devin`` request adds Devin even when its lane is outside the
+    selected profile.
+    """
+
+    if campaign_requested:
+        return DEFAULT_CAMPAIGN_PROVIDERS
+
+    from code_mower.release_campaigns import resolve_provider_lane
+
+    selected: list[str] = []
+    known = set(DEFAULT_CAMPAIGN_PROVIDERS)
+    for lane_id, lane in lanes:
+        if lane.get("driver") not in {"local_cli", "hosted_bridge"}:
+            continue
+        candidates = (str(lane.get("provider") or ""), lane_id)
+        for candidate in candidates:
+            if not candidate:
+                continue
+            try:
+                canonical, _resolved_lane = resolve_provider_lane(candidate)
+            except ValueError:
+                continue
+            if canonical not in known:
+                continue
+            if canonical not in selected:
+                selected.append(canonical)
+            break
+    if devin_requested and "devin" not in selected:
+        selected.append("devin")
+    return tuple(selected)
 
 
 def _is_provider_enabled(
