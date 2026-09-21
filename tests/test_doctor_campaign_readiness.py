@@ -349,6 +349,53 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
                     self.assertEqual(check.status, STATUS_SKIP)
                     self.assertTrue(check.detail.get("skipped"))
                     self.assertEqual(check.detail.get("adoption_posture"), posture)
+                readiness = next(
+                    check for check in checks if check.name == "doctor.campaign.readiness"
+                )
+                self.assertEqual(readiness.status, STATUS_SKIP)
+                self.assertIn("out of scope", readiness.message)
+                self.assertFalse(
+                    {
+                        "doctor.campaign.storage",
+                        "doctor.campaign.cloud_upload",
+                        "doctor.campaign.board_visibility",
+                    }.intersection(check.name for check in checks)
+                )
+
+    def test_explicit_campaign_remains_in_scope_in_observer_posture(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checks = check_adoption_campaign_readiness(
+                config={},
+                repo_root=Path(tmp),
+                adoption_posture="hosted-builders",
+                providers=["codex"],
+                campaign_requested=True,
+            )
+
+        readiness = next(
+            check for check in checks if check.name == "doctor.campaign.readiness"
+        )
+        self.assertNotEqual(readiness.status, STATUS_SKIP)
+        self.assertIn("doctor.campaign.storage", {check.name for check in checks})
+        self.assertIn("doctor.campaign.cloud_upload", {check.name for check in checks})
+
+    def test_empty_effective_provider_scope_skips_observer_campaign_readiness(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checks = check_adoption_campaign_readiness(
+                config={},
+                repo_root=Path(tmp),
+                adoption_posture="orchestrator-only",
+                providers=[],
+            )
+
+        readiness = next(
+            check for check in checks if check.name == "doctor.campaign.readiness"
+        )
+        self.assertEqual(readiness.status, STATUS_SKIP)
+        self.assertEqual(readiness.detail.get("provider_readiness"), {})
+        self.assertFalse(
+            any(check.status == STATUS_WARN for check in checks),
+        )
 
     def test_cursor_hosted_scope_emits_no_optional_provider_checks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -955,6 +1002,45 @@ class DoctorCampaignReadinessTests(unittest.TestCase):
         self.assertIn("doctor.campaign.storage", check_names)
         self.assertIn("doctor.campaign.cloud_upload", check_names)
         self.assertIn("doctor.campaign.board_visibility", check_names)
+
+    def test_run_doctor_observer_postures_skip_campaign_when_not_requested(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        for posture in ("hosted-builders", "orchestrator-only"):
+            with self.subTest(posture=posture):
+                report = run_doctor(
+                    config_path=root / "code-mower.yml",
+                    provider_templates_path=root / "src/code_mower/templates/providers.yml",
+                    profile="recommended",
+                    adoption=True,
+                    adoption_posture=posture,
+                )
+
+                campaign_warnings = [
+                    check
+                    for check in report.checks
+                    if check.name.startswith("doctor.campaign.")
+                    and check.status == STATUS_WARN
+                ]
+                self.assertEqual(campaign_warnings, [])
+                readiness = next(
+                    check
+                    for check in report.checks
+                    if check.name == "doctor.campaign.readiness"
+                )
+                self.assertEqual(readiness.status, STATUS_SKIP)
+                self.assertIn("out of scope", readiness.message)
+                adapter_checks = [
+                    check
+                    for check in report.checks
+                    if check.name == "doctor.campaign.adapter"
+                ]
+                self.assertEqual(
+                    {check.lane for check in adapter_checks},
+                    {"claude", "codex"},
+                )
+                self.assertTrue(
+                    all(check.status == STATUS_SKIP for check in adapter_checks)
+                )
 
     def test_run_doctor_passes_configured_repo_to_campaign_readiness(self) -> None:
         root = Path(__file__).resolve().parents[1]

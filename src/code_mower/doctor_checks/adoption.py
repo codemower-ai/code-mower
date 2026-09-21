@@ -36,6 +36,15 @@ PUBLIC_IDENTITY_VARIABLES = (
     "CODE_MOWER_DECISION_AUTHORITIES",
     "CODE_MOWER_TRUSTED_AUTHORS_JSON",
 )
+_CAMPAIGN_PROVIDER_CHECK_NAMES = frozenset(
+    {
+        "doctor.campaign.adapter",
+        "doctor.campaign.runtime",
+        "doctor.campaign.credentials",
+        CAMPAIGN_AUTH_CHECK_NAME,
+        "doctor.campaign.structured_result",
+    }
+)
 GENERATED_SETUP_MARKERS = {
     "generated_config": (".code-mower.generated/code-mower.yml",),
     "installed_gate_workflow": (".github/workflows/code-mower-gate.yml",),
@@ -1387,6 +1396,42 @@ def check_adoption_campaign_readiness(
                         )
                     )
 
+    provider_checks = [
+        check for check in checks if check.name in _CAMPAIGN_PROVIDER_CHECK_NAMES
+    ]
+    preview_command = (
+        "code-mower release campaign --release-tag RELEASE_TAG "
+        "--package-spec PACKAGE==VERSION --repo-slug OWNER/REPO"
+    )
+    if (
+        adoption_posture in {"hosted-builders", "orchestrator-only"}
+        and campaign_intent.reason == CAMPAIGN_INTENT_NONE
+        and not any(check.status != STATUS_SKIP for check in provider_checks)
+    ):
+        checks.append(
+            DoctorCheck(
+                name="doctor.campaign.readiness",
+                status=STATUS_SKIP,
+                message=(
+                    "release campaign readiness is out of scope in "
+                    f"{adoption_posture} posture"
+                ),
+                detail={
+                    "campaign_intent": campaign_intent.reason,
+                    "ready_providers": [],
+                    "actionable_providers": [],
+                    "optional_providers": [],
+                    "preview_command": preview_command,
+                    "provider_readiness": provider_readiness,
+                },
+                remediation=(
+                    "Run `code-mower doctor --adoption --campaign` to include "
+                    "release-campaign readiness."
+                ),
+            )
+        )
+        return tuple(checks)
+
     # 3. Campaign Storage Writable Check
     storage_rel = ".code-mower/campaigns"
     target_dir = root / ".code-mower" / "campaigns"
@@ -1584,18 +1629,6 @@ def check_adoption_campaign_readiness(
             )
         )
 
-    provider_checks = [
-        check
-        for check in checks
-        if check.name
-        in {
-            "doctor.campaign.adapter",
-            "doctor.campaign.runtime",
-            "doctor.campaign.credentials",
-            CAMPAIGN_AUTH_CHECK_NAME,
-            "doctor.campaign.structured_result",
-        }
-    ]
     # A provider is ready only when every one of its checks is clean: an
     # installed adapter whose isolated home is unauthenticated is not ready.
     warned_providers = {
@@ -1630,10 +1663,6 @@ def check_adoption_campaign_readiness(
             and check.detail.get("optional")
             and check.lane
         }
-    )
-    preview_command = (
-        "code-mower release campaign --release-tag RELEASE_TAG "
-        "--package-spec PACKAGE==VERSION --repo-slug OWNER/REPO"
     )
     storage_ready = any(
         check.name == "doctor.campaign.storage" and check.status == STATUS_PASS
