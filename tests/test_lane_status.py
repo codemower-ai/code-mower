@@ -1197,6 +1197,7 @@ class ListenerInventoryAvailabilityTests(TestCase):
 
         config = policy()
         config["builder_identity"]["labels"]["builder:cursor"] = "cursor"
+        config["builder_identity"]["labels"]["builder:grok-bot"] = "cursor"
         from code_mower import config as policy_config
         self.assertEqual(policy_config.validate_config(config), [])
 

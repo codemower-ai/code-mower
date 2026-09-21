@@ -340,15 +340,13 @@ def _extract_code_mower_labels(lineage_config: Mapping[str, Any] | None) -> set[
         builder_labels = builder_identity.get("labels", {})
         if isinstance(builder_labels, Mapping):
             labels.update(_text(label).lower() for label in builder_labels.keys())
-            
-            builder_lanes = set(_text(lane).lower() for lane in builder_labels.values())
-            for lane in builder_lanes:
-                labels.add(f"dispatched:{lane}")
-            
-            LEGACY_DISPATCH_ALIASES = {"cursor": ("dispatched:grok-bot",)}
-            for lane in builder_lanes:
-                aliases = LEGACY_DISPATCH_ALIASES.get(lane, ())
-                labels.update(_text(alias).lower() for alias in aliases)
+
+            for label, lane in builder_labels.items():
+                label_suffix = _text(label).lower().removeprefix("builder:")
+                if label_suffix:
+                    labels.add(f"dispatched:{label_suffix}")
+                lane_lower = _text(lane).lower()
+                labels.add(f"dispatched:{lane_lower}")
 
     lanes = lineage_config.get("lanes", {})
     if isinstance(lanes, Mapping):
