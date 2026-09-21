@@ -36,6 +36,16 @@ PUBLIC_IDENTITY_VARIABLES = (
     "CODE_MOWER_DECISION_AUTHORITIES",
     "CODE_MOWER_TRUSTED_AUTHORS_JSON",
 )
+_CAMPAIGN_PROVIDER_CHECK_NAMES = frozenset(
+    {
+        "doctor.campaign.adapter",
+        "doctor.campaign.runtime",
+        "doctor.campaign.credentials",
+        "doctor.campaign.transport",
+        CAMPAIGN_AUTH_CHECK_NAME,
+        "doctor.campaign.structured_result",
+    }
+)
 GENERATED_SETUP_MARKERS = {
     "generated_config": (".code-mower.generated/code-mower.yml",),
     "installed_gate_workflow": (".github/workflows/code-mower-gate.yml",),
@@ -196,20 +206,20 @@ def check_adoption_posture_guidance(
                 "adoption_posture": adoption_posture,
                 "local_provider_gap_lanes": gap_lanes,
                 "next_steps": [
-                    "rerun_orchestrator_only_if_this_host_only_coordinates",
                     "rerun_hosted_builders_if_this_host_observes_hosted_lanes",
+                    "rerun_orchestrator_only_if_this_host_only_coordinates",
                     "finish_local_cli_setup_if_this_host_runs_reviewers",
                 ],
                 "commands": [
-                    "code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO",
                     "code-mower doctor --adoption --hosted-builders --repo OWNER/REPO",
+                    "code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO",
                 ],
             },
             remediation=(
-                "If this host only coordinates work, rerun "
-                "`code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO`. "
-                "If it observes hosted builder lanes, rerun "
+                "If this host observes hosted builder lanes, rerun "
                 "`code-mower doctor --adoption --hosted-builders --repo OWNER/REPO`. "
+                "If it only coordinates work, rerun "
+                "`code-mower doctor --adoption --orchestrator-only --repo OWNER/REPO`. "
                 "Only keep the default reviewer-gate posture on machines that "
                 "run local reviewer CLIs."
             ),
@@ -509,6 +519,49 @@ DEFAULT_CAMPAIGN_PROVIDERS = (
 )
 
 
+def campaign_readiness_providers(
+    lanes: Sequence[tuple[str, Mapping[str, Any]]],
+    *,
+    campaign_requested: bool = False,
+    devin_requested: bool = False,
+) -> tuple[str, ...]:
+    """Return canonical campaign providers selected by this doctor operation.
+
+    Ordinary adoption follows the effective profile instead of expanding back
+    to every optional campaign provider. An explicit ``--campaign`` operation
+    retains the release command's documented default provider set, while an
+    explicit ``--devin`` request adds Devin even when its lane is outside the
+    selected profile.
+    """
+
+    if campaign_requested:
+        return DEFAULT_CAMPAIGN_PROVIDERS
+
+    from code_mower.release_campaigns import resolve_provider_lane
+
+    selected: list[str] = []
+    known = set(DEFAULT_CAMPAIGN_PROVIDERS)
+    for lane_id, lane in lanes:
+        if lane.get("driver") not in {"local_cli", "hosted_bridge"}:
+            continue
+        candidates = (str(lane.get("provider") or ""), lane_id)
+        for candidate in candidates:
+            if not candidate:
+                continue
+            try:
+                canonical, _resolved_lane = resolve_provider_lane(candidate)
+            except ValueError:
+                continue
+            if canonical not in known:
+                continue
+            if canonical not in selected:
+                selected.append(canonical)
+            break
+    if devin_requested and "devin" not in selected:
+        selected.append("devin")
+    return tuple(selected)
+
+
 def _is_provider_enabled(
     lane: Any,
     config: Mapping[str, Any] | None,
@@ -706,6 +759,7 @@ def check_adoption_campaign_readiness(
         config=config,
         repo_root=root,
         explicit=campaign_requested,
+        providers=providers,
     )
     checks.append(_campaign_intent_check(campaign_intent))
     provider_readiness: dict[str, dict[str, Any]] = {}
@@ -1344,6 +1398,42 @@ def check_adoption_campaign_readiness(
                         )
                     )
 
+    provider_checks = [
+        check for check in checks if check.name in _CAMPAIGN_PROVIDER_CHECK_NAMES
+    ]
+    preview_command = (
+        "code-mower release campaign --release-tag RELEASE_TAG "
+        "--package-spec PACKAGE==VERSION --repo-slug OWNER/REPO"
+    )
+    if (
+        adoption_posture in {"hosted-builders", "orchestrator-only"}
+        and campaign_intent.reason == CAMPAIGN_INTENT_NONE
+        and not any(check.status != STATUS_SKIP for check in provider_checks)
+    ):
+        checks.append(
+            DoctorCheck(
+                name="doctor.campaign.readiness",
+                status=STATUS_SKIP,
+                message=(
+                    "release campaign readiness is out of scope in "
+                    f"{adoption_posture} posture"
+                ),
+                detail={
+                    "campaign_intent": campaign_intent.reason,
+                    "ready_providers": [],
+                    "actionable_providers": [],
+                    "optional_providers": [],
+                    "preview_command": preview_command,
+                    "provider_readiness": provider_readiness,
+                },
+                remediation=(
+                    "Run `code-mower doctor --adoption --campaign` to include "
+                    "release-campaign readiness."
+                ),
+            )
+        )
+        return tuple(checks)
+
     # 3. Campaign Storage Writable Check
     storage_rel = ".code-mower/campaigns"
     target_dir = root / ".code-mower" / "campaigns"
@@ -1541,18 +1631,6 @@ def check_adoption_campaign_readiness(
             )
         )
 
-    provider_checks = [
-        check
-        for check in checks
-        if check.name
-        in {
-            "doctor.campaign.adapter",
-            "doctor.campaign.runtime",
-            "doctor.campaign.credentials",
-            CAMPAIGN_AUTH_CHECK_NAME,
-            "doctor.campaign.structured_result",
-        }
-    ]
     # A provider is ready only when every one of its checks is clean: an
     # installed adapter whose isolated home is unauthenticated is not ready.
     warned_providers = {
@@ -1587,10 +1665,6 @@ def check_adoption_campaign_readiness(
             and check.detail.get("optional")
             and check.lane
         }
-    )
-    preview_command = (
-        "code-mower release campaign --release-tag RELEASE_TAG "
-        "--package-spec PACKAGE==VERSION --repo-slug OWNER/REPO"
     )
     storage_ready = any(
         check.name == "doctor.campaign.storage" and check.status == STATUS_PASS

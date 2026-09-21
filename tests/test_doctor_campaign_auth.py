@@ -856,6 +856,21 @@ class CampaignIntentTests(unittest.TestCase):
             self.assertTrue(intent.requested)
             self.assertEqual(intent.configured_providers, ("codex",))
             self.assertEqual(intent.active_campaigns, 1)
+            scoped_explicit = resolve_campaign_intent(
+                config=CODEX_CONFIG,
+                repo_root=Path(tmp),
+                explicit=True,
+                providers=(),
+            )
+            self.assertEqual(scoped_explicit.reason, CAMPAIGN_INTENT_EXPLICIT)
+            self.assertEqual(scoped_explicit.configured_providers, ())
+            scoped_active = resolve_campaign_intent(
+                config=CODEX_CONFIG,
+                repo_root=Path(tmp),
+                providers=(),
+            )
+            self.assertEqual(scoped_active.reason, CAMPAIGN_INTENT_ACTIVE)
+            self.assertEqual(scoped_active.configured_providers, ())
             self.assertEqual(
                 resolve_campaign_intent(config=None, repo_root=Path(tmp)).reason,
                 CAMPAIGN_INTENT_ACTIVE,

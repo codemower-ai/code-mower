@@ -420,6 +420,10 @@ class DoctorRegistryTests(unittest.TestCase):
             "code-mower doctor --adoption --hosted-builders --repo OWNER/REPO",
             hint.detail["commands"],
         )
+        self.assertEqual(
+            hint.detail["commands"][0],
+            "code-mower doctor --adoption --hosted-builders --repo OWNER/REPO",
+        )
         self.assertIn("reviewer-gate posture", hint.message)
         self.assertIn("code-mower doctor --adoption --orchestrator-only", hint.remediation)
 

@@ -152,13 +152,14 @@ class DoctorOutputTests(unittest.TestCase):
 
         rendered = output.render_doctor_text(report)
 
-        self.assertIn("Checks: 2 total, 1 owner actions, 1 warnings", rendered)
+        self.assertIn("Checks: 2 total, 1 owner actions, 1 other warnings", rendered)
         self.assertIn("GitHub (1 owner actions)", rendered)
         self.assertIn(
             "- OWNER-ACTION github.human_automation_token: owner/repo is missing DISPATCH_TOKEN",
             rendered,
         )
-        self.assertIn("Runtime (1 warnings)", rendered)
+        self.assertIn("Runtime (1 other warnings)", rendered)
+        self.assertEqual(report.as_dict()["summary"]["warn_status_total"], 2)
         self.assertEqual(report.as_dict()["summary"]["owner_actions"], 1)
         self.assertEqual(report.as_dict()["summary"]["warnings"], 1)
         self.assertEqual(report.as_dict()["groups"]["github"]["owner_actions"], 1)
@@ -194,7 +195,7 @@ class DoctorOutputTests(unittest.TestCase):
 
         rendered = output.render_doctor_text(report)
 
-        self.assertIn("Checks: 2 total, 1 promotion todos, 1 warnings", rendered)
+        self.assertIn("Checks: 2 total, 1 promotion todos, 1 other warnings", rendered)
         self.assertIn("GitHub (1 promotion todos)", rendered)
         self.assertIn(
             "- PROMOTION-TODO github.repo.auto_merge: owner/repo does not allow auto-merge",
@@ -206,6 +207,50 @@ class DoctorOutputTests(unittest.TestCase):
         promotion_check = report.as_dict()["checks"][0]
         self.assertTrue(promotion_check["promotion_todo"])
         self.assertEqual(promotion_check["promotion_todo_kind"], "repo_auto_merge")
+
+    def test_warn_status_total_reconciles_the_categorized_partition(self) -> None:
+        checks = tuple(
+            DoctorCheck(name=f"runtime.warning.{index}", status=STATUS_WARN, message="warning")
+            for index in range(23)
+        ) + tuple(
+            DoctorCheck(
+                name=f"github.owner.{index}",
+                status=STATUS_WARN,
+                message="owner action",
+                detail={"owner_action": True},
+            )
+            for index in range(3)
+        ) + (
+            DoctorCheck(
+                name="github.promotion",
+                status=STATUS_WARN,
+                message="promotion todo",
+                detail={"promotion_todo": True},
+            ),
+        )
+        report = DoctorReport(
+            config_path="code-mower.yml",
+            provider_templates_path="providers.yml",
+            profile="hosted_cursor",
+            checks=checks,
+        )
+
+        summary = report.as_dict()["summary"]
+        self.assertEqual(summary["warnings"], 23)
+        self.assertEqual(summary["owner_actions"], 3)
+        self.assertEqual(summary["promotion_todos"], 1)
+        self.assertEqual(summary["warn_status_total"], 27)
+        self.assertEqual(
+            summary["warn_status_total"],
+            summary["warnings"]
+            + summary["owner_actions"]
+            + summary["promotion_todos"],
+        )
+        for renderer in (output.render_doctor_summary, output.render_doctor_text):
+            rendered = renderer(report)
+            self.assertIn("3 owner actions", rendered)
+            self.assertIn("1 promotion todos", rendered)
+            self.assertIn("23 other warnings", rendered)
 
     def test_adoption_posture_hint_renders_before_provider_warnings(self) -> None:
         report = DoctorReport(

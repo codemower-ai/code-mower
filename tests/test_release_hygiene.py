@@ -774,6 +774,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                     "owner_actions": 0,
                     "promotion_todos": 0,
                     "warnings": 0,
+                    "warn_status_total": 0,
                     "skipped": 0,
                 },
                 "providers": {
@@ -783,6 +784,7 @@ class ReleaseHygieneTests(unittest.TestCase):
                     "owner_actions": 0,
                     "promotion_todos": 0,
                     "warnings": 1,
+                    "warn_status_total": 1,
                     "skipped": 0,
                 },
             },

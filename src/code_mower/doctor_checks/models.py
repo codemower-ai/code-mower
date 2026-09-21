@@ -100,6 +100,17 @@ class DoctorReport:
         return sum(1 for check in self.checks if is_promotion_todo_check(check))
 
     @property
+    def warn_status_total(self) -> int:
+        """Return the raw number of checks whose status is ``warn``.
+
+        ``warnings`` is the categorized count of ordinary warnings. This raw
+        total preserves the original status-level view for consumers that need
+        to reconcile it with owner actions and promotion todos.
+        """
+
+        return sum(1 for check in self.checks if check.status == STATUS_WARN)
+
+    @property
     def status(self) -> str:
         if self.failures:
             return STATUS_FAIL
@@ -158,6 +169,7 @@ class DoctorReport:
                 "label": label,
                 "checks": len(group_checks),
                 "failures": failures,
+                "warn_status_total": warnings + owner_actions + promotion_todos,
                 "warnings": warnings,
                 "owner_actions": owner_actions,
                 "promotion_todos": promotion_todos,
@@ -175,6 +187,7 @@ class DoctorReport:
             "summary": {
                 "checks": len(self.checks),
                 "failures": self.failures,
+                "warn_status_total": self.warn_status_total,
                 "warnings": self.warnings,
                 "owner_actions": self.owner_actions,
                 "promotion_todos": self.promotion_todos,
