@@ -922,6 +922,11 @@ def _pr_number_from_run_event(event: Mapping[str, Any]) -> str:
     return canonical_pr_number(event.get("pr_number"))
 
 
+def _branch_from_builder_run(event: Mapping[str, Any]) -> str:
+    dimensions = _mapping(event.get("dimensions"))
+    return str(dimensions.get("branch") or event.get("branch") or "").strip()
+
+
 def _is_positive_int_pr_number(number: str) -> bool:
     """Return True only for a canonical positive integer PR number.
 
@@ -933,12 +938,11 @@ def _is_positive_int_pr_number(number: str) -> bool:
 
 
 def _is_associable_builder_run(payload: Any) -> bool:
-    """Return True when a parsed record has the fields needed to associate it.
+    """Return True when a parsed record can be associated directly or by branch.
 
-    A parseable but structurally unusable record -- such as one that only
-    carries ``event_type=builder_run``, or one whose PR number is not a
-    positive integer -- must not be silently filtered out; it routes through
-    filename-attributed or unattributable fail-closed evidence handling.
+    Builder records may be written before a PR exists.  A non-empty branch can
+    later identify one exact GitHub PR; the upload path performs that bounded
+    lookup.  Records without either identity remain fail-closed evidence.
     """
 
     if not isinstance(payload, dict):
@@ -947,9 +951,9 @@ def _is_associable_builder_run(payload: Any) -> bool:
         return False
     if not str(payload.get("repo_slug") or "").strip():
         return False
-    if not _is_positive_int_pr_number(_pr_number_from_run_event(payload)):
-        return False
-    return True
+    return _is_positive_int_pr_number(
+        _pr_number_from_run_event(payload)
+    ) or bool(_branch_from_builder_run(payload))
 
 
 def _builder_run_events(
@@ -1056,6 +1060,12 @@ def pr_outcomes_upload(
         limit=limit,
         repo_path=repo_path,
     )
+    pr_numbers_by_branch: dict[str, set[str]] = {}
+    for pr in pr_records:
+        branch = str(pr.get("headRefName") or "").strip()
+        pr_number = canonical_pr_number(pr.get("number"))
+        if branch and pr_number:
+            pr_numbers_by_branch.setdefault(branch, set()).add(pr_number)
 
     observation_state_path = repo_path / DEFAULT_OBSERVATION_STATE_PATH
     observation_lock_path = observation_state_path.with_name(
@@ -1115,11 +1125,28 @@ def pr_outcomes_upload(
             unattributable_evidence_count = 0
             for event in [*builder_events, *spend_events]:
                 event_repo = str(event.get("repo_slug") or "").strip()
+                # Shared local ledgers may intentionally contain evidence for
+                # several repositories.  An explicit different repository is
+                # attributable there, not missing evidence for this repo.
+                if event_repo and event_repo != detected_repo_slug:
+                    continue
                 event_pr = _pr_number_from_run_event(event)
+                if (
+                    not event_pr
+                    and event.get("event_type") == "builder_run"
+                ):
+                    branch = _branch_from_builder_run(event)
+                    matches = pr_numbers_by_branch.get(branch, set())
+                    if len(matches) == 1:
+                        event = dict(event)
+                        dimensions = dict(_mapping(event.get("dimensions")))
+                        dimensions["pr_number"] = next(iter(matches))
+                        event["dimensions"] = dimensions
+                        event_pr = _pr_number_from_run_event(event)
                 if not _is_positive_int_pr_number(event_pr):
                     unattributable_evidence_count += 1
                     continue
-                if event_repo != detected_repo_slug:
+                if not event_repo:
                     unattributable_evidence_count += 1
                     continue
                 run_events.append(event)

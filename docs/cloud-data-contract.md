@@ -249,6 +249,18 @@ identifiers that did not report cost; it is metadata-only and must never
 contain commands, paths, auth output, or secrets.  Missing cost is omitted,
 never serialized as zero.
 
+Shared local spend ledgers may contain attempts for several repositories. An
+attempt with an explicit different `repo_slug` is isolated to that repository
+and does not suppress coverage in the repository currently being synced. A
+builder run recorded before PR creation may omit `pr_number`; the command links
+it only when its recorded branch equals exactly one GitHub `headRefName` in the
+fetched PR population. Missing or ambiguous branch matches remain fail-closed.
+No branch prefix, author, PR body marker, or issue prose is used for this join.
+
+Dollar coverage remains provider-reported. Subscription access, token counts,
+or elapsed time are not silently converted to `cost_usd`; an explicit,
+versioned allocation policy would be a separate data source and contract.
+
 Builder evidence fails closed: a `*.cloud-event.json` file that cannot be
 read, parsed, or recognized as a `builder_run` event is never silently
 omitted.  A failure attributable to a PR via its filename is recorded on that
