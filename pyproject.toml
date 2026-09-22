@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "code-mower"
-version = "1.5.2"
+version = "1.6.0"
 description = "Multi-reviewer AI code audit orchestration"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -54,6 +54,9 @@ where = ["src"]
     "docs/v152-release-notes.md",
     "docs/v152-qualification.md",
     "docs/v152-release-runbook.md",
+    "docs/v160-release-notes.md",
+    "docs/v160-qualification.md",
+    "docs/v160-release-runbook.md",
     "docs/slack-setup.md",
     "docs/graphify-setup.md",
 ]

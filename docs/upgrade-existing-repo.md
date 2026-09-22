@@ -21,22 +21,22 @@ universal prompt in [Orchestrator Prompt Pack](orchestrator-prompt-pack.md) so
 it reports the same active command, exact version, posture-specific doctor,
 lanes status, and owner click-list as the primary orchestrator.
 
-## 2. Upgrade The Tool To v1.5.2
+## 2. Upgrade The Tool To v1.6.0
 
 Upgrade the installer that owns the active command before generating or
-comparing setup. Running `setup-drift` under 1.4.2 only compares the repository
-with 1.4.2's packaged files.
+comparing setup. Running `setup-drift` under an older release only compares the
+repository with that older release's packaged files.
 
-Confirm `code-mower==1.5.2` is visible on the selected package index before
+Confirm `code-mower==1.6.0` is visible on the selected package index before
 running either upgrade block. Prepublication qualification uses the retained
-candidate wheel from the [v1.5.2 release runbook](v152-release-runbook.md).
+candidate wheel from the [v1.6.0 release runbook](v160-release-runbook.md).
 
 For an existing pipx install:
 
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.5.2
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.6.0
 hash -r
 command -v code-mower
 code-mower --version
@@ -46,14 +46,14 @@ For an existing uv tool install:
 
 ```bash
 uv python install 3.12
-uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.5.2
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.6.0
 hash -r
 command -v code-mower
 code-mower --version
 ```
 
 Run only the block for the installer that should keep owning the command. The
-final line must print `code-mower 1.5.2`, and `command -v` must still identify
+final line must print `code-mower 1.6.0`, and `command -v` must still identify
 that installer. If it does not, resolve the competing pipx/uv/checkout path
 before changing repository files. This is the tool upgrade; the reviewed
 repository setup upgrade follows below.

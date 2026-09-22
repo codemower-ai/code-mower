@@ -14,6 +14,28 @@ later entries are regular releases.
   actionable diagnostics. Lineage controls are recognized only as standalone
   HTML control-comment lines outside inline and fenced examples (#1104).
 
+## 1.6.0 — operational clarity and minimum telemetry
+
+Code Mower 1.6.0 makes local operational state safer to interpret and adds a
+closed, metadata-only lifecycle-summary contract for the optional Slack control
+surface. See the [release notes](docs/v160-release-notes.md) and the
+[qualification contract](docs/v160-qualification.md).
+
+- Reconcile doctor warnings with their JSON states and keep hosted-only checks
+  out of ordinary local adoption diagnostics (#1064 / #1099).
+- Replace managed Board services atomically, verify either the new or restored
+  binding from host state, and refuse ambiguous reconciliation (#1082 / #1100,
+  hardened by #1103).
+- Treat an unmanaged pull request as a neutral observer state when no lineage
+  policy is configured, without weakening configured lineage enforcement
+  (#1083 / #1097).
+- Make adoption diagnostics share-safe by default and require an explicit local
+  view for private paths and identifiers (#1084 / #1102).
+- Freeze the provider-neutral `code_mower.controlSurfaceSessionSummary.v1`
+  contract, its accepted and rejected fixtures, capability gate, transition
+  suppression, local Board projection, and metadata-only cloud emitter
+  (#921 / #1098).
+
 ## 1.5.2 — documentation and repository maintenance
 
 Documentation ownership, maintained user journeys, release identity, and package templates now have one validated source each. See [release notes](docs/v152-release-notes.md) and the [qualification contract](docs/v152-qualification.md).
