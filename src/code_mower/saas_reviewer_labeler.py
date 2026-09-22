@@ -21,6 +21,7 @@ if __package__ and __package__.startswith("code_mower"):
     from .adapters._base import SaaSReviewerAdapter
     from .audit_labeler_lib import (
         GitHubToken,
+        GITHUB_COMMENT_RESPONSE_BYTES,
         LabelDecision,
         GitHubRequestError,
         apply_label_decision,
@@ -39,6 +40,7 @@ else:
         from tools.adapters._base import SaaSReviewerAdapter
         from tools.audit_labeler_lib import (
             GitHubToken,
+            GITHUB_COMMENT_RESPONSE_BYTES,
             LabelDecision,
             GitHubRequestError,
             apply_label_decision,
@@ -56,6 +58,7 @@ else:
         from adapters._base import SaaSReviewerAdapter
         from audit_labeler_lib import (
             GitHubToken,
+            GITHUB_COMMENT_RESPONSE_BYTES,
             LabelDecision,
             GitHubRequestError,
             apply_label_decision,
@@ -175,25 +178,22 @@ def fetch_issue_comments(
     tokens: Sequence[GitHubToken],
     page_cap: int,
 ) -> list[dict[str, Any]]:
-    """Fetch issue/PR comments with a safety cap."""
-    all_comments: list[dict[str, Any]] = []
-    page = 1
-    while page <= page_cap:
-        chunk = github_request_with_fallback(
+    """Fetch a complete, stable issue-comment history within shared bounds."""
+    def fetch(page, size):
+        return github_request_with_fallback(
             "GET",
-            f"/repos/{repo}/issues/{issue_number}/comments?per_page=100&page={page}",
+            f"/repos/{repo}/issues/{issue_number}/comments?per_page={size}&page={page}",
             tokens=tokens,
-        ) or []
-        if not chunk:
-            return all_comments
-        all_comments.extend(chunk)
-        if len(chunk) < 100:
-            return all_comments
-        page += 1
-    raise ReviewCommentsTruncated(
-        f"hit pagination cap of {page_cap} pages ({page_cap * 100} comments) "
-        f"for {repo}#{issue_number}; refusing to classify on partial data"
-    )
+            maximum_bytes=GITHUB_COMMENT_RESPONSE_BYTES,
+            include_response_bytes=True,
+        )
+
+    try:
+        return lineage_history(fetch, max_pages=min(page_cap, 8), return_raw=True)
+    except lineage_core.ContractError as exc:
+        raise ReviewCommentsTruncated(
+            f"bounded comment history unreadable for {repo}#{issue_number}: {exc}"
+        ) from exc
 
 
 def has_same_head_review(
@@ -600,8 +600,8 @@ def _github_event_type(adapter: SaaSReviewerAdapter) -> str:
 
 
 def _lineage_for_pr(repo, number, current, adapter, tokens):
-    history = lineage_history(lambda page, size: github_request_with_fallback(
-        "GET", f"/repos/{repo}/issues/{number}/comments?per_page={size}&page={page}", tokens=tokens))
+    history = lineage_core.History(fetch_issue_comments(
+        repo, number, tokens=tokens, page_cap=8))
     return lineage_from_environment(repo, number, current, history,
         reviewer=adapter.name.lower(), accounts=tuple(adapter.review_authors()))
 

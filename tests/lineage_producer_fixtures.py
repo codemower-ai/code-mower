@@ -34,7 +34,7 @@ def episode(n=1, **changes):
 def comments(episodes, *, author="lineage-publisher[bot]"):
     episodes = list(episodes)
     bound = Chain.from_arrivals(target(episodes[-1].sequence), episodes)
-    return [{"user": {"login": author}, "body": render(bound)}]
+    return [{"id": episodes[-1].sequence, "user": {"login": author}, "body": render(bound)}]
 
 
 def observation_args(n=1):

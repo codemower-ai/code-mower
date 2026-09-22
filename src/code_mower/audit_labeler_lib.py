@@ -38,6 +38,60 @@ else:  # pragma: no cover - direct helper execution
     import builder_lineage as lineage_core  # type: ignore
 
 
+# GitHub documents a 65,536-character issue-comment body ceiling. Four-byte
+# UTF-8 makes one legal body at most 256 KiB before its REST metadata. Keep a
+# response comfortably above that single-record maximum, while the separate
+# aggregate budgets prevent a large history or adaptive retries from growing
+# without bound.
+GITHUB_COMMENT_BODY_CHARACTERS = 65_536
+GITHUB_COMMENT_RESPONSE_BYTES = 8 * 1024 * 1024
+GITHUB_COMMENT_HISTORY_BYTES = 64 * 1024 * 1024
+GITHUB_COMMENT_PAGE_SIZE = 100
+GITHUB_COMMENT_HISTORY_ITEMS = 800
+
+
+class GitHubResponseTooLarge(RuntimeError):
+    """A bounded GitHub response crossed its explicit transport ceiling."""
+
+    def __init__(self, response_bytes: int, maximum_bytes: int):
+        super().__init__(f"GitHub response exceeds {maximum_bytes}-byte budget")
+        self.response_bytes = response_bytes
+        self.maximum_bytes = maximum_bytes
+
+
+class CommentHistoryError(lineage_core.ContractError):
+    """Authenticated GitHub comment history is incomplete or unstable."""
+
+
+@dataclass(frozen=True)
+class GitHubCommentPage:
+    payload: object
+    response_bytes: int
+
+
+def decode_github_response(raw: str | bytes, *, maximum_bytes: int = GITHUB_COMMENT_RESPONSE_BYTES) -> Any:
+    """Decode strict GitHub JSON under a GitHub-specific payload budget.
+
+    This deliberately does not use the 256 KiB private-context decoder. A
+    valid GitHub comment page can exceed that state-file ceiling.
+    """
+    if type(maximum_bytes) is not int or maximum_bytes <= 0:
+        raise CommentHistoryError("Invalid GitHub response byte budget")
+    if not isinstance(raw, (str, bytes)):
+        raise CommentHistoryError("GitHub response must be JSON text")
+    encoded = raw.encode("utf-8") if isinstance(raw, str) else raw
+    if len(encoded) > maximum_bytes:
+        raise GitHubResponseTooLarge(len(encoded), maximum_bytes)
+    try:
+        text = encoded.decode("utf-8")
+    except UnicodeDecodeError:
+        raise CommentHistoryError("GitHub response is not valid UTF-8 JSON") from None
+    try:
+        return lineage_core._json(text)
+    except lineage_core.ContractError:
+        raise CommentHistoryError("GitHub response is not valid unique-key JSON") from None
+
+
 def lineage_identity(config):
     raw = config.get("builder_identity", {})
     if not isinstance(raw, dict):
@@ -111,23 +165,126 @@ def lineage_snapshot(repo, number, payload):
     return target, author, labels
 
 
-def lineage_history(fetch_page, *, page_size=100, max_pages=8):
-    """Validate each raw page before flattening, including the terminal probe."""
+def lineage_history(fetch_page, *, page_size=GITHUB_COMMENT_PAGE_SIZE, max_pages=8,
+                    max_items=None, max_response_bytes=GITHUB_COMMENT_RESPONSE_BYTES,
+                    max_total_bytes=GITHUB_COMMENT_HISTORY_BYTES, return_raw=False):
+    """Fetch one complete, stable GitHub comment history within explicit bounds.
+
+    Oversized multi-comment responses halve ``per_page`` and restart at page 1.
+    Every successful attempt proves a short terminal page. The completed result
+    is fetched a second time at the accepted page size so duplicate IDs,
+    omissions, edits, insertions and deletions during pagination fail closed.
+    """
     if type(max_pages) is not int or not 1 <= max_pages <= 8:
         raise lineage_core.ContractError("Invalid lineage history page budget")
     if type(page_size) is not int or not 1 <= page_size <= 100:
         raise lineage_core.ContractError("Invalid lineage history page size")
-    pages = []
-    for page in range(1, max_pages + 2):
-        raw = fetch_page(page, page_size)
-        lineage_core.History(raw)
-        if len(raw) > page_size or (page > max_pages and raw):
-            raise lineage_core.ContractError("Complete lineage history exceeds page budget")
-        if page <= max_pages:
-            pages.append(raw)
-        if len(raw) < page_size:
-            return lineage_core.History.from_pages(pages)
-    raise lineage_core.ContractError("Incomplete lineage history")
+    item_budget = page_size * max_pages if max_items is None else max_items
+    if type(item_budget) is not int or item_budget < 1:
+        raise lineage_core.ContractError("Invalid lineage history item budget")
+    if (type(max_response_bytes) is not int or max_response_bytes < 1
+            or type(max_total_bytes) is not int or max_total_bytes < max_response_bytes):
+        raise lineage_core.ContractError("Invalid lineage history byte budget")
+    # Eight data pages historically allowed 800 comments. This request budget
+    # also covers terminal proofs, one stable reread, and several size restarts.
+    request_budget = max_pages * 4 + 8
+    requests = total_bytes = 0
+    observed: dict[int, str] = {}
+
+    def encoded_size(value):
+        try:
+            return len(json.dumps(value, ensure_ascii=False, allow_nan=False,
+                                  sort_keys=True, separators=(",", ":")).encode("utf-8"))
+        except (TypeError, ValueError, RecursionError):
+            raise CommentHistoryError("GitHub comment page is not serializable JSON") from None
+
+    def request(page, size):
+        nonlocal requests, total_bytes
+        if requests >= request_budget:
+            raise CommentHistoryError("GitHub comment history exceeds request-page budget")
+        requests += 1
+        try:
+            result = fetch_page(page, size)
+        except GitHubResponseTooLarge as exc:
+            total_bytes += exc.response_bytes
+            if total_bytes > max_total_bytes:
+                raise CommentHistoryError("GitHub comment history exceeds total-byte budget") from None
+            raise
+        except CommentHistoryError:
+            raise
+        except Exception:
+            raise CommentHistoryError(
+                "Authenticated GitHub comment history request failed"
+            ) from None
+        if isinstance(result, GitHubCommentPage):
+            raw, response_bytes = result.payload, result.response_bytes
+        else:
+            raw, response_bytes = result, encoded_size(result)
+        if type(response_bytes) is not int or response_bytes < 0:
+            raise CommentHistoryError("GitHub comment page has no exact byte count")
+        if response_bytes > max_response_bytes:
+            total_bytes += response_bytes
+            if total_bytes > max_total_bytes:
+                raise CommentHistoryError("GitHub comment history exceeds total-byte budget")
+            raise GitHubResponseTooLarge(response_bytes, max_response_bytes)
+        total_bytes += response_bytes
+        if total_bytes > max_total_bytes:
+            raise CommentHistoryError("GitHub comment history exceeds total-byte budget")
+        return raw
+
+    def attempt(size):
+        items = []
+        fingerprints: dict[int, str] = {}
+        page = 1
+        while True:
+            raw = request(page, size)
+            try:
+                lineage_core.History(raw)
+            except lineage_core.ContractError:
+                raise CommentHistoryError("GitHub comment page is unreadable") from None
+            if len(raw) > size:
+                raise CommentHistoryError("GitHub comment page exceeds requested item count")
+            for comment in raw:
+                comment_id = comment.get("id")
+                if type(comment_id) is not int or comment_id <= 0:
+                    raise CommentHistoryError("GitHub comment has no stable positive id")
+                fingerprint = json.dumps(comment, ensure_ascii=False, allow_nan=False,
+                                         sort_keys=True, separators=(",", ":"))
+                if comment_id in fingerprints:
+                    raise CommentHistoryError("GitHub comment history contains duplicate ids")
+                if comment_id in observed and observed[comment_id] != fingerprint:
+                    raise CommentHistoryError("GitHub comment history changed during pagination")
+                fingerprints[comment_id] = fingerprint
+                observed[comment_id] = fingerprint
+                items.append(comment)
+                if len(items) > item_budget:
+                    raise CommentHistoryError("GitHub comment history exceeds item budget")
+            if len(raw) < size:
+                return items, fingerprints
+            page += 1
+
+    accepted_size = page_size
+    while True:
+        try:
+            first, first_fingerprints = attempt(accepted_size)
+            break
+        except GitHubResponseTooLarge:
+            if accepted_size == 1:
+                raise CommentHistoryError(
+                    "One GitHub comment exceeds the per-response byte budget"
+                ) from None
+            accepted_size = max(1, accepted_size // 2)
+
+    if set(observed) - set(first_fingerprints):
+        raise CommentHistoryError("GitHub comment history omitted ids after adaptive restart")
+    try:
+        second, second_fingerprints = attempt(accepted_size)
+    except GitHubResponseTooLarge:
+        raise CommentHistoryError("GitHub comment history changed during stable reread") from None
+    if ([item["id"] for item in first] != [item["id"] for item in second]
+            or first_fingerprints != second_fingerprints):
+        raise CommentHistoryError("GitHub comment history changed during stable reread")
+    return second if return_raw else lineage_core.History(second)
 
 
 def lineage_projection(decision):
@@ -408,6 +565,8 @@ def github_request(
     token: str,
     body: Optional[Dict[str, Any]] = None,
     allow_missing: bool = False,
+    maximum_bytes: int = GITHUB_COMMENT_RESPONSE_BYTES,
+    include_response_bytes: bool = False,
 ) -> Any:
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = urllib.request.Request(
@@ -423,8 +582,11 @@ def github_request(
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            response_body = response.read().decode("utf-8")
-            return lineage_core._json(response_body)
+            response_body = response.read(maximum_bytes + 1)
+            payload = decode_github_response(response_body, maximum_bytes=maximum_bytes)
+            if include_response_bytes:
+                return GitHubCommentPage(payload, len(response_body))
+            return payload
     except urllib.error.HTTPError as exc:
         if allow_missing and exc.code == 404:
             return None
@@ -439,6 +601,8 @@ def github_request_with_fallback(
     tokens: Sequence[GitHubToken],
     body: Optional[Dict[str, Any]] = None,
     allow_missing: bool = False,
+    maximum_bytes: int = GITHUB_COMMENT_RESPONSE_BYTES,
+    include_response_bytes: bool = False,
 ) -> Any:
     """Use the optional PAT first, then fall back to GITHUB_TOKEN on auth errors."""
     token_list = tuple(tokens)
@@ -451,6 +615,8 @@ def github_request_with_fallback(
                 token=token.value,
                 body=body,
                 allow_missing=allow_missing,
+                maximum_bytes=maximum_bytes,
+                include_response_bytes=include_response_bytes,
             )
         except GitHubRequestError as exc:
             last_error = exc
@@ -1078,14 +1244,15 @@ def fetch_issue_comments(
     tokens: Sequence[GitHubToken],
     page_cap: int,
 ) -> list[dict[str, Any]]:
-    pages = []
     def fetch(page, size):
-        raw = github_request_with_fallback("GET",
-            f"/repos/{repo}/issues/{issue_number}/comments?per_page={size}&page={page}", tokens=tokens)
-        pages.append(raw)
-        return raw
-    lineage_history(fetch, max_pages=min(page_cap, 8))
-    return [comment for page in pages for comment in page]
+        return github_request_with_fallback(
+            "GET",
+            f"/repos/{repo}/issues/{issue_number}/comments?per_page={size}&page={page}",
+            tokens=tokens,
+            maximum_bytes=GITHUB_COMMENT_RESPONSE_BYTES,
+            include_response_bytes=True,
+        )
+    return lineage_history(fetch, max_pages=min(page_cap, 8), return_raw=True)
 
 
 def apply_label_decision(

@@ -7,7 +7,12 @@ later entries are regular releases.
 
 ## Unreleased
 
-No additional changes recorded.
+- Audit comment ingestion now uses GitHub-specific response, aggregate-byte,
+  item, and request-page budgets. Oversized pages reduce `per_page` and restart
+  safely, complete histories receive a stable reread, and omissions, duplicate
+  IDs, edits, incomplete terminal proof, and budget exhaustion fail with
+  actionable diagnostics. Lineage controls are recognized only as standalone
+  HTML control-comment lines outside inline and fenced examples (#1104).
 
 ## 1.5.2 — documentation and repository maintenance
 

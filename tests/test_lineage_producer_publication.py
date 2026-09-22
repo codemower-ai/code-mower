@@ -177,12 +177,16 @@ class BoundsTests(unittest.TestCase):
         self.assertEqual(observe(**args).decision.status, "ready")
 
     def test_finite_page_terminal_full_cap_extra_probe_and_failure(self):
-        for pages, success, expected in (([[]], True, [1]),
-                ([[{}, {}], [{}]], True, [1, 2]),
-                ([[{}, {}], [{}, {}], []], True, [1, 2, 3]),
-                ([[{}, {}], [{}, {}], [{}]], False, [1, 2, 3]),
-                ([[{}, {}], None], False, [1, 2]),
-                ([[{}, {}], {}], False, [1, 2])):
+        def record(value):
+            return {'id': value, 'body': 'ordinary', 'user': {'login': 'fixture'}}
+        for pages, success, expected in (([[]], True, [1, 1]),
+                ([[record(1), record(2)], [record(3)]], True, [1, 2, 1, 2]),
+                ([[record(1), record(2)], [record(3), record(4)], []], True,
+                 [1, 2, 3, 1, 2, 3]),
+                ([[record(1), record(2)], [record(3), record(4)], [record(5)]], False,
+                 [1, 2, 3]),
+                ([[record(1), record(2)], None], False, [1, 2]),
+                ([[record(1), record(2)], {}], False, [1, 2])):
             calls = []
             def fetch(page, size, calls=calls, pages=pages):
                 calls.append(page)

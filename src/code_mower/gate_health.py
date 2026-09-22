@@ -11,7 +11,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
-from .audit_labeler_lib import GitHubToken, github_actions_comment_attested
+from .audit_labeler_lib import (
+    GitHubToken,
+    decode_github_response,
+    github_actions_comment_attested,
+    lineage_history,
+)
+from .builder_lineage import ContractError
 
 MARKER = "CODE_MOWER_GATE_HEALTH_ALERT"
 NON_TERMINAL_CHECK_STATUSES = {"queued", "requested", "waiting", "pending", "in_progress"}
@@ -722,7 +728,7 @@ def evaluate(
 
 
 def gh_json(args: Sequence[str], env: dict[str, str] | None = None) -> Any:
-    return json.loads(subprocess.check_output(["gh", *args], env=env, text=True))
+    return decode_github_response(subprocess.check_output(["gh", *args], env=env))
 
 
 def gh_api_list(
@@ -814,13 +820,27 @@ def fetch_per_pr(
                 "commits": (f"pulls/{number}/commits?per_page=100", None, number),
                 "checks": (f"commits/{sha}/check-runs?per_page=100", "check_runs", number),
             }[kind]
-            items = gh_api_list(repo, path, key)
+            if kind == "comments":
+                def comment_page(page: int, size: int,
+                                 target_number: int = number) -> list[dict[str, Any]]:
+                    suffix = "" if page == 1 else f"&page={page}"
+                    return gh_api_list(
+                        repo,
+                        f"issues/{target_number}/comments?per_page={size}{suffix}",
+                        paginate=False,
+                    )
+                items = lineage_history(
+                    comment_page,
+                    return_raw=True,
+                )
+            else:
+                items = gh_api_list(repo, path, key)
             out[out_key] = (
                 enrich_check_runs_with_workflows(repo, items, failures)
                 if kind == "checks"
                 else items
             )
-        except (subprocess.CalledProcessError, ValueError) as exc:
+        except (subprocess.CalledProcessError, ValueError, ContractError) as exc:
             failures.append(f"{kind}:pr-{number}")
             print(f"warning: failed to fetch {kind} for PR #{number}: {exc}", flush=True)
     return out
