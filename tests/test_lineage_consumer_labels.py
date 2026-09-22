@@ -159,7 +159,11 @@ class RawFetchLabelConsumers(unittest.TestCase):
                 if history == 'duplicate-key':
                     return io.BytesIO(b'[{"body":"","user":{"login":"x","login":"y"}}]')
                 if history == 'cap':
-                    payload = [{}]*100
+                    payload = [
+                        {'id': page * 100 + index, 'body': 'ordinary',
+                         'user': {'login': 'someone'}}
+                        for index in range(100)
+                    ]
                 elif history == 'valid':
                     payload = [comment] if route == 'replay' else []
                 elif isinstance(history, list):

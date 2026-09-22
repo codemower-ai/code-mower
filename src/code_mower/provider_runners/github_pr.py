@@ -19,6 +19,8 @@ def _gh_request(
     body: dict[str, Any] | None = None,
     accept: str = "application/vnd.github+json",
     timeout: int = 30,
+    maximum_bytes: int | None = None,
+    include_response_bytes: bool = False,
 ) -> Any:
     """Make a GitHub REST request and return parsed JSON or text diffs."""
 
@@ -45,11 +47,20 @@ def _gh_request(
     for attempt in range(1, max_attempts + 1):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as response:
-                text = response.read().decode("utf-8", errors="replace")
+                from ..audit_labeler_lib import (
+                    GITHUB_COMMENT_RESPONSE_BYTES,
+                    GitHubCommentPage,
+                    decode_github_response,
+                )
+                limit = maximum_bytes or GITHUB_COMMENT_RESPONSE_BYTES
+                raw = response.read(limit + 1)
                 if accept.endswith("diff"):
-                    return text
-                from ..builder_lineage_producer import decode_transport
-                return decode_transport(text)
+                    if len(raw) > limit:
+                        from ..audit_labeler_lib import GitHubResponseTooLarge
+                        raise GitHubResponseTooLarge(len(raw), limit)
+                    return raw.decode("utf-8", errors="replace")
+                payload = decode_github_response(raw, maximum_bytes=limit)
+                return GitHubCommentPage(payload, len(raw)) if include_response_bytes else payload
         except urllib.error.HTTPError:
             raise
         except transient_errors:
@@ -116,20 +127,31 @@ def fetch_issue_comments(
 ) -> list[dict[str, Any]]:
     """Return issue/PR comments with a bounded pagination cap."""
 
-    from ..audit_labeler_lib import lineage_history
+    from ..audit_labeler_lib import (
+        CommentHistoryError,
+        GITHUB_COMMENT_RESPONSE_BYTES,
+        lineage_history,
+    )
     from ..builder_lineage import ContractError
-    pages = []
     def fetch(page, size):
-        raw = _gh_request("GET", f"/repos/{repo}/issues/{issue_number}/comments?per_page={size}&page={page}", token=token)
-        pages.append(raw)
-        return raw
+        return _gh_request(
+            "GET",
+            f"/repos/{repo}/issues/{issue_number}/comments?per_page={size}&page={page}",
+            token=token,
+            maximum_bytes=GITHUB_COMMENT_RESPONSE_BYTES,
+            include_response_bytes=True,
+        )
     try:
-        lineage_history(fetch, page_size=per_page, max_pages=min(page_cap, 8))
-    except ContractError as exc:
+        return lineage_history(
+            fetch,
+            page_size=per_page,
+            max_pages=min(page_cap, 8),
+            return_raw=True,
+        )
+    except (CommentHistoryError, ContractError) as exc:
         # Preserve this public adapter's unreadable-history RuntimeError contract.
         # Raw History/page validation remains mandatory; refusal is never [].
         raise RuntimeError(f"Issue comment history unreadable within pagination cap: {exc}") from exc
-    return [comment for page in pages for comment in page]
 
 
 def post_pr_comment(

@@ -638,7 +638,7 @@ def _remote(
     ]
 
     from .audit_labeler_lib import lineage_identity, lineage_decision, lineage_history, lineage_projection, lineage_authorities
-    from .builder_lineage import Target, ContractError, admit
+    from .builder_lineage import Target, ContractError, admit, lineage_control_comments
     from . import config as policy_config
     budget = 64  # Global history requests, including terminal probes; every listed PR stays visible.
     for pr, raw_pr in zip(prs, (item for item in raw_prs if isinstance(item, Mapping)), strict=True):
@@ -693,7 +693,8 @@ def _remote(
             history_validated = True
 
             for comment in history.comments:
-                if comment.account in authority.accounts and "CODE_MOWER_BUILDER_LINEAGE" in comment.body:
+                if (comment.account in authority.accounts
+                        and lineage_control_comments(comment.body)):
                     has_lineage_markers = True
                     break
 

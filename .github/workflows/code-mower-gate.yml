@@ -126,7 +126,49 @@ jobs:
           workflow_runs_file="$(mktemp)"
           audit_runs_file="$(mktemp)"
           gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" > "${labels_file}"
-          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" > "${comments_file}"
+          python3 - "${comments_file}" <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          try:
+              from tools.audit_labeler_lib import (
+                  GITHUB_COMMENT_RESPONSE_BYTES,
+                  GitHubCommentPage,
+                  decode_github_response,
+                  lineage_history,
+              )
+          except ImportError:  # pragma: no cover - package fallback
+              from code_mower.audit_labeler_lib import (
+                  GITHUB_COMMENT_RESPONSE_BYTES,
+                  GitHubCommentPage,
+                  decode_github_response,
+                  lineage_history,
+              )
+
+          def fetch(page, size):
+              completed = subprocess.run(
+                  ["gh", "api", f"repos/{os.environ['GITHUB_REPOSITORY']}/issues/"
+                   f"{os.environ['PR_NUMBER']}/comments?per_page={size}&page={page}"],
+                  check=False,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.DEVNULL,
+              )
+              if completed.returncode != 0:
+                  raise RuntimeError("authenticated GitHub comment request failed")
+              payload = decode_github_response(
+                  completed.stdout, maximum_bytes=GITHUB_COMMENT_RESPONSE_BYTES)
+              return GitHubCommentPage(payload, len(completed.stdout))
+
+          try:
+              comments = lineage_history(fetch, return_raw=True)
+              result = [comments]
+          except Exception as exc:
+              result = {"code": "bounded_comment_history", "message": str(exc)}
+          with open(sys.argv[1], "w", encoding="utf-8") as handle:
+              json.dump(result, handle)
+          PY
           gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/timeline?per_page=100" > "${events_file}"
           gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "${pr_file}"
           if [ -z "${HEAD_SHA:-}" ]; then
@@ -351,7 +393,11 @@ jobs:
           try:
               history = lineage_core.History.from_pages(comments_payload)
           except ValueError:
-              emit("failure", "Code Mower lineage history unreadable")
+              detail = (comments_payload.get("message")
+                        if isinstance(comments_payload, dict)
+                        and comments_payload.get("code") == "bounded_comment_history"
+                        else "lineage history unreadable")
+              emit("failure", "Code Mower " + str(detail))
               raise SystemExit(0)
           comments = flatten_paginated_items(comments_payload)
           events = flatten_paginated_items(events_payload)

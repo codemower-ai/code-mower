@@ -1600,6 +1600,7 @@ class ListenerInventoryAvailabilityTests(TestCase):
             if args[0] == "api" and "/comments?" in args[1]:
                 return [
                     {
+                        "id": 1,
                         "user": {"login": "untrusted-user"},
                         "body": "<!-- CODE_MOWER_BUILDER_LINEAGE: malicious marker -->",
                         "created_at": NOW.isoformat(),

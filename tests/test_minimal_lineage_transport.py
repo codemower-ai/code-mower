@@ -107,7 +107,7 @@ class MarkerTests(unittest.TestCase):
         good = render(Chain.from_arrivals(target(), [episode()]))
         duplicate_outer = f'<!-- {LINEAGE_MARKER}: {{"schema":"{LINEAGE_SCHEMA}","schema":"{LINEAGE_SCHEMA}","episodes":[]}} -->'
         duplicate_episode = good.replace('"sequence":1', '"sequence":1,"sequence":1')
-        invalid = [LINEAGE_MARKER, f"<!-- {LINEAGE_MARKER}: {{", good[:-3], good + good,
+        invalid = [f"<!-- {LINEAGE_MARKER}: {{", good[:-3], good + good,
                    good + LINEAGE_MARKER, good.replace(": {", " {", 1),
                    marker({"schema": LINEAGE_SCHEMA, "episodes": []}),
                    marker({"schema": LINEAGE_SCHEMA, "episodes": None}),
@@ -120,6 +120,20 @@ class MarkerTests(unittest.TestCase):
         for text in invalid:
             with self.subTest(text=text[:100]), self.assertRaises(ContractError):
                 self.parsed_chain(text)
+
+    def test_marker_name_in_prose_inline_code_and_fences_is_not_control_data(self):
+        examples = (
+            LINEAGE_MARKER,
+            f"The reserved name is {LINEAGE_MARKER}; do not copy it into a control.",
+            f"Use `{LINEAGE_MARKER}` only when documenting the contract.",
+            f"`<!-- {LINEAGE_MARKER}: broken -->`",
+            f"```json\n<!-- {LINEAGE_MARKER}: broken -->\n```",
+            f"```json\n```not-a-close\n<!-- {LINEAGE_MARKER}: broken -->\n```",
+            f"~~~~\n<!-- {LINEAGE_MARKER}: broken -->\n~~~~",
+        )
+        for text in examples:
+            with self.subTest(text=text):
+                self.assertEqual(self.parsed_chain(text).episodes, ())
 
     def test_marker_target_binding_and_mixed_target_chain(self):
         good = render(Chain.from_arrivals(target(), [episode()]))

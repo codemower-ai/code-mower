@@ -13,7 +13,7 @@ import subprocess
 
 from .builder_lineage import (
     Authorities, Chain, ContractError, Episode, FIRST_EPISODE_KINDS, History, Identity,
-    LINEAGE_MARKER, Target, parse_markers, render, resolve,
+    LINEAGE_MARKER, Target, lineage_control_comments, parse_markers, render, resolve,
 )
 from .context_store import ContextStore, strict_json
 
@@ -31,8 +31,11 @@ def _supported(value, kind):
     """The single compatibility boundary; unsupported history must be re-recorded."""
     legacy = False
     if kind == "history":
-        legacy = any(LINEAGE_MARKER in c.body and not re.search(
-            LINEAGE_MARKER + r":", c.body) for c in value.comments)
+        legacy = any(
+            any(not control.startswith(f"<!-- {LINEAGE_MARKER}: ")
+                for control in lineage_control_comments(c.body))
+            for c in value.comments
+        )
     elif kind == "episode":
         legacy = isinstance(value, dict) and (
             "schema" in value or value.get("writer_state") == "self_quiescent")
@@ -85,25 +88,12 @@ def decode_transport(raw):
 
 
 def fetch_history(fetch_page, *, page_size=100, max_pages=8):
-    """Finite explicit requests, with one empty extra-page proof at a full cap."""
-    if type(page_size) is not int or not 1 <= page_size <= 100:
-        raise ProducerRefusal("Invalid history page size.")
-    if type(max_pages) is not int or not 1 <= max_pages <= 8:
-        raise ProducerRefusal("Invalid history page cap.")
-    pages = []
-    for page in range(1, max_pages + 2):
-        try:
-            raw = fetch_page(page, page_size)
-        except Exception:
-            raise ProducerRefusal("Authenticated history request failed.") from None
-        History(raw)  # Validate *before* shape/terminal-page decisions.
-        if len(raw) > page_size or (page > max_pages and raw):
-            raise ProducerRefusal("Complete history exceeds the page cap.")
-        if page <= max_pages:
-            pages.append(raw)
-        if len(raw) < page_size:
-            return History.from_pages(pages)
-    raise AssertionError("finite page probe must terminate")
+    """Compatibility entrypoint for the shared bounded history contract."""
+    from .audit_labeler_lib import lineage_history
+    try:
+        return lineage_history(fetch_page, page_size=page_size, max_pages=max_pages)
+    except Exception as exc:
+        raise ProducerRefusal(f"Authenticated history request failed: {exc}") from exc
 
 
 @dataclass(frozen=True)
@@ -322,10 +312,19 @@ def projection(observation):
 
 class GitHub:
     """Authenticated gh transport with finite requests; no checkout or config execution."""
-    def _json(self, endpoint, *args):
+    def _json(self, endpoint, *args, include_response_bytes=False):
         result = subprocess.run(["gh", "api", endpoint, *args], check=True, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30)
-        return decode_transport(result.stdout)
+        from .audit_labeler_lib import (
+            GITHUB_COMMENT_RESPONSE_BYTES,
+            GitHubCommentPage,
+            decode_github_response,
+        )
+        payload = decode_github_response(result.stdout,
+                                         maximum_bytes=GITHUB_COMMENT_RESPONSE_BYTES)
+        if include_response_bytes:
+            return GitHubCommentPage(payload, len(result.stdout.encode("utf-8")))
+        return payload
 
     def snapshot(self, target):
         raw = self._json(f"repos/{target.repo}/pulls/{target.pr_number}")
@@ -342,7 +341,8 @@ class GitHub:
 
     def history(self, target):
         return fetch_history(lambda page, size: self._json(
-            f"repos/{target.repo}/issues/{target.pr_number}/comments?per_page={size}&page={page}"))
+            f"repos/{target.repo}/issues/{target.pr_number}/comments?per_page={size}&page={page}",
+            include_response_bytes=True))
 
     def pulls_for_branch(self, repo, branch):
         """Every PR ever opened from one same-repository branch, in one finite read.

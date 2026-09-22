@@ -21,6 +21,7 @@ MAX_EPISODES = 32
 MAX_RAW_ARRIVALS = 560
 LINEAGE_SCHEMA = "code_mower.builderLineage.v1"
 LINEAGE_MARKER = "CODE_MOWER_BUILDER_LINEAGE"
+LINEAGE_CONTROL_PREFIX = f"<!-- {LINEAGE_MARKER}"
 CONTINUATION_WRITER_STATE = "same_writer"
 HANDOFF_WRITER_STATES = frozenset({"terminated", "completed", "cancelled"})
 # A creation records the same independently observed writer exit as a handoff,
@@ -390,12 +391,17 @@ def parse_markers(history: History, authorities: Authorities) -> Iterable[Mappin
 
 def _marker_arrivals(history: History, authorities: Authorities) -> Iterable[Mapping]:
     for comment in history.comments:
-        if comment.account not in authorities.accounts or LINEAGE_MARKER not in comment.body:
+        if comment.account not in authorities.accounts:
             continue
-        if comment.body.count(LINEAGE_MARKER) != 1:
+        controls = lineage_control_comments(comment.body)
+        if not controls:
+            continue
+        if len(controls) != 1:
             raise ContractError("multiple announced lineage markers")
-        match = re.search(r"<!--\s*" + LINEAGE_MARKER + r":\s*(.*?)\s*-->",
-                          comment.body, re.DOTALL)
+        match = re.fullmatch(
+            re.escape(f"<!-- {LINEAGE_MARKER}: ") + r"(.+) -->",
+            controls[0],
+        )
         if match is None:
             raise ContractError("malformed or unterminated lineage marker")
         payload = _mapping(_json(match.group(1)), {"schema", "episodes"})
@@ -406,6 +412,36 @@ def _marker_arrivals(history: History, authorities: Authorities) -> Iterable[Map
             raise ContractError("marker must contain a nonempty episode list")
         # Never slice a snapshot. Even repeated arrivals count at the Chain.
         yield from episodes
+
+
+def lineage_control_comments(body: object) -> tuple[str, ...]:
+    """Return exact standalone lineage HTML controls outside Markdown fences.
+
+    The marker name is public documentation as well as a reserved control name.
+    Ordinary prose, inline code and fenced examples therefore cannot announce
+    lineage.  A line beginning with the exact reserved HTML prefix is control
+    data; once announced by a trusted authority it must parse completely or the
+    caller fails closed.
+    """
+    if not isinstance(body, str):
+        return ()
+    controls = []
+    fence_character = ""
+    fence_length = 0
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if fence_character:
+            if re.fullmatch(re.escape(fence_character) + "{" + str(fence_length) + ",}", line):
+                fence_character, fence_length = "", 0
+            continue
+        fence = re.match(r"^(`{3,}|~{3,})", line)
+        if fence:
+            token = fence.group(1)
+            fence_character, fence_length = token[0], len(token)
+            continue
+        if line.startswith(LINEAGE_CONTROL_PREFIX):
+            controls.append(line)
+    return tuple(controls)
 
 
 def render(chain: Chain) -> str:

@@ -112,7 +112,15 @@ class ProjectionConsumers(unittest.TestCase):
                     'statusCheckRollup': []} for i in range(1, 11)]
             if args[0] == 'api':
                 calls.append(args)
-                return [{}]*100
+                import re
+                match = re.search(r"issues/(\d+)/comments\?per_page=\d+&page=(\d+)", args[1])
+                assert match
+                pr_number, page = map(int, match.groups())
+                return [
+                    {"id": pr_number * 100_000 + page * 100 + index,
+                     "user": {"login": "someone"}, "body": "ordinary"}
+                    for index in range(100)
+                ]
             return []
         report = lane_status.collect_status(repo=REPO, gh_json_runner=gh, lineage_config=config,
             command_runner=lambda args: subprocess.CompletedProcess(args, 0, '', ''))

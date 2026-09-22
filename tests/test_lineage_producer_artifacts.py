@@ -24,7 +24,7 @@ BASE = "e818a3b639dfe903bdc16aff3674af98a5a08233"
 # contract, so both mirrors of that one file move together to the digest below.
 # The accepted #963 handoff/continuation semantics and their rendered marker
 # bytes are unchanged, and tests/test_lineage_creation.py asserts both.
-CORE_HASH = "08cbd85276e0c208bbcdbd715060326a781b1eea533a6ce34dbd208278ee289d"
+CORE_HASH = "645b7a0dbd92fd5ac9bec743ce19baa70104d8b4ee1f2c5db552bff4b9e1b4ca"
 ASSETS = ("workflows/builder-lineage-producer.yml.j2", "lanes/lineage-producer.sh")
 
 
@@ -177,7 +177,9 @@ else:
     if mode == 'history-object': raw = {}
     if mode == 'history-mixed': raw = [None, {'user': None}]
     if mode == 'history-bad-body': raw = [{'body': None}]
-    if mode == 'page-cap': raw = [{}] * 100
+    if mode == 'page-cap':
+        raw = [{'id': page * 100 + index, 'body': 'ordinary',
+                'user': {'login': 'fixture'}} for index in range(100)]
 print(json.dumps(raw))
 ''')
         gh.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + " -I -S " + shlex.quote(str(gh_code)) + " \"$@\"\n")
