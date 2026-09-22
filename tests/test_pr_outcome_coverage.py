@@ -2575,7 +2575,7 @@ class PrOutcomeAuditP2Tests(unittest.TestCase):
             )
             self.assertNotIn(str(repo_path), " ".join(result["errors"]))
 
-    def test_mismatched_repo_slug_suppresses_complete_coverage(self) -> None:
+    def test_mismatched_repo_slug_isolated_from_current_repo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_path = Path(tmp)
             builder_dir = repo_path / ".code-mower" / "builder-runs"
@@ -2605,17 +2605,112 @@ class PrOutcomeAuditP2Tests(unittest.TestCase):
             result = json.loads(raw)
             events = self._emitted_events(result)
             pr2 = events["2"]
-            self.assertEqual(pr2["dimensions"]["cost_coverage"], "partial")
-            self.assertEqual(pr2["metrics"]["cost_expected_run_count"], 2)
-            self.assertIn(
-                "unreadable-evidence",
-                pr2["dimensions"]["missing_cost_sources"],
+            self.assertEqual(pr2["dimensions"]["cost_coverage"], "complete")
+            self.assertEqual(pr2["metrics"]["cost_expected_run_count"], 1)
+            self.assertEqual(pr2["metrics"]["cost_reported_run_count"], 1)
+            self.assertEqual(result["errors"], [])
+
+    def test_shared_spend_rows_for_other_repo_do_not_suppress_current_repo(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            spend_path = repo_path / ".code-mower" / "reviewer-spend.json"
+            spend_path.parent.mkdir(parents=True)
+            spend_path.write_text(
+                json.dumps(
+                    {
+                        "schema": reviewer_spend.SPEND_SCHEMA,
+                        "runs": [
+                            {
+                                "run_id": "current",
+                                "lane": "claude-audit",
+                                "repo": "owner/repo",
+                                "pr_number": 2,
+                                "head_sha": "abc123",
+                                "model": "sonnet",
+                                "wall_seconds": 1.0,
+                                "verdict": "PASS",
+                                "created_at": "2026-09-03T11:00:00Z",
+                                "cost_usd": 0.05,
+                            },
+                            {
+                                "run_id": "other",
+                                "lane": "claude-audit",
+                                "repo": "owner/other-repo",
+                                "pr_number": 9,
+                                "head_sha": "def456",
+                                "model": "sonnet",
+                                "wall_seconds": 1.0,
+                                "verdict": "PASS",
+                                "created_at": "2026-09-03T11:00:00Z",
+                                "cost_usd": 0.07,
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
             )
-            self.assertTrue(pr2["dimensions"]["evidence_incomplete"])
+
+            code, raw = self._run_upload(
+                repo_path, repo_path / "bundle", [self._merged_pr("2")]
+            )
+            self.assertEqual(code, 0, raw)
+            result = json.loads(raw)
+            pr2 = self._emitted_events(result)["2"]
+            self.assertEqual(pr2["dimensions"]["cost_coverage"], "complete")
+            self.assertEqual(pr2["metrics"]["cost_expected_run_count"], 1)
+            self.assertEqual(pr2["metrics"]["reported_cost_usd"], 0.05)
+            self.assertEqual(result["errors"], [])
+
+    def test_builder_branch_links_only_one_exact_github_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.mkdir(parents=True)
+            builder = _builder_run_event("b2", "", 0.10)
+            builder["dimensions"]["branch"] = "codex/issue-1"
+            (builder_dir / "codex-issue-1.cloud-event.json").write_text(
+                json.dumps(builder), encoding="utf-8"
+            )
+            pr = {**self._merged_pr("2"), "headRefName": "codex/issue-1"}
+
+            code, raw = self._run_upload(repo_path, repo_path / "bundle", [pr])
+            self.assertEqual(code, 0, raw)
+            result = json.loads(raw)
+            pr2 = self._emitted_events(result)["2"]
+            self.assertEqual(pr2["dimensions"]["cost_coverage"], "complete")
+            self.assertEqual(pr2["metrics"]["cost_expected_run_count"], 1)
+            self.assertEqual(pr2["metrics"]["reported_cost_usd"], 0.10)
+            self.assertEqual(result["errors"], [])
+
+    def test_ambiguous_builder_branch_remains_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.mkdir(parents=True)
+            builder = _builder_run_event("b2", "", 0.10)
+            builder["dimensions"]["branch"] = "shared/branch"
+            (builder_dir / "shared-branch.cloud-event.json").write_text(
+                json.dumps(builder), encoding="utf-8"
+            )
+            prs = [
+                {**self._merged_pr("2"), "headRefName": "shared/branch"},
+                {**self._merged_pr("3"), "headRefName": "shared/branch"},
+            ]
+
+            code, raw = self._run_upload(repo_path, repo_path / "bundle", prs)
+            self.assertEqual(code, 0, raw)
+            result = json.loads(raw)
+            events = self._emitted_events(result)
+            self.assertEqual(events["2"]["dimensions"]["cost_coverage"], "unknown")
+            self.assertEqual(events["3"]["dimensions"]["cost_coverage"], "unknown")
             self.assertTrue(
-                any("parsed attempt(s)" in e for e in result["errors"])
+                all(event["dimensions"]["evidence_incomplete"] for event in events.values())
             )
-            self.assertNotIn(str(repo_path), " ".join(result["errors"]))
+            self.assertTrue(
+                any("parsed attempt(s)" in error for error in result["errors"])
+            )
 
     def test_truncated_pr_can_retry_and_emit_later(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2924,6 +3019,22 @@ class PrOutcomeBuilderRunsP2Tests(unittest.TestCase):
             (builder_dir / "devin-local-pr-1-aa11.cloud-event.json").write_text(
                 json.dumps(_builder_run_event("b1", "1", 0.10)),
                 encoding="utf-8",
+            )
+
+            events, unreadable = _builder_run_events(repo_path)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["event_id"], "b1")
+            self.assertEqual(unreadable, [])
+
+    def test_pre_pr_builder_run_with_branch_is_valid_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            builder_dir = repo_path / ".code-mower" / "builder-runs"
+            builder_dir.mkdir(parents=True)
+            builder = _builder_run_event("b1", "", 0.10)
+            builder["dimensions"]["branch"] = "codex/issue-1"
+            (builder_dir / "codex-issue-1.cloud-event.json").write_text(
+                json.dumps(builder), encoding="utf-8"
             )
 
             events, unreadable = _builder_run_events(repo_path)
