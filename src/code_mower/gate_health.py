@@ -13,11 +13,19 @@ from typing import Any, Sequence
 
 from .audit_labeler_lib import (
     GitHubToken,
+    GitHubResponseTooLarge,
     decode_github_response,
     github_actions_comment_attested,
     lineage_history,
 )
 from .builder_lineage import ContractError
+
+GITHUB_READ_ERRORS = (
+    subprocess.CalledProcessError,
+    ValueError,
+    ContractError,
+    GitHubResponseTooLarge,
+)
 
 MARKER = "CODE_MOWER_GATE_HEALTH_ALERT"
 NON_TERMINAL_CHECK_STATUSES = {"queued", "requested", "waiting", "pending", "in_progress"}
@@ -792,7 +800,7 @@ def enrich_check_runs_with_workflows(
                             "Accept: application/vnd.github+json",
                         ]
                     )
-            except (subprocess.CalledProcessError, ValueError) as exc:
+            except GITHUB_READ_ERRORS as exc:
                 failures.append(f"workflow-run:{run_id}")
                 print(f"warning: failed to fetch workflow run {run_id}: {exc}", flush=True)
             workflow_run = workflow_runs.get(run_id) or {}
@@ -840,7 +848,7 @@ def fetch_per_pr(
                 if kind == "checks"
                 else items
             )
-        except (subprocess.CalledProcessError, ValueError, ContractError) as exc:
+        except GITHUB_READ_ERRORS as exc:
             failures.append(f"{kind}:pr-{number}")
             print(f"warning: failed to fetch {kind} for PR #{number}: {exc}", flush=True)
     return out
@@ -893,7 +901,7 @@ def fetch_recent_pr_comments(
             repo,
             f"issues/comments?per_page=100&since={since}",
         )
-    except (subprocess.CalledProcessError, ValueError) as exc:
+    except GITHUB_READ_ERRORS as exc:
         failures.append("comments:recent")
         print(f"warning: failed to fetch recent issue comments: {exc}", flush=True)
         return out
@@ -912,7 +920,7 @@ def fetch_recent_workflow_runs(repo: str, failures: list[str]) -> list[dict[str,
             "workflow_runs",
             paginate=False,
         )
-    except (subprocess.CalledProcessError, ValueError) as exc:
+    except GITHUB_READ_ERRORS as exc:
         failures.append("workflow-runs:recent")
         print(f"warning: failed to fetch recent workflow runs: {exc}", flush=True)
         return []
@@ -931,7 +939,7 @@ def fetch_workflow_run_jobs(
                 f"actions/runs/{run_id}/jobs?per_page=20",
                 "jobs",
             )
-        except (subprocess.CalledProcessError, ValueError) as exc:
+        except GITHUB_READ_ERRORS as exc:
             failures.append(f"workflow-jobs:{run_id}")
             print(f"warning: failed to fetch workflow jobs for run {run_id}: {exc}", flush=True)
     return out
@@ -965,7 +973,7 @@ def fetch_head_times(
                 ["api", f"repos/{repo}/commits/{sha}", "-H", "Accept: application/vnd.github+json"]
             )
             out[sha] = parse_time(str(data["commit"]["committer"]["date"]))
-        except (KeyError, subprocess.CalledProcessError, ValueError) as exc:
+        except (KeyError, *GITHUB_READ_ERRORS) as exc:
             failures.append(f"head-time:{sha[:12]}")
             print(f"warning: failed to fetch head time for {sha[:12]}: {exc}", flush=True)
     return out
@@ -1252,7 +1260,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if runner_check != "disabled"
             else []
         )
-    except subprocess.CalledProcessError as exc:
+    except GITHUB_READ_ERRORS as exc:
         if runner_check == "required":
             print(f"error: required runner check failed: {exc}", flush=True)
             print(

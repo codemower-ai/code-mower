@@ -17,6 +17,7 @@ from code_mower.gate_health import (
     recent_alert_keys,
     workflow_run_jobless_failure_alerts,
 )
+from code_mower.audit_labeler_lib import GitHubResponseTooLarge
 
 NOW = datetime(2026, 8, 17, 5, 0, tzinfo=timezone.utc)
 SHA = "a" * 40
@@ -729,6 +730,66 @@ class GateHealthTests(unittest.TestCase):
         self.assertNotIn("--paginate", calls[0])
         self.assertNotIn("--slurp", calls[0])
         self.assertIn("repos/owner/repo/actions/runs?per_page=20", calls[0])
+
+    def test_oversized_github_reads_degrade_through_every_bounded_helper(self) -> None:
+        import code_mower.gate_health as gate_health
+
+        error = GitHubResponseTooLarge(8 * 1024 * 1024 + 1, 8 * 1024 * 1024)
+        original_gh_json = gate_health.gh_json
+        original_gh_api_list = gate_health.gh_api_list
+        try:
+            gate_health.gh_json = lambda _args, env=None: (_ for _ in ()).throw(error)
+            failures: list[str] = []
+            enriched = gate_health.enrich_check_runs_with_workflows(
+                "owner/repo",
+                [{"details_url": "https://github.com/owner/repo/actions/runs/123/job/456"}],
+                failures,
+            )
+            self.assertEqual(enriched[0]["run_id"], "123")
+            self.assertIn("workflow-run:123", failures)
+
+            gate_health.gh_api_list = lambda *_args, **_kwargs: (_ for _ in ()).throw(error)
+            self.assertEqual(
+                fetch_per_pr(
+                    "owner/repo",
+                    [{"number": 9, "headRefOid": SHA}],
+                    "checks",
+                    failures,
+                ),
+                {},
+            )
+            self.assertEqual(
+                gate_health.fetch_recent_pr_comments(
+                    "owner/repo", [{"number": 9}], "2026-08-17T00:00:00Z", failures
+                ),
+                {9: []},
+            )
+            self.assertEqual(fetch_recent_workflow_runs("owner/repo", failures), [])
+            self.assertEqual(
+                gate_health.fetch_workflow_run_jobs("owner/repo", ["123"], failures),
+                {},
+            )
+            self.assertEqual(
+                gate_health.fetch_head_times(
+                    "owner/repo", [{"headRefOid": SHA}], failures
+                ),
+                {},
+            )
+        finally:
+            gate_health.gh_json = original_gh_json
+            gate_health.gh_api_list = original_gh_api_list
+
+        self.assertEqual(
+            failures,
+            [
+                "workflow-run:123",
+                "checks:pr-9",
+                "comments:recent",
+                "workflow-runs:recent",
+                "workflow-jobs:123",
+                f"head-time:{SHA[:12]}",
+            ],
+        )
 
     def test_fetch_check_runs_uses_pr_numbers_for_duplicate_head_shas(self) -> None:
         import code_mower.gate_health as gate_health
