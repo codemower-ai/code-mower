@@ -1,11 +1,15 @@
 """Raw ingress, shared bounds, public readback and exact effect ordering."""
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
+from code_mower.audit_labeler_lib import GitHubCommentPage
 from code_mower.builder_lineage import Authorities, ContractError, History, Identity
 from code_mower.builder_lineage_producer import (
-    ProducerRefusal, Snapshot, decode_transport, fetch_history, observe, publish, selected_history,
+    GitHub, ProducerRefusal, Snapshot, decode_transport, fetch_history, observe, publish,
+    selected_history,
 )
 from code_mower.builder_runs import record_lineage_builder
 from lineage_producer_fixtures import (
@@ -95,6 +99,36 @@ class PublicationTests(unittest.TestCase):
             self.assertTrue(caught.exception.comment_posted)
             self.assertFalse(caught.exception.labels_attempted)
             self.assertEqual(io.effects, ["snapshot", "history", "snapshot", "post", "history"])
+
+    def test_initial_github_history_transport_failure_has_no_partial_effect(self):
+        io = GitHub()
+        effects = GitHubIO()
+        io.snapshot = effects.snapshot
+        io.post = effects.post
+        io.labels = effects.labels
+        failure = subprocess.CalledProcessError(1, ["gh", "api"])
+        with mock.patch.object(io, "_json", side_effect=failure):
+            with self.assertRaisesRegex(
+                    ProducerRefusal, "Authenticated history request failed") as caught:
+                self.publish(io)
+        self.assertFalse(caught.exception.comment_posted)
+        self.assertFalse(caught.exception.labels_attempted)
+        self.assertEqual(effects.effects, ["snapshot"])
+
+    def test_post_then_github_history_transport_failure_preserves_partial_effect(self):
+        io = GitHub()
+        effects = GitHubIO()
+        io.snapshot = effects.snapshot
+        io.post = effects.post
+        io.labels = effects.labels
+        failure = subprocess.CalledProcessError(1, ["gh", "api"])
+        pages = [GitHubCommentPage([], 2), GitHubCommentPage([], 2), failure]
+        with mock.patch.object(io, "_json", side_effect=pages):
+            with self.assertRaises(ProducerRefusal) as caught:
+                self.publish(io)
+        self.assertTrue(caught.exception.comment_posted)
+        self.assertFalse(caught.exception.labels_attempted)
+        self.assertEqual(effects.effects, ["snapshot", "snapshot", "post"])
 
     def test_public_only_missing_final_control(self):
         io = GitHubIO(2)

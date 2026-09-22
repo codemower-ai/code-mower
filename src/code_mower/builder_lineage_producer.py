@@ -340,8 +340,7 @@ class GitHub:
         return Snapshot(observed, raw["user"]["login"], tuple(item["name"] for item in labels))
 
     def history(self, target):
-        from .audit_labeler_lib import lineage_history
-        return lineage_history(lambda page, size: self._json(
+        return fetch_history(lambda page, size: self._json(
             f"repos/{target.repo}/issues/{target.pr_number}/comments?per_page={size}&page={page}",
             include_response_bytes=True))
 
