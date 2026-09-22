@@ -1529,7 +1529,7 @@ def _candidate_runbook_checks(repo_path: Path) -> tuple[list[str], list[str]]:
         )
         release_assertions = (
             "exact accepted contract identity", "24 hours",
-            "two independent installation", "capability-gated telemetry",
+            "two independent installation", "capability-gated lifecycle-summary",
         )
     else:
         order = (

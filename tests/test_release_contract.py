@@ -481,9 +481,15 @@ class ReleaseContractTests(unittest.TestCase):
 
     def test_removing_exact_candidate_qualification_or_moving_tag_first_blocks(self):
         text = (ROOT / "docs/v160-release-runbook.md").read_text()
-        for bad in (text.replace("## 3. Qualify the exact candidate", "## Removed qualification"),
-                    text.replace('git tag -a v1.6.0 "$RELEASE_SHA"', "tag removed"),
-                    text.replace("aggregate campaign ACU", "unspecified budget")):
+        for bad in (
+            text.replace("## 3. Qualify the exact candidate", "## Removed qualification"),
+            text.replace('git tag -a v1.6.0 "$RELEASE_SHA"', "tag removed"),
+            text.replace("aggregate campaign ACU", "unspecified budget"),
+            text.replace(
+                "capability-gated lifecycle-summary",
+                "unspecified capability qualification",
+            ),
+        ):
             with self.subTest(text=bad[:10]), patch.object(release_readiness, "_read_text_if_exists", return_value=bad):
                 order, assertions = release_readiness._candidate_runbook_checks(ROOT)
                 self.assertTrue(order or assertions)
