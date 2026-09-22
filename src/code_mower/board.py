@@ -5112,6 +5112,16 @@ def _inventory_next_action(
         if len(managed_commands) == 1 and len(stale) == 1:
             return "restart stale managed Board", managed_commands[0]
         ports = ", ".join(str(board.get("port")) for board in stale)
+        if any(
+            not (board.get("restart_command") or board.get("promotion_command"))
+            for board in stale
+        ):
+            target = shlex.quote(repo) if repo else "OWNER/REPO"
+            return (
+                "restart stale Board",
+                f"stop stale Board port(s) {ports}, then restart with "
+                f"code-mower board serve --repo {target}",
+            )
         return (
             "restart stale Board",
             f"use the restart or promotion command on stale Board port(s) {ports}",

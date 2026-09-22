@@ -906,6 +906,11 @@ class BoardTests(TestCase):
         self.assertEqual(payload["boards"][0]["invoking_version"], board.CODE_MOWER_VERSION)
         self.assertIn("legacy / restart recommended", payload["boards"][0]["status_message"])
         self.assertEqual(payload["next_action"], "restart stale Board")
+        self.assertEqual(
+            payload["next_detail"],
+            "stop stale Board port(s) 5332, then restart with "
+            "code-mower board serve --repo OWNER/REPO",
+        )
         rendered = board.render_inventory_text(payload)
         self.assertIn("health=legacy / restart recommended", rendered)
 
