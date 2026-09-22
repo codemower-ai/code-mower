@@ -18,10 +18,16 @@ service.
   It reports success only when the new binding is proved, reports rollback only
   when the previous binding is proved, and otherwise returns one recovery action
   (#1082 / #1100, hardened by #1103).
-- **Unmanaged pull requests remain observable.** When no lineage policy is
-  configured, the Board and lane status preserve readable pull-request and gate
-  state while labeling lineage as optional. A configured lineage policy still
-  fails closed (#1083 / #1097).
+- **Board inventory identifies the process the current CLI is operating.**
+  `board list --repo` includes only listeners whose identity verifies the
+  repository. Board inventory and lane status expose invoking, serving,
+  installed, managed-service, and restart state consistently. Stale managed
+  services and verified transient Boards receive exact restart or promotion
+  commands (#1063 / #1109).
+- **Unmanaged pull requests remain observable.** An ordinary pull request with
+  no Code Mower provenance is neutral `unmanaged`; the Board and lane status
+  preserve its readable pull-request and gate state. A visible malformed Code
+  Mower claim remains actionable and fail-closed (#1083 / #1097).
 - **Adoption diagnostics are share-safe by default.** Concise, advanced, and
   JSON adoption reports omit private local paths and identifiers unless the
   operator explicitly selects the local-only view (#1084 / #1102).
@@ -38,17 +44,24 @@ service.
   timestamp-only polling and changing nonterminal elapsed-time or usage samples.
   Old clients remain compatible and an unrecognized hosted capability fails
   closed.
+- **Cross-repository cost coverage is isolated and attributable.** Shared
+  builder and reviewer ledgers separate explicitly different repositories, and
+  a pre-PR builder record links only when its branch exactly matches one fetched
+  pull request. Missing, ambiguous, malformed, and same-repository unattributable
+  evidence remains fail-closed. The change adds no upload fields and exports no
+  subscription access, elapsed time, token counts, source, diffs, prompts,
+  transcripts, issue bodies, raw output, credentials, or local paths
+  (#1106 / #1108).
 
 ## Release entry boundary
 
-The source preparation does not establish release acceptance. Issue #1105 may
-build the one immutable candidate only after all three entry gates are complete:
+The Board implementation gate is complete through #1063 / #1109. This source
+preparation does not establish release acceptance. Issue #1105 may build the
+one immutable candidate only after both remaining entry gates are complete:
 
-1. #1063 merges Board inventory filters, invoking/serving version parity, stale
-   service detection, and exact service guidance.
-2. #1104 merges payload-aware audit-comment ingestion and reserved lineage
+1. #1104 merges payload-aware audit-comment ingestion and reserved lineage
    control parsing.
-3. CodeMower.com #978 deploys the backward-compatible consumer and advertises
+2. CodeMower.com #978 deploys the backward-compatible consumer and advertises
    the exact accepted OSS contract identity.
 
 After those gates merge, the retained candidate still needs the bounded private

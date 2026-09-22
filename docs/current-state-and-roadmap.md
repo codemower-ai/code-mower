@@ -153,22 +153,23 @@ future hosted-service work.
 
 `v1.5.2` is released and remains the current supported package. The `v1.6.0`
 source line now contains the completed doctor taxonomy, atomic Board replacement,
-neutral unmanaged-lineage behavior, share-safe adoption diagnostics, and the
-closed metadata-only control-surface summary contract. The optional client
+identity-verified Board inventory and version guidance, neutral `unmanaged`
+state for ordinary pull requests with no Code Mower provenance, share-safe
+adoption diagnostics, cross-repository cost isolation, and the closed
+metadata-only control-surface summary contract. Visible malformed Code Mower
+claims remain actionable and fail-closed. The optional client
 emitter remains fail-closed unless the hosted service advertises the exact
 accepted contract identity.
 
 The [v1.6.0 milestone](https://github.com/codemower-ai/code-mower/milestone/2),
 [epic #1066](https://github.com/codemower-ai/code-mower/issues/1066), and
 [release issue #1105](https://github.com/codemower-ai/code-mower/issues/1105)
-are the live trackers. Three entry gates remain before the immutable candidate:
+are the live trackers. Board clarity #1063 is complete through merged PR #1109.
+Two entry gates remain before the immutable candidate:
 
-1. [#1063](https://github.com/codemower-ai/code-mower/issues/1063) — Board
-   repository filters, invoking/serving version parity, stale-service detection,
-   and exact service guidance;
-2. [#1104](https://github.com/codemower-ai/code-mower/issues/1104) — bounded,
+1. [#1104](https://github.com/codemower-ai/code-mower/issues/1104) — bounded,
    payload-aware audit comment ingestion and reserved control parsing; and
-3. [CodeMower.com #978](https://github.com/codemower-ai/code-mower/issues/978)
+2. [CodeMower.com #978](https://github.com/codemower-ai/code-mower/issues/978)
    — deployed validation, tenant isolation, retention, export/deletion,
    aggregate counts, freshness, and exact capability advertisement.
 

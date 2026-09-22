@@ -238,7 +238,7 @@ If pipx should own the command, reinstall the exact release with cache bypass:
 
 ```bash
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.5.2
+PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" code-mower==1.6.0
 hash -r
 code-mower --version
 ```
@@ -249,7 +249,7 @@ path:
 
 ```bash
 pipx uninstall code-mower
-uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.5.2
+uv tool install --python 3.12 --reinstall --refresh-package code-mower code-mower==1.6.0
 hash -r
 command -v code-mower
 code-mower --version

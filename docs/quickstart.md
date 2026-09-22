@@ -11,7 +11,7 @@ To see the value loop before you touch a product repository, open the
 [Demo Calibration Example](../examples/demo-calibration/README.md), the
 [Board Demo Rehearsal](../examples/board-demo/README.md), and the
 [First-User Demo Transcript](first-user-demo-transcript.md) (a v1.4.0
-illustrative shape, not the v1.5.2 source pin).
+illustrative shape, not the v1.6.0 source pin).
 
 ## 1. Install
 
@@ -24,7 +24,7 @@ is the first-class isolated path:
 
 ```bash
 uv python install 3.12
-uv tool install --python 3.12 code-mower==1.5.2
+uv tool install --python 3.12 code-mower==1.6.0
 code-mower --version
 ```
 
@@ -33,14 +33,14 @@ For a laptop or workstation that already uses pipx:
 ```bash
 python3.12 --version
 export CODE_MOWER_PYTHON="$(command -v python3.12)"
-pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.5.2
+pipx install --python "$CODE_MOWER_PYTHON" code-mower==1.6.0
 code-mower --version
 ```
 
-`1.5.2` is the supervised-pilot release line. Confirm it is visible on the
+`1.6.0` is the supervised-pilot release line. Confirm it is visible on the
 selected package index before using these pinned commands. Release qualification
 uses the exact wheel described by
-[the candidate runbook](v152-release-runbook.md). If you want a future prerelease instead
+[the candidate runbook](v160-release-runbook.md). If you want a future prerelease instead
 of this exact release target, use:
 
 ```bash
@@ -243,7 +243,7 @@ do not put them in repository configuration.
 
 ```bash
 PIP_NO_CACHE_DIR=1 pipx install --force --python "$CODE_MOWER_PYTHON" \
-  'code-mower[coworker]==1.5.2'
+  'code-mower[coworker]==1.6.0'
 code-mower init --easy --context-connection example-context --dry-run
 code-mower init --easy --context-connection example-context --apply
 code-mower context connect coworker --connection example-context
@@ -507,7 +507,7 @@ export bundle, upload dry run, and CodeMower.com dogfood dry run.
 
 ```bash
 code-mower migration package-install-rehearsal \
-  --package-spec code-mower==1.5.2 \
+  --package-spec code-mower==1.6.0 \
   --allow-package-index \
   --python "$(command -v python3.12)" \
   --json

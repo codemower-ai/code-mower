@@ -6,11 +6,12 @@ the release PR merge SHA after every entry gate is complete.
 
 ## 0. Prove the release entry gates
 
-Do not dispatch the candidate workflow until #1063 and #1104 are merged and the
-CodeMower.com #978 deployment advertises the exact accepted contract identity from
-the [qualification contract](v160-qualification.md). Confirm each merge is an
-ancestor of the prospective release head, inspect the authenticated hosted
-health response, and record only public deployment and contract identifiers.
+Board clarity #1063 / #1109 must be an ancestor of the prospective release
+head. Do not dispatch the candidate workflow until #1104 is also merged and the
+CodeMower.com #978 deployment advertises the exact accepted contract identity
+from the [qualification contract](v160-qualification.md). Confirm each merge,
+inspect the authenticated hosted health response, and record only public
+deployment and contract identifiers.
 
 Production client emission remains disabled during this check. A health response
 that is unauthenticated, stale, missing either identity, or names another digest

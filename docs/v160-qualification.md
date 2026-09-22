@@ -12,10 +12,9 @@ of the following and each dependency has its own accepted exact-head evidence:
 
 | Gate | Required state |
 | --- | --- |
-| Board clarity | #1063 merged: repository-filtered inventory, invoking/serving version parity, stale-service detection, and exact restart/promotion guidance |
 | Audit history | #1104 merged: bounded payload-aware comment pagination and exact recognition of reserved lineage controls |
 | Hosted consumer | CodeMower.com #978 deployed before client emission; `/api/health` advertises contract commit `99b657ae9822a689b46d21c41695a4cfb28a177d` and fixture-manifest SHA-256 `9e87c52812a49a1c72d0e0d2448661a3ef17cb8539ca8e029c6669ea9738d62e` |
-| Source scope | #1064/#1099, #1082/#1100/#1103, #1083/#1097, #1084/#1102, and #921/#1098 are ancestors of the release commit |
+| Source scope | #1063/#1109, #1064/#1099, #1082/#1100/#1103, #1083/#1097, #1084/#1102, #921/#1098, and #1106/#1108 are ancestors of the release commit |
 | Release text | The v1.6 epic, release notes, roadmap, package identity, and current documentation agree on final scope |
 
 The first immutable-candidate workflow run before all entry gates hold is
@@ -39,7 +38,7 @@ invalid evidence and must not be reused.
 | Source | Every entry gate above is complete; Python 3.12–3.14 CI, release-integrity, privacy, documentation, package, Graphify, Board, Slack, cloud capability, independent exact-head review, and the authoritative gate pass |
 | Candidate | One merge-SHA wheel/sdist pair is built once, retained, verified, and reused without rebuilding; a changed source or packaged document invalidates it |
 | Board | Repository filters, invoking and serving versions, stale-service classification, atomic replacement/rollback, local lifecycle-summary projection, and exact recovery guidance agree |
-| Audit history | Histories exceeding the former private-context payload limit remain complete and bounded; prose examples do not become controls; malformed real controls, mutation, truncation, duplication, or budget exhaustion fail closed |
+| Audit history | Histories exceeding the former private-context payload limit remain complete and bounded; ordinary prose does not become control data; malformed real controls, mutation, truncation, duplication, or budget exhaustion fail closed |
 | Hosted capability | The deployed authenticated health response advertises the exact accepted contract identity before emission; older or mismatched consumers cause the client to emit nothing |
 | Slack telemetry canary | One owner-authorized private lifecycle exercises start/status/answer/cancel or terminal completion as applicable; only meaningful summaries cross the boundary; local Board state reconciles with authenticated hosted totals and freshness |
 | Privacy and isolation | No task/message prose, answers, source, diffs, prompts, transcripts, response URLs, Slack identities, credentials, private paths, graph/context data, or raw provider output is uploaded; wrong tenant/repository access is denied |

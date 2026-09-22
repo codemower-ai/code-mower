@@ -26,11 +26,17 @@ surface. See the [release notes](docs/v160-release-notes.md) and the
 - Replace managed Board services atomically, verify either the new or restored
   binding from host state, and refuse ambiguous reconciliation (#1082 / #1100,
   hardened by #1103).
-- Treat an unmanaged pull request as a neutral observer state when no lineage
-  policy is configured, without weakening configured lineage enforcement
-  (#1083 / #1097).
+- Filter Board inventory by identity-verified repository, expose invoking,
+  serving, installed, managed-service, and restart state consistently, and give
+  stale managed or transient Boards an exact recovery command (#1063 / #1109).
+- Treat an ordinary pull request with no Code Mower provenance as neutral
+  `unmanaged`, while keeping a visible malformed Code Mower claim actionable
+  and fail-closed (#1083 / #1097).
 - Make adoption diagnostics share-safe by default and require an explicit local
   view for private paths and identifiers (#1084 / #1102).
+- Isolate spend evidence across repositories and attach a pre-PR builder record
+  only when its branch exactly matches one fetched pull request, improving cost
+  coverage without exporting new fields or private data (#1106 / #1108).
 - Freeze the provider-neutral `code_mower.controlSurfaceSessionSummary.v1`
   contract, its accepted and rejected fixtures, capability gate, transition
   suppression, local Board projection, and metadata-only cloud emitter
