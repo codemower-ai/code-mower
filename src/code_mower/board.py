@@ -10,6 +10,7 @@ import heapq
 import json
 import os
 import re
+import shlex
 import signal
 import socket
 import stat
@@ -5093,19 +5094,49 @@ def _probe_board_status(board: Mapping[str, Any], *, timeout: float = 0.75) -> d
     )
 
 
-def _inventory_next_action(boards: list[dict[str, Any]], available: bool) -> tuple[str, str]:
+def _inventory_next_action(
+    boards: list[dict[str, Any]], available: bool, *, repo: str = ""
+) -> tuple[str, str]:
     if not available:
         return "fix local process inspection", "install lsof or ss, or grant this shell permission to inspect local listeners"
     if not boards:
-        return "start Board", "run code-mower board serve --repo OWNER/REPO"
+        target = shlex.quote(repo) if repo else "OWNER/REPO"
+        return "start Board", f"code-mower board serve --repo {target}"
     stale = [board for board in boards if board.get("restart_recommended")]
     if stale:
+        managed_commands = [
+            str(board.get("restart_command") or "")
+            for board in stale
+            if board.get("restart_command")
+        ]
+        if len(managed_commands) == 1 and len(stale) == 1:
+            return "restart stale managed Board", managed_commands[0]
         ports = ", ".join(str(board.get("port")) for board in stale)
-        return "restart stale Board", f"stop stale Board port(s) {ports}, then restart with code-mower board serve --repo OWNER/REPO"
+        if any(
+            not (board.get("restart_command") or board.get("promotion_command"))
+            for board in stale
+        ):
+            target = shlex.quote(repo) if repo else "OWNER/REPO"
+            return (
+                "restart stale Board",
+                f"stop stale Board port(s) {ports}, then restart with "
+                f"code-mower board serve --repo {target}",
+            )
+        return (
+            "restart stale Board",
+            f"use the restart or promotion command on stale Board port(s) {ports}",
+        )
     unresponsive = [board for board in boards if board.get("health") == "unresponsive"]
     if unresponsive:
         ports = ", ".join(str(board.get("port")) for board in unresponsive)
         return "inspect unresponsive Board", f"Board listener port(s) {ports} did not answer /api/identity"
+    promotion_commands = [
+        str(board.get("promotion_command") or "")
+        for board in boards
+        if board.get("promotion_command")
+    ]
+    if len(promotion_commands) == 1 and len(boards) == 1:
+        return "promote transient Board", promotion_commands[0]
     return "use listed localhost URL", "open the Board URL for the repo you want"
 
 
@@ -5237,8 +5268,37 @@ def _default_pid_alive(pid: int) -> bool:
     return True
 
 
+def _board_service_command(
+    action: str, item: Mapping[str, Any], *, managed_service: Any = None
+) -> str:
+    """Return one path-redacted command for a verified Board identity."""
+
+    repo = str(item.get("repo") or "")
+    port = item.get("port")
+    if not board_service.REPO_SLUG_RE.match(repo) or not isinstance(port, int):
+        return ""
+    host = str(getattr(managed_service, "host", "") or item.get("host") or DEFAULT_HOST)
+    service_command = (
+        f"code-mower board service {action} --repo {shlex.quote(repo)} "
+        f"--repo-path . --host {shlex.quote(host)} --port {port}"
+    )
+    if action == "restart":
+        service_command += " --replace"
+    arguments = getattr(managed_service, "arguments", None)
+    recording_enabled = item.get("recording_enabled")
+    if (arguments is not None and "--record-events" not in arguments) or recording_enabled is False:
+        service_command += " --no-record-events"
+    if action == "install":
+        stop_command = (
+            f"code-mower board stop --repo {shlex.quote(repo)} --port {port} --yes"
+        )
+        return f"{stop_command} && {service_command}"
+    return service_command
+
+
 def board_inventory_payload(
     *,
+    repo: str = "",
     show_local_paths: bool = False,
     command_runner: lane_status.CommandRunner = lane_status.run_command,
     status_probe: Any = _probe_board_status,
@@ -5257,15 +5317,30 @@ def board_inventory_payload(
         item["service_supervision"] = (
             ("confirmed" if supervision_confirmed else "unknown") if managed is not None else ""
         )
+        item["identity_verified"] = False
+        item["invoking_version"] = CODE_MOWER_VERSION
+        item["serving_version"] = ""
+        item["installed_version"] = ""
+        item["restart_recommended"] = False
         probed = status_probe(item) if status_probe else {}
         if isinstance(probed, Mapping) and probed.get("schema") in {BOARD_IDENTITY_SCHEMA, lane_status.LANE_STATUS_SCHEMA}:
             board_meta = probed.get("board") if isinstance(probed.get("board"), Mapping) else {}
             version = board_meta.get("version") if isinstance(board_meta.get("version"), Mapping) else {}
+            identity_repo = str(probed.get("repo") or "")
+            serving_version = str(version.get("serving_version") or "")
             item["health"] = "ok"
-            item["repo"] = str(probed.get("repo") or item.get("repo") or "")
-            item["serving_version"] = str(version.get("serving_version") or "")
+            item["repo"] = identity_repo or str(item.get("repo") or "")
+            item["identity_verified"] = bool(board_service.REPO_SLUG_RE.match(identity_repo))
+            item["serving_version"] = serving_version
             item["installed_version"] = str(version.get("installed_version") or "")
-            item["restart_recommended"] = bool(version.get("restart_recommended"))
+            recording = board_meta.get("recording")
+            if isinstance(recording, Mapping) and isinstance(recording.get("enabled"), bool):
+                item["recording_enabled"] = recording["enabled"]
+            item["restart_recommended"] = bool(version.get("restart_recommended")) or bool(
+                serving_version and serving_version != CODE_MOWER_VERSION
+            )
+            if serving_version and serving_version != CODE_MOWER_VERSION:
+                item["stale_reason"] = "serving_version_differs_from_invoking_version"
         elif isinstance(probed, Mapping) and not probed.get("available", True):
             reason = str(probed.get("reason") or "")
             if reason.startswith("legacy_"):
@@ -5278,12 +5353,42 @@ def board_inventory_payload(
             else:
                 item["health"] = "unresponsive"
                 item["status_message"] = str(probed.get("message") or "Board status unavailable")
-                item.setdefault("restart_recommended", False)
+                item["restart_recommended"] = False
         else:
             item["health"] = "unknown"
-            item.setdefault("restart_recommended", False)
+        if item["identity_verified"]:
+            if item["managed"] and item["restart_recommended"]:
+                item["restart_command"] = _board_service_command(
+                    "restart", item, managed_service=managed
+                )
+            elif not item["managed"]:
+                item["promotion_command"] = _board_service_command("install", item)
         boards.append(item)
-    next_action, next_detail = _inventory_next_action(boards, bool(local.get("available")))
+    filter_payload: dict[str, Any] | None = None
+    if repo:
+        requested = repo.casefold()
+        verified = [
+            item
+            for item in boards
+            if item.get("identity_verified") and str(item.get("repo") or "").casefold() == requested
+        ]
+        filter_payload = {
+            "repo": repo,
+            "matched": len(verified),
+            "excluded_identity_unverified": sum(
+                1 for item in boards if not item.get("identity_verified")
+            ),
+            "excluded_other_repository": sum(
+                1
+                for item in boards
+                if item.get("identity_verified")
+                and str(item.get("repo") or "").casefold() != requested
+            ),
+        }
+        boards = verified
+    next_action, next_detail = _inventory_next_action(
+        boards, bool(local.get("available")), repo=repo
+    )
     payload = {
         "schema": BOARD_INVENTORY_SCHEMA,
         "available": bool(local.get("available")),
@@ -5292,6 +5397,10 @@ def board_inventory_payload(
         "next_action": next_action,
         "next_detail": next_detail,
     }
+    if filter_payload is not None:
+        payload["filter"] = filter_payload
+        if not boards and local.get("available"):
+            payload["message"] = f"no identity-verified Boards for {repo}"
     if not show_local_paths:
         _redact_inventory_paths(payload)
     return payload
@@ -5303,7 +5412,8 @@ def render_inventory_text(payload: Mapping[str, Any]) -> str:
         lines.append(f"Inventory: unavailable ({payload.get('message') or 'local process inspection failed'})")
     boards = payload.get("boards") if isinstance(payload.get("boards"), list) else []
     if not boards and payload.get("available"):
-        lines.append("Boards: none visible")
+        message = str(payload.get("message") or "").strip()
+        lines.append(f"Boards: none visible ({message})" if message else "Boards: none visible")
     for board_item in boards:
         repo = board_item.get("repo") or "unknown repo"
         version = board_item.get("serving_version") or "unknown version"
@@ -5327,8 +5437,14 @@ def render_inventory_text(payload: Mapping[str, Any]) -> str:
             managed = ""
         lines.append(
             f"- {board_item.get('url') or 'localhost'} pid={board_item.get('pid')} "
-            f"repo={repo} version={version} health={health}{restart}{managed}{cwd}"
+            f"repo={repo} invoking={board_item.get('invoking_version') or 'unknown'} "
+            f"serving={version} installed={board_item.get('installed_version') or 'unknown'} "
+            f"health={health}{restart}{managed}{cwd}"
         )
+        if board_item.get("restart_command"):
+            lines.append(f"  restart: {board_item['restart_command']}")
+        if board_item.get("promotion_command"):
+            lines.append(f"  promote: {board_item['promotion_command']}")
     lines.extend(["", f"Next: {payload.get('next_action') or 'inspect'}"])
     if payload.get("next_detail"):
         lines.append(f"Detail: {payload['next_detail']}")
@@ -6277,6 +6393,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="code-mower board")
     subparsers = parser.add_subparsers(dest="command", required=True)
     list_parser = subparsers.add_parser("list")
+    list_parser.add_argument("--repo", default="", help="only show identity-verified Boards for OWNER/REPO")
     list_parser.add_argument("--show-local-paths", action="store_true", help="show local cwd paths for debugging")
     list_parser.add_argument("--json", action="store_true")
     stop_parser = subparsers.add_parser("stop")
@@ -6367,7 +6484,9 @@ def main(argv: list[str] | None = None) -> int:
     reset_parser.add_argument("--json", action="store_true")
     args = parser.parse_args(list(argv or ()))
     if args.command == "list":
-        payload = board_inventory_payload(show_local_paths=args.show_local_paths)
+        if args.repo and not board_service.REPO_SLUG_RE.match(args.repo):
+            parser.error("board list --repo must be OWNER/REPO")
+        payload = board_inventory_payload(repo=args.repo, show_local_paths=args.show_local_paths)
         output = json.dumps(payload, indent=2, sort_keys=True) + "\n" if args.json else render_inventory_text(payload)
         print(output, end="")
         return 0 if payload.get("available") else 1

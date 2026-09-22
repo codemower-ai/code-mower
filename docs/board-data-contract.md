@@ -915,11 +915,27 @@ touched. Pruning needs `--yes` and never signals any process.
 
 `code-mower board list` emits `code_mower.boardInventory.v1`, a local inventory
 of visible Code Mower Board listeners. It reports loopback URL, PID, process
-name, parsed repo hint, serving version, installed package version,
-`restart_recommended`, health, and next action. Local cwd paths are redacted by
-default; `--show-local-paths` is for local debugging only. If the host blocks
-listener inspection, the command reports an unavailable inventory instead of
-calling GitHub or reading repository content.
+name, identity-verified repository, invoking version, serving version,
+installed package version, `restart_recommended`, managed-service identity,
+health, and next action. An identity-verified transient row carries a
+stop-and-install `promotion_command`; a stale managed row carries
+`restart_command`. Both commands use the redacted
+working-directory placeholder `--repo-path .`.
+
+`code-mower board list --repo OWNER/REPO` includes a row only when the Board's
+`/api/identity` response establishes that repository. Command-line repo hints
+never satisfy this filter, so legacy, malformed, and unresponsive listeners
+fail closed. The `filter` block counts matched, identity-unverified, and
+other-repository rows without exposing local paths. Local cwd paths are
+redacted by default; `--show-local-paths` is for local debugging only. If the
+host blocks listener inspection, the command reports an unavailable inventory
+instead of calling GitHub or reading repository content.
+
+The invoking CLI sets `restart_recommended` when `serving_version` differs
+from `invoking_version`, even if the process reports that its own serving and
+installed versions agree. The `local_boards` block in `lanes status` is this
+same enriched inventory, so its text and JSON expose the same versions,
+managed-service fields, and guidance.
 
 `code-mower board stop --port PORT --yes` and `code-mower board stop --pid PID
 --yes` emit `code_mower.boardStop.v1`. Stop only sends a local termination

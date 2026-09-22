@@ -56,6 +56,7 @@ class LaneStatusUnavailable(RuntimeError):
 
 GitHubJsonRunner = Callable[[Sequence[str]], Any]
 CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
+BoardInventoryCollector = Callable[..., dict[str, Any]]
 
 
 def _text(value: Any) -> str:
@@ -1014,6 +1015,21 @@ def collect_local_boards(command_runner: CommandRunner = _run_command) -> dict[s
     return {"available": True, "boards": boards, "message": ""}
 
 
+def collect_board_inventory(
+    *,
+    command_runner: CommandRunner = _run_command,
+    show_local_paths: bool = False,
+) -> dict[str, Any]:
+    """Collect the operator-grade Board inventory without a module import cycle."""
+
+    from . import board
+
+    return board.board_inventory_payload(
+        command_runner=command_runner,
+        show_local_paths=show_local_paths,
+    )
+
+
 # --- Board startup grace ---------------------------------------------------
 #
 # A snapshot taken moments after `code-mower board serve` starts can observe the
@@ -1328,14 +1344,19 @@ def collect_status(
     jira_reader: tracker_queue.JiraQueueReader | None = None,
     tracker_links: Mapping[tuple[str, str, str], int] | None = None,
     checkout: str | Path | None = None,
+    board_inventory_collector: BoardInventoryCollector | None = None,
 ) -> dict[str, Any]:
     observed_at = now or _now()
+    inventory_collector = board_inventory_collector or collect_board_inventory
     report = {
         "schema": LANE_STATUS_SCHEMA,
         "repo": repo,
         "generated_at": observed_at.isoformat().replace("+00:00", "Z"),
         "remote": _remote(repo, gh_json_runner, observed_at, pr_limit, workflow_limit, stale_minutes, lineage_config),
-        "local_boards": collect_local_boards(command_runner),
+        "local_boards": inventory_collector(
+            command_runner=command_runner,
+            show_local_paths=show_local_paths,
+        ),
         "local_processes": collect_lane_processes(command_runner),
         "orchestrator_lease": session_lease.observe_lease(start=checkout, now=observed_at, repo=repo),
     }
@@ -1437,7 +1458,26 @@ def render_text(report: Mapping[str, Any]) -> str:
     lines.append("Local boards:" if boards else f"Local boards: none ({message})")
     for board in boards:
         cwd = f" cwd={board['cwd']}" if board.get("cwd") else ""
-        lines.append(f"- localhost:{board['port']} pid={board['pid']} process={board['process']} confidence={board['confidence']}{cwd}")
+        url = board.get("url") or f"localhost:{board['port']}"
+        managed = (
+            f" service={board.get('service_label')}"
+            if board.get("managed")
+            else " service=none (transient)"
+        )
+        lines.append(
+            f"- {url} pid={board['pid']} "
+            f"process={board['process']} confidence={board['confidence']} "
+            f"repo={board.get('repo') or 'unknown'} "
+            f"invoking={board.get('invoking_version') or 'unknown'} "
+            f"serving={board.get('serving_version') or 'unknown'} "
+            f"installed={board.get('installed_version') or 'unknown'} "
+            f"restart_recommended={str(bool(board.get('restart_recommended'))).lower()}"
+            f"{managed}{cwd}"
+        )
+        if board.get("restart_command"):
+            lines.append(f"  restart: {board['restart_command']}")
+        if board.get("promotion_command"):
+            lines.append(f"  promote: {board['promotion_command']}")
     lines.append("")
     processes = report["local_processes"].get("processes") or []
     message = report["local_processes"].get("message") or "none visible"
