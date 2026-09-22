@@ -364,10 +364,10 @@ documents:
   sha256: 7a7492e3e297d920dbb76b7c25339f3865d545c108a0114e65b1a3d989ad3bcd
 - path: docs/v160-qualification.md
   status: frozen
-  sha256: 9232a7fe13306955e4bb7b92889f4ceb71cc585f5ed30c3f91be2e189980a93f
+  sha256: 39e99c1a27aaf2405e9280e3ca7bc1c9465ad3a5965c7e71e39dc558a011173d
 - path: docs/v160-release-notes.md
   status: frozen
-  sha256: 052c5d9cdd126816c120f0c2090a3770174daa89e3cc0dc9301a7cf1775ebd81
+  sha256: 07bc43f511070dc4da114040f4e8f58a33cc639cb7aa3950c0508d14f0cfac59
 - path: docs/v160-release-runbook.md
   status: frozen
-  sha256: 2333dd92ef5c8ad0ea7bb87d9d08f6de340b5d37cb51ece15ea97e0e15f45d57
+  sha256: a14703176f7d2bc009ff4285eaad72f452f636c93198089cca62f10944d25e76

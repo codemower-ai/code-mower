@@ -8,14 +8,14 @@ or operational transcripts.
 ## Entry gates
 
 Candidate construction is refused until the final release commit contains all
-completed source prerequisites and the remaining hosted gate has accepted
-production evidence:
+completed source prerequisites and the hosted entry evidence below remains
+valid:
 
 | Gate | Required state |
 | --- | --- |
 | Audit history (complete) | #1104/#1107 merged: all audit consumers use bounded payload-aware pagination with stable terminal-history proof, and recognize lineage controls only as exact standalone HTML comments outside fenced Markdown |
-| Hosted implementation (complete) | Hosted PR #542 merged at `bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88`; this source merge is not production deployment or acceptance evidence |
-| Hosted production acceptance (open) | CodeMower.com #978 completes migration and deployment before client emission; authenticated `/api/health` advertises contract commit `99b657ae9822a689b46d21c41695a4cfb28a177d` and fixture-manifest SHA-256 `9e87c52812a49a1c72d0e0d2448661a3ef17cb8539ca8e029c6669ea9738d62e`; hosted acceptance evidence is complete |
+| Hosted implementation (complete) | Hosted PR #542 merged at `bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88` with exact-head Claude audit, Code Mower gate, and full CI passing |
+| Hosted production acceptance (complete) | GitHub deployment `6581697672` succeeded in two steps and production deployment `dpl_HxhK4CHrYPkCCzjxS9rGjSuBG8C8` is Ready; authenticated `/api/health` advertises capability schema `code_mower.controlSurfaceSessionSummaryCapability.v1`, summary schema `code_mower.controlSurfaceSessionSummary.v1`, capability version `1`, fixture-manifest SHA-256 `9e87c52812a49a1c72d0e0d2448661a3ef17cb8539ca8e029c6669ea9738d62e`, and `accepting: true`; closed-first `accepting: false` was verified; the migration ledger is 79/79 with digest `dec1a7338629e50e9edc5a927295736e4d74563775dd9af29bd38f8d3a234cdd`; sanitized probe upload `650c9bb7-2d51-4b1e-877a-7f2bdf54c174` was accepted exactly once and isolated to `jeff-internal`; public evidence is #978 comment `5770184083` |
 | Source scope | #1063/#1109, #1064/#1099, #1082/#1100/#1103, #1083/#1097, #1084/#1102, #921/#1098, #1106/#1108, and #1104/#1107 are ancestors of the release commit |
 | Release text | The v1.6 epic, release notes, roadmap, package identity, and current documentation agree on final scope |
 
@@ -29,7 +29,7 @@ invalid evidence and must not be reused.
 | Release source | The release PR's actual `mergeCommit.oid` after exact-head review, complete CI, and the authoritative gate |
 | Candidate | First successful attempt of `Code Mower Immutable Candidate`, dispatched on `main` while `GITHUB_SHA` equals that merge SHA |
 | Artifacts | Retained `code_mower-1.6.0-py3-none-any.whl`, `code_mower-1.6.0.tar.gz`, `candidate.json`, and `rehearsal.json` |
-| Telemetry contract | OSS contract commit and fixture-manifest digest named in the entry-gate table, accepted byte-for-byte by the deployed consumer |
+| Telemetry contract | Capability schema, summary schema, version, and fixture-manifest digest named in the entry-gate table, accepted byte-for-byte by the deployed consumer |
 | Publication | Annotated `v1.6.0` tag, retained candidate run, production publication run, non-publishing release-event run, and byte-identical GitHub assets |
 | Installed release | Canonical PyPI download whose version and SHA-256 match the accepted candidate |
 

@@ -6,19 +6,22 @@ the release PR merge SHA after every entry gate is complete.
 
 ## 0. Prove the release entry gates
 
-Board clarity #1063 / #1109 and audit-history hardening #1104 / #1107 must be
+Board clarity #1063 / #1109 and audit-history hardening #1104 / #1107 are
 ancestors of the prospective release head. Hosted PR #542 merged at
-`bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88`, but that source merge does not
-satisfy the release entry gate. Do not dispatch the candidate workflow until
-CodeMower.com #978 completes the production migration and deployment, the
-authenticated health response advertises the exact accepted contract identity
-from the [qualification contract](v160-qualification.md), and the hosted
-acceptance evidence is complete. Record only public deployment and contract
-identifiers.
+`bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88`; production deployment
+`6581697672` succeeded in two steps; production deployment
+`dpl_HxhK4CHrYPkCCzjxS9rGjSuBG8C8` is Ready; and authenticated `/api/health`
+advertised the exact accepted contract identity: capability schema, summary
+schema, version, fixture-manifest digest, and `accepting: true` required by the
+[qualification contract](v160-qualification.md). The hosted receipt also binds
+the 79/79 migration ledger and one exactly-once tenant-isolated sanitized probe.
+The public record is #978 comment `5770184083`.
 
-Production client emission remains disabled during this check. A health response
-that is unauthenticated, stale, missing either identity, or names another digest
-does not satisfy the gate.
+Recheck the authenticated health response immediately before candidate
+dispatch. A stale or unauthenticated response, `accepting: false`, missing
+identity, or different schema, version, or digest reopens the entry gate. The
+hosted service accepting the contract and its sanitized acceptance probe do not
+claim that a v1.6 candidate has emitted or reconciled telemetry.
 
 ## 1. Review and merge the release PR
 

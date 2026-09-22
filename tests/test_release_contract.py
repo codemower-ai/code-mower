@@ -460,7 +460,22 @@ class VersionNeutralReleaseMetadataTests(unittest.TestCase):
 class ReleaseContractTests(unittest.TestCase):
     def test_identity_and_readiness(self):
         self.assertEqual(__version__, "1.6.0")
-        self.assertEqual(release_metadata.load_release_metadata(ROOT).version, __version__)
+        metadata = release_metadata.load_release_metadata(ROOT)
+        self.assertEqual(metadata.version, __version__)
+        self.assertEqual(metadata.stage, "stable")
+        self.assertTrue(
+            {
+                "audit_labeler_lib.py",
+                "builder_lineage.py",
+                "board.py",
+                "board_service.py",
+                "doctor_checks/share_safe.py",
+                "cloud_client/operations.py",
+                "control_surface_summary.py",
+                "control_surface_session_summary.schema.json",
+                "control_surface_session_summary.fixture-manifest.json",
+            }.issubset(metadata.required_modules)
+        )
         self.assertEqual(release_renderer.render(ROOT, check=True), [])
         self.assertEqual(release_readiness.render_release_readiness(ROOT)["status"], "pass")
 
@@ -489,9 +504,13 @@ class ReleaseContractTests(unittest.TestCase):
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, runbook)
-        self.assertIn("Hosted production acceptance (open)", qualification)
+        self.assertIn("Hosted production acceptance (complete)", qualification)
         self.assertIn("bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88", qualification)
-        self.assertIn("CodeMower.com #978 completes migration and deployment", qualification)
+        self.assertIn("GitHub deployment `6581697672` succeeded", qualification)
+        self.assertIn("dpl_HxhK4CHrYPkCCzjxS9rGjSuBG8C8", qualification)
+        self.assertIn("code_mower.controlSurfaceSessionSummaryCapability.v1", qualification)
+        self.assertIn("`accepting: true`", qualification)
+        self.assertIn("650c9bb7-2d51-4b1e-877a-7f2bdf54c174", qualification)
         self.assertIn("local Board state reconciles", qualification)
 
     def test_later_versions_do_not_revert_to_building_at_publication(self):

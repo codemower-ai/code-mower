@@ -4,7 +4,7 @@ previous_version: 1.5.2
 previous_wheel_sha256: 44c7082b1fec2983d85ac7ce7feb7cf54b2b7d26e020e073716614d480118147
 tag: v1.6.0
 package_spec: code-mower==1.6.0
-stage: candidate
+stage: stable
 python:
   minimum: "3.12"
   tested:
@@ -18,6 +18,17 @@ documents:
   installation: docs/install.md
   publication: docs/pypi-release.md
 required_modules:
+  - audit_labeler_lib.py
+  - builder_lineage.py
+  - board.py
+  - board_service.py
+  - lane_status.py
+  - doctor.py
+  - doctor_checks/share_safe.py
+  - cloud_client/operations.py
+  - control_surface_summary.py
+  - control_surface_session_summary.schema.json
+  - control_surface_session_summary.fixture-manifest.json
   - context_graph_lifecycle.py
   - context_graph_query.py
   - context_graph_command.py

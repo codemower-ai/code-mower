@@ -144,11 +144,12 @@ Before tagging a public release, run these from a clean standalone checkout:
 First finalize the README opening release statement and the matching CHANGELOG
 entry, release notes, qualification contract and publication instructions in
 the reviewed final release preparation PR. For v1.6.0 that head must include
-#1063/#1109 and #1104/#1107. Hosted PR #542 at
-`bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88` must be migrated and deployed in
-production, and CodeMower.com #978 must advertise the exact accepted telemetry
-contract with complete hosted acceptance evidence before the immutable
-candidate is built. Follow the
+#1063/#1109 and #1104/#1107. Recheck the completed hosted entry evidence before
+building: PR #542 at `bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88`, GitHub
+deployment `6581697672`, Ready production deployment
+`dpl_HxhK4CHrYPkCCzjxS9rGjSuBG8C8`, and the exact accepting capability and
+tenant-isolated acceptance probe recorded in #978 comment `5770184083`. A
+changed schema, version, digest, or accepting state reopens the gate. Follow the
 [immutable release text gate](pypi-release.md):
 run `python src/code_mower/release_identity.py --tag vX.Y.Z` with the actual
 proposed tag before creating it. Publication progress belongs in the release

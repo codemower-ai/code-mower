@@ -164,22 +164,23 @@ accepted contract identity.
 The [v1.6.0 milestone](https://github.com/codemower-ai/code-mower/milestone/2),
 [epic #1066](https://github.com/codemower-ai/code-mower/issues/1066), and
 [release issue #1105](https://github.com/codemower-ai/code-mower/issues/1105)
-are the live trackers. Board clarity #1063 is complete through merged PR #1109,
-and audit-history hardening #1104 is complete through merged PR #1107. Hosted
-PR #542 merged the compatible consumer source at
-`bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88`, without establishing production
-acceptance. One entry gate remains before the immutable candidate:
+are the live trackers. All immutable-candidate entry gates are complete. Board
+clarity #1063 merged through PR #1109, and audit-history hardening #1104 merged
+through PR #1107. Hosted PR #542 merged at
+`bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88`; production deployment
+`6581697672` succeeded in two steps; production deployment
+`dpl_HxhK4CHrYPkCCzjxS9rGjSuBG8C8` is Ready; authenticated health advertises the
+exact accepting contract; the migration ledger is 79/79; and one sanitized
+probe was accepted exactly once and isolated to `jeff-internal`. Public evidence
+is recorded in
+[#978 comment 5770184083](https://github.com/codemower-ai/code-mower/issues/978#issuecomment-5770184083).
 
-1. [CodeMower.com #978](https://github.com/codemower-ai/code-mower/issues/978)
-   — complete the production migration and deployment, advertise the exact
-   accepting capability, and finish hosted validation, tenant isolation,
-   retention, export/deletion, aggregate-count, and freshness evidence.
-
-After that gate completes, #1105 serializes the one immutable build, bounded
+After the release PR merges, #1105 serializes the one immutable build, bounded
 private Slack canary, local-versus-hosted reconciliation, 24-hour soak, two
 independent installation passes, exact-head release audits, publication, and
-canonical reinstall. None of those observations is claimed by this source
-preparation.
+canonical reinstall. #978 remains open until the retained candidate completes
+the canary and local-versus-hosted aggregate reconciliation. None of those
+post-merge observations is claimed by this source preparation.
 
 ## Near-Term Roadmap
 

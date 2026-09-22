@@ -63,18 +63,28 @@ service.
 
 ## Release entry boundary
 
-The Board and audit-history prerequisites are complete through #1063 / #1109
-and #1104 / #1107. Hosted PR #542 merged the compatible consumer implementation
-at `bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88`; that merge alone does not
-establish production acceptance. Issue #1105 may build the one immutable
-candidate only after CodeMower.com #978 completes the production migration and
-deployment, the authenticated health response advertises the exact accepted OSS
-contract identity, and the hosted acceptance evidence is complete.
+All release entry prerequisites are complete. Board and audit-history work
+merged through #1063 / #1109 and #1104 / #1107. Hosted PR #542 merged at
+`bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88`, and production deployment
+`6581697672` completed its two-step rollout and production deployment
+`dpl_HxhK4CHrYPkCCzjxS9rGjSuBG8C8` is Ready. The authenticated health response
+advertises capability schema
+`code_mower.controlSurfaceSessionSummaryCapability.v1`, summary schema
+`code_mower.controlSurfaceSessionSummary.v1`, capability version `1`, fixture
+manifest SHA-256
+`9e87c52812a49a1c72d0e0d2448661a3ef17cb8539ca8e029c6669ea9738d62e`,
+and `accepting: true`. The 79/79 migration ledger digest is
+`dec1a7338629e50e9edc5a927295736e4d74563775dd9af29bd38f8d3a234cdd`.
+A sanitized metadata-only probe was accepted exactly once as upload
+`650c9bb7-2d51-4b1e-877a-7f2bdf54c174` and remained visible only in its
+`jeff-internal` tenant projection. Public evidence is #978 comment
+`5770184083`.
 
-After the hosted entry gate completes, the retained candidate still needs the
-bounded private Slack canary, local-versus-hosted reconciliation, privacy and
-tenant checks, clean install, v1.5.2 upgrade, rollback, Graphify and Board
-rehearsals, a
+After this release PR merges, #1105 may build the one immutable candidate. The
+hosted acceptance probe does not replace the retained-candidate Slack canary;
+that candidate still needs the bounded private Slack canary,
+local-versus-hosted reconciliation, privacy and tenant checks, clean install,
+v1.5.2 upgrade, rollback, Graphify and Board rehearsals, a
 24-hour soak, two independent installation passes, exact-head release audits,
 publication, and canonical reinstall. Observed results belong on #1105 and the
 GitHub Release, not in this source document.
