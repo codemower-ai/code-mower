@@ -52,21 +52,29 @@ service.
   subscription access, elapsed time, token counts, source, diffs, prompts,
   transcripts, issue bodies, raw output, credentials, or local paths
   (#1106 / #1108).
+- **Audit-comment history is bounded and complete.** Local audits, hosted
+  labelers, lane status, gate health, and the generated gate share one
+  payload-aware reader. It reduces page size and restarts safely, proves a
+  stable terminal page, and fails closed on oversized items, exhausted budgets,
+  omissions, duplicate or changed IDs, and incomplete history. Lineage controls
+  are recognized only as exact standalone HTML comments outside fenced
+  Markdown; explanatory prose is ignored while malformed controls from trusted
+  authorities remain fail-closed (#1104 / #1107).
 
 ## Release entry boundary
 
-The Board implementation gate is complete through #1063 / #1109. This source
-preparation does not establish release acceptance. Issue #1105 may build the
-one immutable candidate only after both remaining entry gates are complete:
+The Board and audit-history prerequisites are complete through #1063 / #1109
+and #1104 / #1107. Hosted PR #542 merged the compatible consumer implementation
+at `bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88`; that merge alone does not
+establish production acceptance. Issue #1105 may build the one immutable
+candidate only after CodeMower.com #978 completes the production migration and
+deployment, the authenticated health response advertises the exact accepted OSS
+contract identity, and the hosted acceptance evidence is complete.
 
-1. #1104 merges payload-aware audit-comment ingestion and reserved lineage
-   control parsing.
-2. CodeMower.com #978 deploys the backward-compatible consumer and advertises
-   the exact accepted OSS contract identity.
-
-After those gates merge, the retained candidate still needs the bounded private
-Slack canary, local-versus-hosted reconciliation, privacy and tenant checks,
-clean install, v1.5.2 upgrade, rollback, Graphify and Board rehearsals, a
+After the hosted entry gate completes, the retained candidate still needs the
+bounded private Slack canary, local-versus-hosted reconciliation, privacy and
+tenant checks, clean install, v1.5.2 upgrade, rollback, Graphify and Board
+rehearsals, a
 24-hour soak, two independent installation passes, exact-head release audits,
 publication, and canonical reinstall. Observed results belong on #1105 and the
 GitHub Release, not in this source document.

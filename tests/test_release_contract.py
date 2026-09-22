@@ -489,7 +489,9 @@ class ReleaseContractTests(unittest.TestCase):
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, runbook)
-        self.assertIn("CodeMower.com #978 deployed", qualification)
+        self.assertIn("Hosted production acceptance (open)", qualification)
+        self.assertIn("bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88", qualification)
+        self.assertIn("CodeMower.com #978 completes migration and deployment", qualification)
         self.assertIn("local Board state reconciles", qualification)
 
     def test_later_versions_do_not_revert_to_building_at_publication(self):

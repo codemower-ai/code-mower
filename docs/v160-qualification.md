@@ -8,13 +8,15 @@ or operational transcripts.
 ## Entry gates
 
 Candidate construction is refused until the final release commit contains all
-of the following and each dependency has its own accepted exact-head evidence:
+completed source prerequisites and the remaining hosted gate has accepted
+production evidence:
 
 | Gate | Required state |
 | --- | --- |
-| Audit history | #1104 merged: bounded payload-aware comment pagination and exact recognition of reserved lineage controls |
-| Hosted consumer | CodeMower.com #978 deployed before client emission; `/api/health` advertises contract commit `99b657ae9822a689b46d21c41695a4cfb28a177d` and fixture-manifest SHA-256 `9e87c52812a49a1c72d0e0d2448661a3ef17cb8539ca8e029c6669ea9738d62e` |
-| Source scope | #1063/#1109, #1064/#1099, #1082/#1100/#1103, #1083/#1097, #1084/#1102, #921/#1098, and #1106/#1108 are ancestors of the release commit |
+| Audit history (complete) | #1104/#1107 merged: all audit consumers use bounded payload-aware pagination with stable terminal-history proof, and recognize lineage controls only as exact standalone HTML comments outside fenced Markdown |
+| Hosted implementation (complete) | Hosted PR #542 merged at `bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88`; this source merge is not production deployment or acceptance evidence |
+| Hosted production acceptance (open) | CodeMower.com #978 completes migration and deployment before client emission; authenticated `/api/health` advertises contract commit `99b657ae9822a689b46d21c41695a4cfb28a177d` and fixture-manifest SHA-256 `9e87c52812a49a1c72d0e0d2448661a3ef17cb8539ca8e029c6669ea9738d62e`; hosted acceptance evidence is complete |
+| Source scope | #1063/#1109, #1064/#1099, #1082/#1100/#1103, #1083/#1097, #1084/#1102, #921/#1098, #1106/#1108, and #1104/#1107 are ancestors of the release commit |
 | Release text | The v1.6 epic, release notes, roadmap, package identity, and current documentation agree on final scope |
 
 The first immutable-candidate workflow run before all entry gates hold is

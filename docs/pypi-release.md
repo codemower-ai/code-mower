@@ -56,8 +56,11 @@ package. Never rewrite a published tag to correct the wording.
 
 5. Obtain independent review on the exact final preparation PR head, green CI,
    and the authoritative Code Mower gate before merge. For v1.6.0, require
-   #1063 and #1104 on that head, plus an exact accepted-contract health response
-   from the deployed CodeMower.com #978 consumer. Bind the actual merge SHA and
+   #1063/#1109 and #1104/#1107 on that head, plus an exact accepted-contract
+   health response and complete hosted acceptance evidence from the production
+   CodeMower.com #978 deployment. Hosted PR #542 at
+   `bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88` is an implementation prerequisite,
+   not deployment evidence. Bind the actual merge SHA and
    build the candidate once. Complete #1105's bounded private Slack telemetry
    canary, local-versus-hosted reconciliation, 24-hour soak, two independent
    installation passes, and exact-candidate audits before the owner release

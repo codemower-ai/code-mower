@@ -164,16 +164,18 @@ accepted contract identity.
 The [v1.6.0 milestone](https://github.com/codemower-ai/code-mower/milestone/2),
 [epic #1066](https://github.com/codemower-ai/code-mower/issues/1066), and
 [release issue #1105](https://github.com/codemower-ai/code-mower/issues/1105)
-are the live trackers. Board clarity #1063 is complete through merged PR #1109.
-Two entry gates remain before the immutable candidate:
+are the live trackers. Board clarity #1063 is complete through merged PR #1109,
+and audit-history hardening #1104 is complete through merged PR #1107. Hosted
+PR #542 merged the compatible consumer source at
+`bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88`, without establishing production
+acceptance. One entry gate remains before the immutable candidate:
 
-1. [#1104](https://github.com/codemower-ai/code-mower/issues/1104) — bounded,
-   payload-aware audit comment ingestion and reserved control parsing; and
-2. [CodeMower.com #978](https://github.com/codemower-ai/code-mower/issues/978)
-   — deployed validation, tenant isolation, retention, export/deletion,
-   aggregate counts, freshness, and exact capability advertisement.
+1. [CodeMower.com #978](https://github.com/codemower-ai/code-mower/issues/978)
+   — complete the production migration and deployment, advertise the exact
+   accepting capability, and finish hosted validation, tenant isolation,
+   retention, export/deletion, aggregate-count, and freshness evidence.
 
-After those gates complete, #1105 serializes the one immutable build, bounded
+After that gate completes, #1105 serializes the one immutable build, bounded
 private Slack canary, local-versus-hosted reconciliation, 24-hour soak, two
 independent installation passes, exact-head release audits, publication, and
 canonical reinstall. None of those observations is claimed by this source

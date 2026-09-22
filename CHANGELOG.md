@@ -7,12 +7,7 @@ later entries are regular releases.
 
 ## Unreleased
 
-- Audit comment ingestion now uses GitHub-specific response, aggregate-byte,
-  item, and request-page budgets. Oversized pages reduce `per_page` and restart
-  safely, complete histories receive a stable reread, and omissions, duplicate
-  IDs, edits, incomplete terminal proof, and budget exhaustion fail with
-  actionable diagnostics. Lineage controls are recognized only as standalone
-  HTML control-comment lines outside inline and fenced examples (#1104).
+- No changes yet.
 
 ## 1.6.0 — operational clarity and minimum telemetry
 
@@ -37,6 +32,12 @@ surface. See the [release notes](docs/v160-release-notes.md) and the
 - Isolate spend evidence across repositories and attach a pre-PR builder record
   only when its branch exactly matches one fetched pull request, improving cost
   coverage without exporting new fields or private data (#1106 / #1108).
+- Bound GitHub audit-comment history by response, aggregate-byte, item, and
+  request-page budgets; adaptively restart smaller pages; prove a stable
+  terminal history; and fail closed on omissions, duplicate or changed IDs,
+  truncation, and exhausted budgets. Recognize lineage controls only as exact
+  standalone HTML comments outside fenced Markdown, while malformed controls
+  from trusted authorities remain fail-closed (#1104 / #1107).
 - Freeze the provider-neutral `code_mower.controlSurfaceSessionSummary.v1`
   contract, its accepted and rejected fixtures, capability gate, transition
   suppression, local Board projection, and metadata-only cloud emitter
