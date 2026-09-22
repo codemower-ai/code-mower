@@ -1026,7 +1026,7 @@ class TestPublicLineageRefusals(_DevinCliAuditTestCase):
             resulting_head=self.head_sha, writer_state='terminated', kind='handoff')]
         if not include_devin:
             episodes = [replace(episodes[0], destination_lane='claude', resulting_head=self.head_sha)]
-        return [{'user': {'login': AUTHORS[0]}, 'body': render(Chain.from_arrivals(
+        return [{'id': 1, 'user': {'login': AUTHORS[0]}, 'body': render(Chain.from_arrivals(
             Target('owner/repo', 1, 'codex/topic', self.head_sha), episodes))}]
 
     @contextlib.contextmanager
@@ -1044,6 +1044,9 @@ class TestPublicLineageRefusals(_DevinCliAuditTestCase):
                     on_history()
                 if isinstance(history, Exception):
                     raise history
+                if history == '__page_cap__':
+                    page = int(path.rsplit('page=', 1)[1])
+                    return [{'id': (page - 1) * 100 + item + 1} for item in range(100)]
                 return deepcopy(history)
             if method == 'POST' and path == '/repos/owner/repo/issues/1/comments':
                 self.assertEqual(len(pr_reads), 2, 'Fresh target must precede the diagnostic effect')
@@ -1091,14 +1094,14 @@ class TestPublicLineageRefusals(_DevinCliAuditTestCase):
 
     def test_public_and_cli_bound_unknown_for_contributor_conflict_and_raw_history(self):
         from lineage_consumer_fixtures import AUTHORS
-        raw = [{'user': {'login': AUTHORS[0]}, 'body': '<!-- CODE_MOWER_BUILDER_LINEAGE: raw-secret -->'}]
+        raw = [{'id': 1, 'user': {'login': AUTHORS[0]}, 'body': '<!-- CODE_MOWER_BUILDER_LINEAGE: raw-secret -->'}]
         cases = [('contributor', self._snapshot(builder='claude'), self._prior_devin()),
             ('conflict', self._snapshot(builder='claude'), []),
             ('marker', self._snapshot(), raw), ('null', self._snapshot(), None),
             ('object', self._snapshot(), {}), ('mixed', self._snapshot(), [None]),
             ('unreadable', self._snapshot(), RuntimeError('raw-secret fixture-token')),
             ('network', self._snapshot(), OSError('raw-secret transport')),
-            ('cap', self._snapshot(), [{}]*100)]
+            ('cap', self._snapshot(), '__page_cap__')]
         for name, pr, history in cases:
             for cli in (False, True):
                 with self.subTest(case=name, cli=cli), self._boundary(pr, history) as (provider, posts, calls, artifacts):
@@ -1112,7 +1115,10 @@ class TestPublicLineageRefusals(_DevinCliAuditTestCase):
                     provider.assert_not_called()
                     self._assert_unknown(posts, artifacts)
                     reads = [path for method, path in calls if method == 'GET' and '/comments?' in path]
-                    self.assertEqual(len(reads), 9 if name == 'cap' else 1)
+                    expected_reads = 9 if name == 'cap' else 2 if name in {
+                        'contributor', 'conflict', 'marker'
+                    } else 1
+                    self.assertEqual(len(reads), expected_reads)
 
     def test_public_dry_run_unknown_has_no_effect_and_cli_still_exits_two(self):
         pr = self._snapshot(builder='claude')

@@ -212,10 +212,6 @@ def lineage_history(fetch_page, *, page_size=GITHUB_COMMENT_PAGE_SIZE, max_pages
             raise
         except CommentHistoryError:
             raise
-        except Exception:
-            raise CommentHistoryError(
-                "Authenticated GitHub comment history request failed"
-            ) from None
         if isinstance(result, GitHubCommentPage):
             raw, response_bytes = result.payload, result.response_bytes
         else:

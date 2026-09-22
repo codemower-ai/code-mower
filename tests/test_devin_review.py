@@ -584,7 +584,10 @@ class LineageReviewLifecycleTests(unittest.TestCase):
                     requests.append(args)
                     if mode == 'unreadable':
                         raise RuntimeError('authenticated history unavailable')
-                    return [None] if mode == 'malformed' else [{}]*100
+                    if mode == 'malformed':
+                        return [None]
+                    page = int(args[1].rsplit('page=', 1)[1])
+                    return [{'id': (page - 1) * 100 + item + 1} for item in range(100)]
                 run = Mock(side_effect=AssertionError('provider must not execute'))
                 count = len(calls)
                 api = Mock(side_effect=AssertionError('provider must not execute'))
