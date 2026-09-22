@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from packaging.version import Version
 import yaml
 
 from . import __version__
@@ -1511,15 +1512,41 @@ def _candidate_runbook_checks(repo_path: Path) -> tuple[list[str], list[str]]:
     except release_metadata_module.ReleaseMetadataError as exc:
         return [f"valid {release_metadata_module.MANIFEST_PATH}: {exc}"], []
     text = _read_text_if_exists(repo_path / metadata.documents["runbook"])
-    order = (
-        "## 1. Review and merge", "## 2. Build and retain",
-        "gh workflow run release-candidate.yml", "## 3. Qualify the exact candidate",
-        "## 4. Observe the bounded hosted Board canary", "## 5. Owner decision",
-        f'git tag -a {metadata.tag} "$RELEASE_SHA"',
-        "-f publish_testpypi=false -f publish_pypi=false",
-        "-f publish_testpypi=false -f publish_pypi=true",
-        "## 6. Independent canonical reinstall",
-    )
+    if Version(metadata.version) >= Version("1.6.0"):
+        order = (
+            "## 0. Prove the release entry gates",
+            "#1063", "#1104", "#978",
+            "## 1. Review and merge", "## 2. Build and retain",
+            "gh workflow run release-candidate.yml",
+            "## 3. Qualify the exact candidate",
+            "## 4. Run one bounded private Slack telemetry canary",
+            "## 5. Soak and independent adoption",
+            "## 6. Owner decision",
+            f'git tag -a {metadata.tag} "$RELEASE_SHA"',
+            "-f publish_testpypi=false -f publish_pypi=false",
+            "-f publish_testpypi=false -f publish_pypi=true",
+            "## 7. Independent canonical reinstall",
+        )
+        release_assertions = (
+            "exact accepted contract identity", "24 hours",
+            "two independent installation", "capability-gated lifecycle-summary",
+        )
+    else:
+        order = (
+            "## 1. Review and merge", "## 2. Build and retain",
+            "gh workflow run release-candidate.yml",
+            "## 3. Qualify the exact candidate",
+            "## 4. Observe the bounded hosted Board canary",
+            "## 5. Owner decision",
+            f'git tag -a {metadata.tag} "$RELEASE_SHA"',
+            "-f publish_testpypi=false -f publish_pypi=false",
+            "-f publish_testpypi=false -f publish_pypi=true",
+            "## 6. Independent canonical reinstall",
+        )
+        release_assertions = (
+            "single-lane", "multi-lane", "fresh dashboard",
+            "Slack telemetry remains deferred to v1.6.0",
+        )
     assertions = (
         "--json state --jq '.state')\" = MERGED",
         "--json mergeCommit --jq '.mergeCommit.oid'",
@@ -1528,11 +1555,11 @@ def _candidate_runbook_checks(repo_path: Path) -> tuple[list[str], list[str]]:
         f'test "$(git rev-list -n 1 {metadata.tag})" = "$RELEASE_SHA"',
         "fresh install without uv or pipx", f"upgrade from v{metadata.previous_version}",
         "remote observer", "safe init", "Graphify", "basic Slack lifecycle",
-        "single-lane", "multi-lane", "aggregate campaign ACU",
+        "aggregate campaign ACU",
         "provider exit", "authorized usage", "settled usage",
-        "metadata-only", "fresh dashboard", "does not rebuild",
-        "Slack telemetry remains deferred to v1.6.0",
+        "metadata-only", "does not rebuild",
         "independent exact-head audit", "authoritative gate",
+        *release_assertions,
     )
     return _unordered_markers(text, order), [item for item in assertions if item not in text]
 

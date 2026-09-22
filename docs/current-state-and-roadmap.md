@@ -22,15 +22,17 @@ dry-run-first.
 
 ## Current Source And Published Baseline
 
-This source defines Code Mower `v1.5.2`, with package spec
-`code-mower==1.5.2`. Confirm the release tag on GitHub Releases and the package
+This source defines Code Mower `v1.6.0`, with package spec
+`code-mower==1.6.0`. Confirm the release tag on GitHub Releases and the package
 version on the selected index before using an index install command; source
-version and publication state are separate facts. See the
-[v1.5.2 release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v152-release-notes.md)
-and [qualification contract](https://github.com/codemower-ai/code-mower/blob/main/docs/v152-qualification.md).
-After publication, the GitHub Release and linked release issue carry the
-observed source SHA, artifact digests, canary outcomes, publication run and
-reinstall evidence.
+version and publication state are separate facts. The latest published baseline
+remains `v1.5.2` until the entry gates and qualification contract for #1105 are
+complete. See the
+[v1.6.0 release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v160-release-notes.md),
+[qualification contract](https://github.com/codemower-ai/code-mower/blob/main/docs/v160-qualification.md),
+and [candidate runbook](v160-release-runbook.md). The GitHub Release and #1105
+will carry observed source SHA, artifact digests, canary, soak, publication,
+and reinstall evidence after those observations exist.
 Historical v1.4.x artifacts and qualification records remain unchanged.
 
 `v1.4.0`, `v1.4.1` and `v1.4.2` have all shipped, and the v1.4.0 and v1.4.1
@@ -133,10 +135,12 @@ future hosted-service work.
 - Graphify's bounded provider foundation shipped in v1.4.0; its complete
   qualified integration, scorecard and query behavior shipped in v1.4.1. It
   remains optional and has no default dependency.
-- Slack in v1.5.2 supports one private workspace with explicit member, repository
+- Slack in v1.6.0 retains one private workspace with explicit member, repository
   and private-channel mappings plus private start, status, answer and
-  confirmed-cancel interactions. Telemetry, Board links, Slack Connect, public
-  channels and richer Slack UX remain planned v1.6 work.
+  confirmed-cancel interactions. Metadata-only lifecycle summaries remain
+  disabled until the hosted service advertises the exact accepted contract.
+  Slack-to-Board links, Slack Connect, public channels and richer Slack UX are
+  deferred.
 - Provider cost fields remain unknown when the provider does not return them.
 - A successful release campaign proves installation and operational transport,
   not builder quality or reviewer promotion readiness.
@@ -147,32 +151,36 @@ future hosted-service work.
 
 ## Current Release And v1.6.0
 
-`v1.5.2` is released and is the current supported package. It retains the
-basic Slack boundary from v1.5.0 and adds the five reliability revisions from
-#1050: hosted-install clarity, host-independent tests, lane-exact audit seals,
-checkout-free remote doctor, safe existing-repository initialization, and
-clearer status/version reporting.
+`v1.5.2` is released and remains the current supported package. The `v1.6.0`
+source line now contains the completed doctor taxonomy, atomic Board replacement,
+identity-verified Board inventory and version guidance, neutral `unmanaged`
+state for ordinary pull requests with no Code Mower provenance, share-safe
+adoption diagnostics, cross-repository cost isolation, and the closed
+metadata-only control-surface summary contract. Visible malformed Code Mower
+claims remain actionable and fail-closed. The optional client
+emitter remains fail-closed unless the hosted service advertises the exact
+accepted contract identity.
 
-The [v1.6.0 milestone](https://github.com/codemower-ai/code-mower/milestone/2)
-and [epic #1066](https://github.com/codemower-ai/code-mower/issues/1066) are the
-live trackers. The planned children are:
+The [v1.6.0 milestone](https://github.com/codemower-ai/code-mower/milestone/2),
+[epic #1066](https://github.com/codemower-ai/code-mower/issues/1066), and
+[release issue #1105](https://github.com/codemower-ai/code-mower/issues/1105)
+are the live trackers. All immutable-candidate entry gates are complete. Board
+clarity #1063 merged through PR #1109, and audit-history hardening #1104 merged
+through PR #1107. Hosted PR #542 merged at
+`bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88`; production deployment
+`6581697672` succeeded in two steps; production deployment
+`dpl_HxhK4CHrYPkCCzjxS9rGjSuBG8C8` is Ready; authenticated health advertises the
+exact accepting contract; the migration ledger is 79/79; and one sanitized
+probe was accepted exactly once and isolated to `jeff-internal`. Public evidence
+is recorded in
+[#978 comment 5770184083](https://github.com/codemower-ai/code-mower/issues/978#issuecomment-5770184083).
 
-1. Board inventory filters, version parity, stale detection, and service
-   guidance ([#1063](https://github.com/codemower-ai/code-mower/issues/1063));
-2. doctor warning taxonomy and hosted-posture scope
-   ([#1064](https://github.com/codemower-ai/code-mower/issues/1064));
-3. hosted adoption prompts, current documentation, and a normal 24-hour release
-   soak with two independent install or upgrade passes
-   ([#1065](https://github.com/codemower-ai/code-mower/issues/1065));
-4. the closed, versioned optional Slack telemetry contract and OSS emitters
-   ([#921](https://github.com/codemower-ai/code-mower/issues/921)); and
-5. hosted validation, aggregation, export/deletion, and fresh authenticated
-   views for that contract
-   ([#978](https://github.com/codemower-ai/code-mower/issues/978)).
-
-#1063, #1064, and the documentation portion of #1065 can proceed in parallel.
-#921 freezes the shared contract and fixtures before #978 enables hosted
-ingest. None of this planned work is part of v1.5.2.
+After the release PR merges, #1105 serializes the one immutable build, bounded
+private Slack canary, local-versus-hosted reconciliation, 24-hour soak, two
+independent installation passes, exact-head release audits, publication, and
+canonical reinstall. #978 remains open until the retained candidate completes
+the canary and local-versus-hosted aggregate reconciliation. None of those
+post-merge observations is claimed by this source preparation.
 
 ## Near-Term Roadmap
 
@@ -338,13 +346,16 @@ administration/readiness; #920 consumes the immutable candidate to obtain one
 accepted completion and one accepted confirmed cancellation under an explicit
 numeric cap while preserving every attempt and reservation; #923 records the
 tag, publication and independent reinstall evidence.
-Slack telemetry/Board/cloud links and rich UX remain v1.6.0. Slack consumes the
-durable lifecycle instead of scraping terminal or Board output and carries no
-raw private context or private reviewer findings.
+The v1.6.0 source adds capability-gated, metadata-only lifecycle summaries to
+the local Board and optional cloud emitter. Slack-to-Board links and rich UX
+remain deferred. Slack consumes the durable lifecycle instead of scraping
+terminal or Board output and carries no raw private context or private reviewer
+findings.
 
-The source implementation and qualification contract are complete. Consult #923
-and the GitHub Release for the observed lifecycle, canary, publication and
-canonical reinstall state.
+The source implementation and qualification contract are complete. This
+statement covers the basic v1.5.0 interaction boundary.
+Consult #923 and the GitHub Release for the observed v1.5.0 lifecycle, canary,
+publication and canonical reinstall state.
 
 ## Delivery Order
 

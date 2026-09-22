@@ -10,13 +10,13 @@ It is not a drop-in unattended merge gate. Humans still own credentials,
 repository policy, reviewer promotion, and exceptional decisions.
 
 <!-- code-mower:release-facts:start -->
-This source defines Code Mower `v1.5.2`, with package spec
-`code-mower==1.5.2`. Confirm the release tag on GitHub Releases and the package
+This source defines Code Mower `v1.6.0`, with package spec
+`code-mower==1.6.0`. Confirm the release tag on GitHub Releases and the package
 version on the selected index before using an index install command; source version
 and publication state are separate facts.
 Python 3.12 or newer is required.
-See the [release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v152-release-notes.md)
-and [qualification contract](https://github.com/codemower-ai/code-mower/blob/main/docs/v152-qualification.md).
+See the [release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v160-release-notes.md)
+and [qualification contract](https://github.com/codemower-ai/code-mower/blob/main/docs/v160-qualification.md).
 <!-- code-mower:release-facts:end -->
 Historical v1.4.x artifacts and qualification records remain unchanged.
 The v1.4.2 release did not claim the bounded hosted Devin canary tracked by
@@ -24,9 +24,9 @@ The v1.4.2 release did not claim the bounded hosted Devin canary tracked by
 not claimed by its immutable qualification record.
 
 Documentation on `main` follows the source on `main`. For an installed release,
-read its immutable versioned guide, such as the
-[`v1.5.2` guide](https://github.com/codemower-ai/code-mower/blob/v1.5.2/docs/try-in-10-minutes.md),
-and confirm the tag and package exist before using pinned install commands.
+read its immutable versioned guide. After v1.6.0 publication, use the
+[`v1.6.0` guide](https://github.com/codemower-ai/code-mower/blob/v1.6.0/docs/try-in-10-minutes.md).
+Confirm the tag and package exist before using pinned install commands.
 
 ## What Code Mower Adds
 
@@ -102,7 +102,7 @@ ID with `session lease renew --session-id SESSION_ID` or `session lease release
 --dry-run` or `--no-lease` for read-only work.
 
 Codex, Claude Code, and Cursor are qualified for the shared session, telemetry,
-lease, and Jira-authority contract in the current v1.5.2 release. Devin, Grok
+lease, and Jira-authority contract in the current v1.6.0 source line. Devin, Grok
 Bot, Antigravity,
 Muse, and custom hosts are recognized for briefs and provenance, while their
 execution remains an explicit handoff or provider-specific transport. See
@@ -230,7 +230,7 @@ and the [Cloud Data Contract](https://github.com/codemower-ai/code-mower/blob/ma
 
 ## Optional Hosted Slack
 
-v1.5.2 retains the basic Slack control surface introduced in v1.5.0 for one
+v1.6.0 retains the basic Slack control surface introduced in v1.5.0 for one
 private workspace and one authorized private, unshared channel. A Code Mower
 team administrator opens
 **Setup → Manage Slack integration** in the hosted dashboard and completes OAuth
@@ -259,7 +259,7 @@ for both workflows, supported behavior, and the trust boundary.
 
 ## Current Capabilities And Limits
 
-| Area | v1.5.2 posture |
+| Area | v1.6.0 posture |
 | --- | --- |
 | Default builders and reviewers | Claude Code + Codex |
 | Session hosts | Codex, Claude Code, and Cursor qualified; other identities recognized but require explicit handoff/provider transport |
@@ -269,11 +269,11 @@ for both workflows, supported behavior, and the trust boundary.
 | Forge and merge gate | GitHub |
 | Cloud | Optional metadata/report upload; no upload by default |
 | Graphify | Optional bounded local repository-graph provider behind the packet contract; no default dependency and no network access for the provider |
-| Slack | Optional hosted OAuth and `/codemower` control surface for one private workspace/channel; exact bindings, qualified supervisor, and numeric caps gate work |
+| Slack | Optional hosted OAuth and `/codemower` control surface for one private workspace/channel; exact bindings, qualified supervisor, and numeric caps gate work; metadata-only lifecycle summaries require exact hosted capability acceptance |
 
 GitLab, Bitbucket, broad unattended rollout, uncalibrated merge gates, Devin
 peer-orchestrator/reviewer parity, a hosted work-order CLI, a required Graphify
-dependency, Slack telemetry/Board links, and rich Slack UX are outside v1.5.2. The current priorities
+dependency, Slack-to-Board links, and rich Slack UX are outside v1.6.0. The current priorities
 and boundaries are recorded in
 [Current State And Roadmap](https://github.com/codemower-ai/code-mower/blob/main/docs/current-state-and-roadmap.md).
 
@@ -281,7 +281,7 @@ and boundaries are recorded in
 
 Graphify's optional bounded provider foundation landed in v1.4.0; its complete
 qualified integration, scorecard and query behavior shipped in v1.4.1 and
-remain available in v1.5.2. It is separately installed into an operator-owned
+remain available in v1.6.0. It is separately installed into an operator-owned
 environment, explicitly activated, and outside the base dependency set: a
 default Claude + Codex install adds no Graphify dependency, no indexer, no
 background service, and no watcher.

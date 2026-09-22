@@ -11,6 +11,9 @@ guidance; use [Install And Bootstrap](install.md) instead.
 
 ## Current Release Line
 
+- [v1.6.0 release notes](v160-release-notes.md)
+- [v1.6.0 qualification contract](v160-qualification.md)
+- [v1.6.0 candidate and publication runbook](v160-release-runbook.md)
 - [v1.5.2 release notes](v152-release-notes.md)
 - [v1.5.2 qualification contract](v152-qualification.md)
 - [v1.5.2 candidate and publication runbook](v152-release-runbook.md)

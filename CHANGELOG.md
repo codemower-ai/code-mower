@@ -7,12 +7,41 @@ later entries are regular releases.
 
 ## Unreleased
 
-- Audit comment ingestion now uses GitHub-specific response, aggregate-byte,
-  item, and request-page budgets. Oversized pages reduce `per_page` and restart
-  safely, complete histories receive a stable reread, and omissions, duplicate
-  IDs, edits, incomplete terminal proof, and budget exhaustion fail with
-  actionable diagnostics. Lineage controls are recognized only as standalone
-  HTML control-comment lines outside inline and fenced examples (#1104).
+- No changes yet.
+
+## 1.6.0 — operational clarity and minimum telemetry
+
+Code Mower 1.6.0 makes local operational state safer to interpret and adds a
+closed, metadata-only lifecycle-summary contract for the optional Slack control
+surface. See the [release notes](docs/v160-release-notes.md) and the
+[qualification contract](docs/v160-qualification.md).
+
+- Reconcile doctor warnings with their JSON states and keep hosted-only checks
+  out of ordinary local adoption diagnostics (#1064 / #1099).
+- Replace managed Board services atomically, verify either the new or restored
+  binding from host state, and refuse ambiguous reconciliation (#1082 / #1100,
+  hardened by #1103).
+- Filter Board inventory by identity-verified repository, expose invoking,
+  serving, installed, managed-service, and restart state consistently, and give
+  stale managed or transient Boards an exact recovery command (#1063 / #1109).
+- Treat an ordinary pull request with no Code Mower provenance as neutral
+  `unmanaged`, while keeping a visible malformed Code Mower claim actionable
+  and fail-closed (#1083 / #1097).
+- Make adoption diagnostics share-safe by default and require an explicit local
+  view for private paths and identifiers (#1084 / #1102).
+- Isolate spend evidence across repositories and attach a pre-PR builder record
+  only when its branch exactly matches one fetched pull request, improving cost
+  coverage without exporting new fields or private data (#1106 / #1108).
+- Bound GitHub audit-comment history by response, aggregate-byte, item, and
+  request-page budgets; adaptively restart smaller pages; prove a stable
+  terminal history; and fail closed on omissions, duplicate or changed IDs,
+  truncation, and exhausted budgets. Recognize lineage controls only as exact
+  standalone HTML comments outside fenced Markdown, while malformed controls
+  from trusted authorities remain fail-closed (#1104 / #1107).
+- Freeze the provider-neutral `code_mower.controlSurfaceSessionSummary.v1`
+  contract, its accepted and rejected fixtures, capability gate, transition
+  suppression, local Board projection, and metadata-only cloud emitter
+  (#921 / #1098).
 
 ## 1.5.2 — documentation and repository maintenance
 
