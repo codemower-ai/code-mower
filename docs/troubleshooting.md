@@ -142,13 +142,17 @@ version, the installed version, and whether a restart is recommended.
 For a scriptable inventory across all local listeners, use:
 
 ```bash
-code-mower board list --json
+code-mower board list --repo OWNER/REPO --json
 ```
 
-`board list` is a global local inventory in v1.5.2; it does not accept
-`--repo`. Filter the returned rows by their identity-verified `repo` field.
-Each responsive row reports `serving_version`, `installed_version`,
-`restart_recommended`, `managed`, and its service label when managed.
+The repository filter fails closed: a listener is included only when its
+`/api/identity` response establishes that repository. Legacy and unresponsive
+listeners remain visible in the unfiltered inventory, but are never selected
+from a process command-line hint. Each row reports the invoking, serving, and
+installed versions, `restart_recommended`, `managed`, and its service label.
+The invoking CLI marks a Board stale whenever its serving version differs from
+the invoking version, even when the old process reports its own serving and
+installed versions as equal.
 
 For one known Board, query the local status endpoint on its printed port:
 
@@ -158,10 +162,15 @@ curl -fsS http://127.0.0.1:PORT/api/status | python3 -m json.tool
 
 In `/api/status`, inspect `board.version.serving_version`,
 `board.version.installed_version`, and `board.version.restart_recommended`.
-`GET /api/identity` is the smaller identity and version probe. Do not infer the
-version from the static HTML or from `lanes status`; neither is the v1.5.2
-version-verification contract.
-When restart is recommended, stop the old Board process and start it again:
+`GET /api/identity` is the smaller identity and version probe. `lanes status`
+uses the same local inventory fields as `board list`. When a managed Board is
+stale, copy its `restart_command`; for an identity-verified transient Board,
+copy its `promotion_command` to install the persistent service. Both commands
+use `--repo-path .`, so run them from the intended repository checkout, where the
+service lifecycle validates the repository origin.
+
+When restart is recommended for a transient Board, stop the old process and
+start it again:
 
 ```bash
 code-mower board serve --repo OWNER/REPO

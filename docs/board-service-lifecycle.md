@@ -346,24 +346,28 @@ Selectors are not exclusive: every selector supplied must agree on one binding.
   not be proven to release the port rather than be undone.
 
 `board list` marks each Board `managed` with its service label, or transient,
-and says when that service's supervision is unconfirmed.
+and says when that service's supervision is unconfirmed. Use `code-mower board
+list --repo OWNER/REPO --json` to filter on the repository established by each
+listener's `/api/identity` response. A legacy, malformed, or unresponsive
+listener cannot satisfy the filter even when its process command line contains
+that repository. Omit `--repo` to inspect those unverified rows globally.
 
-In v1.5.2 the inventory is global: use `code-mower board list --json`, then
-filter the returned rows by their identity-verified `repo` value. The command
-does not accept `--repo`. Responsive rows carry `serving_version`,
+Responsive rows carry `invoking_version`, `serving_version`,
 `installed_version`, `restart_recommended`, `managed`, and `service_label`.
+Staleness is computed by the invoking CLI as well as read from the process, so
+an old Board cannot declare itself current merely because its own serving and
+installed versions agree.
 For one known listener, `GET /api/identity` is the compact identity/version
-probe and `GET /api/status` carries the full `board.version` block. Static HTML
-and `lanes status` are not version-verification surfaces in this release.
+probe and `GET /api/status` carries the full `board.version` block. `lanes
+status` presents the same inventory fields and service identity as `board
+list`.
 
-When a transient Board needs to survive logout, stop it with the exact selector
-reported by `board list`, then review and install a managed definition with
-`board service render` and `board service install`. When a managed Board is
-stale, use `board service restart` with the same repository path and port.
-Repository-filtered inventory, version parity in `lanes status`, and copyable
-promotion/restart guidance are tracked for v1.6.0 in
-[#1063](https://github.com/codemower-ai/code-mower/issues/1063); do not use
-those planned command shapes with v1.5.2.
+Every identity-verified transient row includes a copyable `promotion_command`
+that stops the exact repo/port listener and then installs the service. Every
+stale managed row includes its exact `restart_command`. The commands keep local
+paths redacted with `--repo-path .`; run them from the intended checkout, where
+the service lifecycle's origin guard verifies the repository before applying a
+definition.
 
 A `launchctl` that cannot be probed at all is one of those unconfirmed cases,
 not an empty inventory. On macOS the installed definitions are enumerated even

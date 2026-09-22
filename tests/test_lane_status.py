@@ -10,7 +10,7 @@ from io import StringIO
 from pathlib import Path
 from unittest import TestCase
 
-from code_mower import lane_status
+from code_mower import board, lane_status
 
 
 NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
@@ -415,6 +415,9 @@ class LaneStatusTests(TestCase):
             gh_json_runner=gh_json,
             command_runner=command_runner,
             now=NOW,
+            board_inventory_collector=lambda **kwargs: lane_status.collect_local_boards(
+                kwargs["command_runner"]
+            ),
         )
 
         self.assertFalse(report["remote"]["available"])
@@ -460,6 +463,9 @@ class LaneStatusTests(TestCase):
             gh_json_runner=gh_json,
             command_runner=command_runner,
             now=NOW,
+            board_inventory_collector=lambda **kwargs: lane_status.collect_local_boards(
+                kwargs["command_runner"]
+            ),
         )
 
         self.assertFalse(report["remote"]["available"])
@@ -497,12 +503,56 @@ class LaneStatusTests(TestCase):
             gh_json_runner=gh_json,
             command_runner=command_runner,
             now=NOW,
+            board_inventory_collector=lambda **kwargs: lane_status.collect_local_boards(
+                kwargs["command_runner"]
+            ),
         )
 
         boards = report["local_boards"]["boards"]
         self.assertEqual([board["repo"] for board in boards], ["owner/one", "owner/two"])
         self.assertEqual([board["url"] for board in boards], ["http://127.0.0.1:5332/", "http://127.0.0.1:5333/"])
         self.assertNotIn("/tmp/one", json.dumps(report))
+
+    def test_lanes_status_uses_inventory_versions_service_identity_and_guidance(self) -> None:
+        inventory = {
+            "schema": board.BOARD_INVENTORY_SCHEMA,
+            "available": True,
+            "message": "",
+            "boards": [
+                {
+                    "port": 5332,
+                    "pid": 123,
+                    "process": "code-mower",
+                    "confidence": "high",
+                    "url": "http://127.0.0.1:5332/",
+                    "repo": "owner/repo",
+                    "invoking_version": "1.6.0",
+                    "serving_version": "1.5.2",
+                    "installed_version": "1.5.2",
+                    "restart_recommended": True,
+                    "managed": True,
+                    "service_label": "ai.codemower.board.5332",
+                    "service_supervision": "confirmed",
+                    "restart_command": "code-mower board service restart --repo owner/repo --repo-path . --host 127.0.0.1 --port 5332 --replace",
+                }
+            ],
+            "next_action": "restart stale managed Board",
+            "next_detail": "restart it",
+        }
+        report = lane_status.collect_status(
+            lineage_config=policy({}),
+            repo="owner/repo",
+            gh_json_runner=lambda args: [],
+            command_runner=lambda args: _completed(""),
+            now=NOW,
+            board_inventory_collector=lambda **_kwargs: inventory,
+        )
+
+        self.assertEqual(report["local_boards"], inventory)
+        rendered = lane_status.render_text(report)
+        self.assertIn("invoking=1.6.0 serving=1.5.2 installed=1.5.2", rendered)
+        self.assertIn("service=ai.codemower.board.5332", rendered)
+        self.assertIn(f"restart: {inventory['boards'][0]['restart_command']}", rendered)
 
     def test_collect_status_never_reports_no_active_lanes_when_github_unavailable(
         self,

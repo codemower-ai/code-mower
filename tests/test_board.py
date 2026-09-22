@@ -21,6 +21,7 @@ import time
 import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import SkipTest, TestCase, skipUnless
 from unittest.mock import patch
 from io import StringIO
@@ -692,7 +693,11 @@ class BoardTests(TestCase):
                 },
             }
 
-        payload = board.board_inventory_payload(command_runner=_command_runner, status_probe=status_probe)
+        payload = board.board_inventory_payload(
+            command_runner=_command_runner,
+            status_probe=status_probe,
+            service_probe=lambda: [],
+        )
 
         self.assertEqual(payload["schema"], board.BOARD_INVENTORY_SCHEMA)
         self.assertTrue(payload["available"])
@@ -700,10 +705,160 @@ class BoardTests(TestCase):
         self.assertEqual(payload["boards"][0]["url"], "http://127.0.0.1:5332/")
         self.assertEqual(payload["boards"][0]["serving_version"], "0.9.3b1")
         self.assertEqual(payload["boards"][0]["installed_version"], "0.9.4b1")
+        self.assertEqual(payload["boards"][0]["invoking_version"], board.CODE_MOWER_VERSION)
         self.assertTrue(payload["boards"][0]["restart_recommended"])
         self.assertEqual(payload["boards"][0]["cwd"], lane_status.LOCAL_PATH_REDACTION)
         self.assertEqual(payload["next_action"], "restart stale Board")
         self.assertIn("port(s) 5332", payload["next_detail"])
+
+    def test_board_inventory_repo_filter_fails_closed_without_verified_identity(self) -> None:
+        def command_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:4] == ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"]:
+                return _completed(
+                    "p101\ncPython\nn127.0.0.1:5332\n"
+                    "p102\ncPython\nn127.0.0.1:5333\n"
+                    "p103\ncPython\nn127.0.0.1:5334\n"
+                )
+            commands = {
+                101: "code-mower board serve --repo owner/repo",
+                102: "code-mower board serve --repo owner/repo",
+                103: "code-mower board serve --repo other/repo",
+            }
+            for pid, command in commands.items():
+                if args == ["ps", "-p", str(pid), "-o", "command="]:
+                    return _completed(command)
+                if args == ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"]:
+                    return _completed(f"p{pid}\nn/private/{pid}\n")
+            return _completed("", returncode=1)
+
+        def status_probe(item: dict[str, object]) -> dict[str, object]:
+            if item["port"] == 5332:
+                return {
+                    "schema": board.BOARD_IDENTITY_SCHEMA,
+                    "repo": "owner/repo",
+                    "board": {"version": {"serving_version": board.CODE_MOWER_VERSION}},
+                }
+            if item["port"] == 5333:
+                return {"available": False, "message": "connection refused"}
+            return {
+                "schema": board.BOARD_IDENTITY_SCHEMA,
+                "repo": "other/repo",
+                "board": {"version": {"serving_version": board.CODE_MOWER_VERSION}},
+            }
+
+        payload = board.board_inventory_payload(
+            repo="owner/repo",
+            command_runner=command_runner,
+            status_probe=status_probe,
+            service_probe=lambda: [],
+        )
+
+        self.assertEqual([item["port"] for item in payload["boards"]], [5332])
+        self.assertTrue(payload["boards"][0]["identity_verified"])
+        self.assertEqual(payload["filter"]["excluded_identity_unverified"], 1)
+        self.assertEqual(payload["filter"]["excluded_other_repository"], 1)
+        self.assertNotIn("/private/", json.dumps(payload))
+
+        missing = board.board_inventory_payload(
+            repo="missing/repo",
+            command_runner=command_runner,
+            status_probe=status_probe,
+            service_probe=lambda: [],
+        )
+        self.assertEqual(missing["boards"], [])
+        self.assertIn("no identity-verified Boards for missing/repo", board.render_inventory_text(missing))
+
+    def test_invoking_cli_marks_old_managed_board_stale_and_gives_exact_restart(self) -> None:
+        service = SimpleNamespace(
+            label="ai.codemower.board.5332",
+            port=5332,
+            pid=123,
+            loaded=True,
+            host="127.0.0.1",
+            arguments=("code-mower", "board", "serve", "--record-events"),
+        )
+        with patch("code_mower.board.CODE_MOWER_VERSION", "1.6.0"):
+            payload = board.board_inventory_payload(
+                command_runner=_command_runner,
+                status_probe=lambda _item: {
+                    "schema": board.BOARD_IDENTITY_SCHEMA,
+                    "repo": "owner/repo",
+                    "board": {
+                        "version": {
+                            "serving_version": "1.5.2",
+                            "installed_version": "1.5.2",
+                            "restart_recommended": False,
+                        }
+                    },
+                },
+                service_probe=lambda: [service],
+            )
+
+        row = payload["boards"][0]
+        self.assertEqual(row["invoking_version"], "1.6.0")
+        self.assertTrue(row["restart_recommended"])
+        self.assertEqual(row["stale_reason"], "serving_version_differs_from_invoking_version")
+        self.assertEqual(
+            row["restart_command"],
+            "code-mower board service restart --repo owner/repo --repo-path . "
+            "--host 127.0.0.1 --port 5332 --replace",
+        )
+        self.assertEqual(payload["next_action"], "restart stale managed Board")
+        self.assertEqual(payload["next_detail"], row["restart_command"])
+
+    def test_transient_board_gives_copyable_promotion_command(self) -> None:
+        payload = board.board_inventory_payload(
+            command_runner=_command_runner,
+            status_probe=lambda _item: {
+                "schema": board.BOARD_IDENTITY_SCHEMA,
+                "repo": "owner/repo",
+                "board": {
+                    "recording": {"enabled": False},
+                    "version": {
+                        "serving_version": board.CODE_MOWER_VERSION,
+                        "installed_version": board.CODE_MOWER_VERSION,
+                        "restart_recommended": False,
+                    }
+                },
+            },
+            service_probe=lambda: [],
+        )
+
+        row = payload["boards"][0]
+        self.assertFalse(row["managed"])
+        self.assertEqual(
+            row["promotion_command"],
+            "code-mower board stop --repo owner/repo --port 5332 --yes && "
+            "code-mower board service install --repo owner/repo --repo-path . "
+            "--host 127.0.0.1 --port 5332 --no-record-events",
+        )
+        self.assertIn(f"promote: {row['promotion_command']}", board.render_inventory_text(payload))
+
+    def test_board_list_passes_repository_filter_to_inventory(self) -> None:
+        payload = {
+            "schema": board.BOARD_INVENTORY_SCHEMA,
+            "available": True,
+            "message": "",
+            "boards": [],
+            "next_action": "start Board",
+            "next_detail": "code-mower board serve --repo owner/repo",
+        }
+        output = StringIO()
+        with (
+            patch("code_mower.board.board_inventory_payload", return_value=payload) as inventory,
+            redirect_stdout(output),
+        ):
+            code = board.main(["list", "--repo", "owner/repo", "--json"])
+
+        self.assertEqual(code, 0)
+        inventory.assert_called_once_with(repo="owner/repo", show_local_paths=False)
+        self.assertEqual(json.loads(output.getvalue())["schema"], board.BOARD_INVENTORY_SCHEMA)
+
+    def test_board_list_rejects_malformed_repository_filter(self) -> None:
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as caught:
+            board.main(["list", "--repo", "not-a-slug"])
+
+        self.assertEqual(caught.exception.code, 2)
 
     def test_board_inventory_payload_handles_missing_process_permissions(self) -> None:
         # Neither probe can run: `lsof` is refused outright and the `ss`
@@ -731,6 +886,8 @@ class BoardTests(TestCase):
 
         self.assertEqual(payload["boards"][0]["health"], "unresponsive")
         self.assertFalse(payload["boards"][0]["restart_recommended"])
+        self.assertEqual(payload["boards"][0]["serving_version"], "")
+        self.assertEqual(payload["boards"][0]["installed_version"], "")
         self.assertEqual(payload["next_action"], "inspect unresponsive Board")
         self.assertIn("did not answer", payload["next_detail"])
 
@@ -746,6 +903,7 @@ class BoardTests(TestCase):
 
         self.assertEqual(payload["boards"][0]["health"], "legacy")
         self.assertTrue(payload["boards"][0]["restart_recommended"])
+        self.assertEqual(payload["boards"][0]["invoking_version"], board.CODE_MOWER_VERSION)
         self.assertIn("legacy / restart recommended", payload["boards"][0]["status_message"])
         self.assertEqual(payload["next_action"], "restart stale Board")
         rendered = board.render_inventory_text(payload)

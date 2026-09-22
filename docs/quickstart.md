@@ -455,12 +455,13 @@ an explicit `--port` fails with a friendly conflict instead. The printed URL is
 local to that machine or VM unless you create your own tunnel. `lanes status`
 discovers local Board listeners best-effort across common macOS and Linux tools;
 if listener inventory is restricted, GitHub PR/check status still reports.
-Use `code-mower board list --json` to see the global local inventory with
-repo/version, restart hints, and whether each listener is managed or transient.
-In v1.5.2 `board list` does not accept `--repo`; filter its identity-verified
-rows after retrieval. For one known port, verify the version through
-`/api/identity` or the `board.version` block in `/api/status`. Static Board HTML
-and `lanes status` are not version-verification surfaces. Use
+Use `code-mower board list --repo OWNER/REPO --json` to see only Boards whose
+`/api/identity` response verifies that repository. Omit `--repo` for the global
+inventory, including legacy and unresponsive listeners. `board list` and
+`lanes status` report the invoking, serving, and installed versions, compute
+restart posture from invoking/serving parity, and identify managed services.
+Identity-verified transient rows include a copyable `promotion_command`; stale
+managed rows include their exact `restart_command`. Use
 `code-mower board stop --repo OWNER/REPO --yes`, `code-mower board stop --port
 PORT --yes`, or `code-mower board stop --pid PID --yes` only when you want to
 stop a listener that the inventory identified as a high-confidence Code Mower

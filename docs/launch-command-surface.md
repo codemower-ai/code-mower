@@ -48,7 +48,7 @@ Select any additional builder or reviewer explicitly.
 | `code-mower board serve --repo OWNER/REPO --record-events` | Serve the board and append throttled metadata-only local history snapshots while it is open. | yes, local only | GitHub optional |
 | `code-mower board serve --repo OWNER/REPO --agent-adapters-path PATH` | Read opt-in local agent cards from a custom metadata-only adapter directory. | no | no |
 | `code-mower board serve --repo OWNER/REPO --observations-path PATH` | Render local `code_mower.boardObservation.v1` records from a custom read-only directory. The Board consumes that contract and never writes one. | no | no |
-| `code-mower board list --json` | List the global local Board inventory with repo/version, restart hints, ports, and redacted cwd paths by default; v1.5.2 has no `--repo` filter. | no | no |
+| `code-mower board list --repo OWNER/REPO --json` | List only identity-verified local Boards for a repository, with invoking/serving/installed versions, service identity, restart posture, copyable service guidance, ports, and redacted cwd paths by default. Omit `--repo` for the global inventory. | no | no |
 | `code-mower board stop --port PORT --yes` | Stop a local Board listener that the inventory identified as Code Mower. | local process signal | no |
 | `code-mower board record --repo OWNER/REPO` | Append one redacted status snapshot to `.code-mower/board/events.jsonl` for local board history. | yes, local only | GitHub optional |
 | `code-mower board events` | Print recent local board-history events without calling GitHub. | no | no |
