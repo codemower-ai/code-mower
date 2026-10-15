@@ -146,6 +146,9 @@ documents:
   status: supporting
 - path: docs/operational-evidence.md
   status: supporting
+- path: docs/operator-contract-v1.md
+  status: canonical
+  subject: operator-contract
 - path: docs/orchestrator-prompt-pack.md
   status: supporting
 - path: docs/oss-v1-checklist.md
