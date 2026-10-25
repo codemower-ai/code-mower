@@ -109,6 +109,21 @@ devin auth status >/dev/null 2>&1 && echo "devin auth ok" || { echo "devin auth 
 Check only providers enabled for this runner. These are auth readiness checks;
 they do not start a provider canary or repeat an audit.
 
+From an interactive shell, point runner doctor at the exact private service
+environment instead of accidentally probing the shell's credentials:
+
+```bash
+code-mower doctor --runner \
+  --runner-env-file "$HOME/actions-runner/.env" \
+  --json
+```
+
+The file must be a regular, non-symlink file with no group or other
+permissions. Doctor merges its assignments over the current process only for
+the bounded runner checks, reports no values, and runs the Claude/Codex prompt
+probes with that effective environment. This distinguishes a revoked setup
+token in the service from a healthy interactive login.
+
 Local Claude and Codex merge-authority audits normally publish through
 `.github/workflows/local-audit-publication.yml`. The self-hosted audit job uses
 its short-lived `GITHUB_TOKEN` to dispatch this default-branch workflow. The

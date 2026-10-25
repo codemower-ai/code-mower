@@ -334,8 +334,10 @@ config after reviewing the generated plan.
 ## 6. Configure Branch Protection And Auto-Merge
 
 If the selected profile has merge-authority lanes, Code Mower publishes the
-`code-mower/gate` commit status and asks GitHub to enable auto-merge only after
-that status is green. Two GitHub settings must match that behavior.
+`code-mower/gate` commit status. It asks GitHub to enable auto-merge only after
+that status is green and the PR has the explicit `code-mower:auto-merge` label.
+Repository-wide auto-merge capability alone never authorizes a PR merge. Two
+GitHub settings must also match that behavior.
 
 During the initial informational pilot, leave this section as a promotion todo:
 do not require `code-mower/gate`, do not enable repository auto-merge, and merge
@@ -359,6 +361,10 @@ First, enable repository auto-merge:
 ```bash
 gh api -X PATCH repos/OWNER/REPO -f allow_auto_merge=true
 ```
+
+Add `code-mower:auto-merge` only to a PR that is authorized for unattended
+merge. Removing or withholding the label keeps the gate status-only even when
+the repository and token can auto-merge.
 
 Then protect the default branch and require the Code Mower gate status from
 Any source:

@@ -620,6 +620,7 @@ def validate_config(config: Mapping[str, Any]) -> list[ConfigIssue]:
             "owner_decision_label",
             "owner_sitting_label",
             "gate_override_label",
+            "auto_merge_label",
             "local_audit_runner_label",
             "ready_label",
         ):

@@ -12,6 +12,15 @@ CLAUDE_AUTH_OVERRIDE_ENV = (
     "CLAUDE_CONFIG_DIR",
 )
 
+# The bounce command deliberately tests whether a stored Claude Code setup
+# token is shadowing otherwise healthy interactive credentials. Audit wrappers
+# must keep this token because it is the supported durable service credential.
+CLAUDE_BOUNCE_AUTH_OVERRIDE_ENV = (
+    *CLAUDE_AUTH_OVERRIDE_ENV,
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
+)
+
 GITHUB_TOKEN_ENV = ("GITHUB_TOKEN", "GH_TOKEN")
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -67,6 +76,7 @@ def render_claude_env_unset_snippet(
 
 __all__ = (
     "CLAUDE_AUTH_OVERRIDE_ENV",
+    "CLAUDE_BOUNCE_AUTH_OVERRIDE_ENV",
     "GITHUB_TOKEN_ENV",
     "clean_claude_cli_env",
     "env_flag",

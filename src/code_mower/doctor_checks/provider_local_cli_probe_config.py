@@ -38,8 +38,12 @@ def local_cli_probe_timeout(lane: Mapping[str, Any], default_timeout: int) -> in
         return default_timeout
 
 
-def local_cli_probe_env(lane: Mapping[str, Any]) -> tuple[dict[str, str], dict[str, Any]]:
-    child_env = os.environ.copy()
+def local_cli_probe_env(
+    lane: Mapping[str, Any],
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> tuple[dict[str, str], dict[str, Any]]:
+    child_env = dict(os.environ if environ is None else environ)
     forwarded: list[str] = []
 
     token_names: list[str] = []

@@ -19,6 +19,7 @@ from code_mower.doctor_checks.self_hosted_runner import (
     check_runner_listener_env_freshness,
     check_runner_required_env,
     check_runner_workflow_labels,
+    load_runner_environment,
     _runner_labels_from_github,
     _runner_root_from_command,
 )
@@ -85,6 +86,29 @@ def _runner_config(label: str = "sample-app-audit") -> dict[str, object]:
             }
         },
     }
+
+
+class RunnerEnvironmentTests(unittest.TestCase):
+    def test_load_runner_environment_merges_private_assignments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".env"
+            env_file.write_text("PATH=/service/bin\nCLAUDE_CODE_OAUTH_TOKEN=secret\n", encoding="utf-8")
+            env_file.chmod(0o600)
+
+            loaded = load_runner_environment(env_file, environ={"LANG": "en_US.UTF-8"})
+
+        self.assertEqual(loaded["LANG"], "en_US.UTF-8")
+        self.assertEqual(loaded["PATH"], "/service/bin")
+        self.assertEqual(loaded["CLAUDE_CODE_OAUTH_TOKEN"], "secret")
+
+    def test_load_runner_environment_rejects_broad_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".env"
+            env_file.write_text("PATH=/service/bin\n", encoding="utf-8")
+            env_file.chmod(0o640)
+
+            with self.assertRaisesRegex(ValueError, "group or other permissions"):
+                load_runner_environment(env_file, environ={})
 
 
 def _write_runner_plist(home: Path, payload: dict[str, object]) -> Path:
@@ -175,6 +199,45 @@ class SelfHostedRunnerDoctorTests(unittest.TestCase):
         self.assertNotIn("--ask-for-approval", calls[0])
         self.assertNotIn("--ephemeral", codex_check.detail["args"])
         self.assertNotIn("--ask-for-approval", codex_check.detail["args"])
+
+    def test_runner_cli_auth_uses_the_supplied_service_environment(self) -> None:
+        config = _runner_config()
+        claude_lane = config["lanes"]["claude_audit"]
+        observed_env: dict[str, str] = {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            claude = bin_dir / "claude"
+            claude.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            claude.chmod(0o755)
+
+            def fake_run(
+                command: list[str],
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess[str]:
+                observed_env.update(kwargs["env"])
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    json.dumps({"result": "ok"}),
+                    "",
+                )
+
+            checks = check_runner_cli_auth(
+                [("claude_audit", claude_lane)],
+                run=fake_run,
+                http_timeout=5,
+                environ={
+                    "PATH": str(bin_dir),
+                    "CLAUDE_CODE_OAUTH_TOKEN": "service-token",
+                },
+            )
+
+        claude_check = next(check for check in checks if check.lane == "claude_audit")
+        self.assertEqual(claude_check.status, "pass")
+        self.assertEqual(observed_env["CLAUDE_CODE_OAUTH_TOKEN"], "service-token")
+        self.assertNotIn("service-token", json.dumps(claude_check.detail))
 
     def test_runner_workflow_labels_fail_when_custom_label_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -147,6 +147,7 @@ def run_doctor(
     context_state_dir: Path | None = None,
     board_startup_grace: Any = None,
     checkout_present: bool | None = None,
+    runner_environ: Mapping[str, str] | None = None,
 ) -> DoctorReport:
     config, templates, checks = load_inputs(config_path, provider_templates_path)
     # Devin is an explicit addition to the Claude + Codex default, so its stage
@@ -455,6 +456,7 @@ def run_doctor(
                 provider_templates_root=_provider_templates_source_root(),
                 http_timeout=http_timeout,
                 actionlint_bin=actionlint_bin,
+                environ=runner_environ,
             )
         )
 

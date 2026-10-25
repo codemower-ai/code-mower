@@ -49,8 +49,9 @@ not a user, machine, session, or lease identifier, and does not affect policy.
 when agent permission systems classify commands by flags. `dry_run` and
 `no_merge` modes never mutate GitHub. `promoted` mode must refuse
 to proceed unless branch protection requires `code-mower/gate`, repository
-auto-merge is enabled, and the operator has verified a merge-capable
-credential. Merge execution can be layered on this policy engine, but the event
+auto-merge is enabled, the PR carries the explicit `code-mower:auto-merge`
+authorization label, and the operator has verified a merge-capable credential.
+Merge execution can be layered on this policy engine, but the event
 contract is intentionally useful before any write path exists.
 
 Code Mower must stop or escalate when:

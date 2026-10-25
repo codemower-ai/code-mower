@@ -7,7 +7,12 @@ later entries are regular releases.
 
 ## Unreleased
 
-- No changes yet.
+- Make runner authentication diagnosis use the exact private service
+  environment, and let Claude bounce isolate revoked setup-token overrides
+  without removing the durable token from real audit processes.
+- Keep a green Code Mower gate status-only unless the pull request has an
+  explicit `code-mower:auto-merge` authorization label revalidated immediately
+  before the head-pinned merge request.
 
 ## 1.6.0 — operational clarity and minimum telemetry
 

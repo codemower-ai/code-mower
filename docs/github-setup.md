@@ -580,7 +580,9 @@ pending; treats configured current-head `*-blocked` labels as failure; applies
 `code-mower/gate` commit status; keeps the workflow job name distinct from that
 status so GitHub does not bind branch protection to the Actions check-run; and
 runs one head-pinned `gh pr merge --auto --squash --match-head-commit` call
-with bounded retry for transient merge-state races when the status is green.
+with bounded retry for transient merge-state races when the status is green
+and the PR has the explicit `code-mower:auto-merge` label. A green gate remains
+status-only when that label is absent.
 A `*-done` or
 `*-blocked` label counts only when the matching terminal audit comment carries
 the same head SHA and comes from the lane's configured bot authors, so stale
@@ -598,7 +600,8 @@ The generated product-support files include `tools/audit_labeler_lib.py` and
 attestation and decision-covered blocker handling without uploading source,
 diffs, or transcripts.
 Hosted builder tokens usually cannot enable auto-merge themselves, so keep that
-call in the repository gate workflow. After a green gate, the workflow runs one
+call in the repository gate workflow. After a green gate and explicit
+`code-mower:auto-merge` label, the workflow runs one
 head-pinned `gh pr merge --auto --squash --match-head-commit HEAD_SHA` call:
 it queues auto-merge while required checks are still pending and merges
 promptly once the PR is mergeable, and it refuses a moved head instead of

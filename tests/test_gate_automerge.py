@@ -28,6 +28,10 @@ HEAD_SHA = "abc123def456abc123def456abc123def456abc1"
 
 FAKE_GH = textwrap.dedent("""\
     #!/bin/bash
+    if [ "${1:-}" = "api" ]; then
+      printf '%s\n' "${FAKE_LABELS_JSON:-[]}"
+      exit 0
+    fi
     echo "${GH_TOKEN:-} :: $*" >> "${FAKE_GH_LOG}"
     count="$(cat "${FAKE_GH_COUNT}" 2>/dev/null || echo 0)"
     count="$((count + 1))"
@@ -75,7 +79,12 @@ def _automerge_block(path: Path) -> str:
     return text[start:end]
 
 
-def _run_block(scenario: str, *, max_attempts: str = "5") -> tuple[int, str, list[str]]:
+def _run_block(
+    scenario: str,
+    *,
+    max_attempts: str = "5",
+    opt_in: bool = True,
+) -> tuple[int, str, list[str]]:
     """Run the extracted gate block against a fake ``gh``; return exit/output/calls."""
     block = _automerge_block(TEMPLATE)
     script = (
@@ -87,6 +96,7 @@ def _run_block(scenario: str, *, max_attempts: str = "5") -> tuple[int, str, lis
         'GH_TOKEN="read-token"\n'
         f'CODE_MOWER_GATE_AUTOMERGE_MAX_ATTEMPTS="{max_attempts}"\n'
         'CODE_MOWER_GATE_AUTOMERGE_RETRY_DELAY="0"\n'
+        'CODE_MOWER_GATE_AUTO_MERGE_LABEL="code-mower:auto-merge"\n'
         f'FAKE_GH_SCENARIO="{scenario}"\n'
         'export PR_NUMBER GITHUB_REPOSITORY HEAD_SHA CODE_MOWER_GATE_AUTOMERGE_TOKEN '
         "GH_TOKEN CODE_MOWER_GATE_AUTOMERGE_MAX_ATTEMPTS "
@@ -107,6 +117,9 @@ def _run_block(scenario: str, *, max_attempts: str = "5") -> tuple[int, str, lis
         env["FAKE_GH_LOG"] = str(log_path)
         env["FAKE_GH_COUNT"] = str(count_path)
         env["HEAD_SHA"] = HEAD_SHA
+        env["FAKE_LABELS_JSON"] = (
+            '[{"name":"code-mower:auto-merge"}]' if opt_in else "[]"
+        )
         completed = subprocess.run(
             ["bash", "-c", script],
             check=False,
@@ -151,6 +164,12 @@ class GateAutomergeTemplateTests(unittest.TestCase):
 
 
 class GateAutomergeBehaviorTests(unittest.TestCase):
+    def test_green_gate_without_opt_in_label_does_not_request_merge(self) -> None:
+        code, output, calls = _run_block("success-now", opt_in=False)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(calls, [], output)
+        self.assertIn("Auto-merge remains off", output)
+
     def test_queue_later_single_call(self) -> None:
         code, output, calls = _run_block("success-queue")
         self.assertEqual(code, 0, output)

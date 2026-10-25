@@ -30,10 +30,14 @@ source ~/.config/code-mower/claude-clean-env.sh
 
 The bounce helper runs the same kind of real Claude prompt smoke twice: once
 with the inherited environment and once with known stale Claude/Anthropic auth
-override variables removed from the child process. It does not delete Claude
-credentials, modify keychain state, or log raw provider output. If `clean_env`
-passes while `inherited_env` fails, restart the parent app or source the
-generated unset snippet before retrying.
+override variables removed from the child process. The clean probe also removes
+`CLAUDE_CODE_OAUTH_TOKEN` and its recorded expiry so a revoked setup token
+cannot hide a healthy interactive login. Audit wrappers continue to preserve a
+configured setup token; only the diagnostic clean probe removes it. The helper
+does not delete Claude credentials, modify keychain state, or log raw provider
+output. If `clean_env` passes while `inherited_env` fails, restart the parent
+app, repair the runner environment, or source the generated unset snippet
+before retrying.
 
 `code-mower doctor --preflight` runs the provider-configured Claude smoke probe
 with a bounded model and budget cap. If that probe reports a provider
