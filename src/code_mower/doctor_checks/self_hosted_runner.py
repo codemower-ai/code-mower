@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -60,6 +60,7 @@ PS_LISTENER_RE = re.compile(
     r"(?P<start>[A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+"
     r"(?P<command>.+)$"
 )
+RUNNER_LISTENER_START_TIME_PRECISION = timedelta(seconds=1)
 
 RunFn = Callable[..., subprocess.CompletedProcess[str]]
 WhichFn = Callable[[str], str | None]
@@ -916,7 +917,8 @@ def check_runner_listener_env_freshness(
     stale = [
         process
         for process, env_path in process_env_files.items()
-        if process.start_time < env_mtimes[env_path]
+        if process.start_time + RUNNER_LISTENER_START_TIME_PRECISION
+        <= env_mtimes[env_path]
     ]
     if stale:
         return DoctorCheck(
