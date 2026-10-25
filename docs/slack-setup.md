@@ -1,6 +1,6 @@
 # Optional Slack setup
 
-Slack in the v1.5.x line is an explicit opt-in for **one private workspace**,
+Slack in v1.5.0 and later is an explicit opt-in for **one private workspace**,
 an authorized private, unshared channel, and a bound repository. The normal
 hosted setup is a short dashboard OAuth flow. It does not require a local manifest, Slack app
 creation, or Slack credentials on the user's machine. The default Claude +
@@ -10,14 +10,14 @@ Slack conveys a bounded request to the qualified supervisor; it does not run an
 agent or gain provider, review, approval, or merge authority. Hosted Devin is a
 bounded builder, never an orchestrator qualification.
 
-Live operation requires the immutable reviewed `code-mower==1.6.0` package
+Live operation requires the immutable reviewed `code-mower==1.6.1` package
 after publication, or the exact retained candidate during qualification, plus
 a separately qualified hosted deployment. The private bridge verifies its implementation lock and
 rejects editable/VCS installs for live operation. Version alone is insufficient.
 Metadata-only lifecycle summaries are included in v1.6.0 but remain disabled
 unless the hosted service advertises the exact accepted contract identity.
 Board links in Slack, a general integrations picker, Slack Connect, public
-channels, DMs, and rich Slack UX remain outside v1.6.0.
+channels, DMs, and rich Slack UX remain outside v1.6.1.
 
 ## Hosted setup for a workspace administrator
 
@@ -29,10 +29,10 @@ not create or import a Slack app manifest.
 1. Sign in to Code Mower, select the intended team, then open **Setup → Manage
    Slack integration**. Supply the exact Slack workspace ID. If the deployment
    supports an Enterprise Grid workspace, also supply the expected enterprise
-   ID; v1.6.0 still rejects organization-wide installation.
+   ID; v1.6.1 still rejects organization-wide installation.
 
 2. Choose **Install**, review Slack's consent screen, and authorize the Code
-   Mower app in that same workspace. The v1.6.0 hosted app requests only the bot
+   Mower app in that same workspace. The v1.6.1 hosted app requests only the bot
    `commands` scope. It does not request message or channel history, posting,
    files, email, user tokens, Events API subscriptions, Socket Mode, or an
    organization-wide grant. Token rotation is enabled.

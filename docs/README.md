@@ -41,6 +41,6 @@ historical release evidence and are not current operating guidance.
 
 ## Lifecycle
 
-The manifest currently classifies 63 supporting, 56 frozen, and 5 archived document(s).
+The manifest currently classifies 63 supporting, 59 frozen, and 5 archived document(s).
 See [Documentation lifecycle](documentation-lifecycle.md) before adding, moving,
 or changing release-sensitive documentation.

@@ -363,6 +363,21 @@
       "target": "docs/v160-release-runbook.md"
     },
     {
+      "kind": "doc",
+      "source": "docs/v161-qualification.md",
+      "target": "docs/v161-qualification.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/v161-release-notes.md",
+      "target": "docs/v161-release-notes.md"
+    },
+    {
+      "kind": "doc",
+      "source": "docs/v161-release-runbook.md",
+      "target": "docs/v161-release-runbook.md"
+    },
+    {
       "kind": "package",
       "source": "generated",
       "target": "pyproject.toml"
@@ -2415,6 +2430,6 @@
     "module": "code_mower",
     "name": "code-mower",
     "source_layout": "src/code_mower",
-    "version": "1.6.0"
+    "version": "1.6.1"
   }
 }
