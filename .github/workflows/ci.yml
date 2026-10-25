@@ -122,7 +122,7 @@ jobs:
           python scripts/rehearse_release.py --dist "$RUNNER_TEMP/rehearsal-dist" \
             --source-sha "$SOURCE_SHA" --work-dir "$RUNNER_TEMP/rehearsal"
       - name: Upload sanitized pre-merge evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: release-rehearsal-evidence
           path: |
@@ -241,7 +241,7 @@ jobs:
           NODE_PATH="$RUNNER_TEMP/board-browser/node_modules" node tests/board_qualification_browser.cjs "$RUNNER_TEMP/board-qualification"
       - name: Upload allowlisted qualification metadata
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: board-qualification
           path: |
