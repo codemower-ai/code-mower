@@ -7,12 +7,22 @@ later entries are regular releases.
 
 ## Unreleased
 
+## 1.6.1 — runner and merge-authorization reliability
+
+Code Mower 1.6.1 is a focused maintenance release for self-hosted reviewer
+authentication diagnostics and explicit unattended-merge authorization. See
+the [release notes](docs/v161-release-notes.md) and the
+[qualification contract](docs/v161-qualification.md).
+
 - Make runner authentication diagnosis use the exact private service
   environment, and let Claude bounce isolate revoked setup-token overrides
   without removing the durable token from real audit processes.
 - Keep a green Code Mower gate status-only unless the pull request has an
   explicit `code-mower:auto-merge` authorization label revalidated immediately
   before the head-pinned merge request.
+- Read every current PR-label page before authorizing an unattended merge, and
+  account for the one-second precision of macOS listener start times when
+  comparing them with private runner-environment mtimes.
 
 ## 1.6.0 — operational clarity and minimum telemetry
 

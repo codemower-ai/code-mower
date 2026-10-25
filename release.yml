@@ -1,9 +1,9 @@
 schema: code_mower.release.v1
-version: 1.6.0
-previous_version: 1.5.2
-previous_wheel_sha256: 44c7082b1fec2983d85ac7ce7feb7cf54b2b7d26e020e073716614d480118147
-tag: v1.6.0
-package_spec: code-mower==1.6.0
+version: 1.6.1
+previous_version: 1.6.0
+previous_wheel_sha256: 3dfa8ac0c5c72fce2d18c186153820e97e01ad35ac756cccf665b5f0e59f4698
+tag: v1.6.1
+package_spec: code-mower==1.6.1
 stage: stable
 python:
   minimum: "3.12"
@@ -12,9 +12,9 @@ python:
     - "3.13"
     - "3.14"
 documents:
-  notes: docs/v160-release-notes.md
-  qualification: docs/v160-qualification.md
-  runbook: docs/v160-release-runbook.md
+  notes: docs/v161-release-notes.md
+  qualification: docs/v161-qualification.md
+  runbook: docs/v161-release-runbook.md
   installation: docs/install.md
   publication: docs/pypi-release.md
 required_modules:
@@ -38,9 +38,9 @@ required_modules:
   - supervisor_contract_v2.py
   - templates/slack/hosted-app-manifest.json
 required_docs:
-  - docs/v160-release-notes.md
-  - docs/v160-qualification.md
-  - docs/v160-release-runbook.md
+  - docs/v161-release-notes.md
+  - docs/v161-qualification.md
+  - docs/v161-release-runbook.md
   - docs/slack-setup.md
   - docs/graphify-setup.md
 rehearsal_schema: code_mower.release_rehearsal.v1

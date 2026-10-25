@@ -1,10 +1,10 @@
 # Code Mower Public Release Checklist
 
-v1.6.0 uses the exact install pin `code-mower==1.6.0`. Verify the command path
-and version after installing. Use the [v1.6.0 qualification contract](v160-qualification.md)
-for required observations and the [candidate runbook](v160-release-runbook.md)
+v1.6.1 uses the exact install pin `code-mower==1.6.1`. Verify the command path
+and version after installing. Use the [v1.6.1 qualification contract](v161-qualification.md)
+for required observations and the [candidate runbook](v161-release-runbook.md)
 for prepublication local-wheel rehearsals and publication. Sanitized observed
-results belong on #1105 and the GitHub Release. Index commands select the release
+results belong on #1121 and the GitHub Release. Index commands select the release
 after publication; offline preparation does not establish live Slack readiness.
 
 
@@ -19,8 +19,8 @@ not know the original reference repos.
 - Apache-2.0 `LICENSE` and `NOTICE` are present.
 - The package has public releases and reports its version with
   `code-mower --version`.
-- The v1.6.0 source defines package-index entrypoint `code-mower==1.6.0`
-  (GitHub tag `v1.6.0`). Confirm that the tag and package version are published
+- The v1.6.1 source defines package-index entrypoint `code-mower==1.6.1`
+  (GitHub tag `v1.6.1`). Confirm that the tag and package version are published
   before using the index command. Its first-run setup diagnostic is
   `code-mower doctor --adoption --repo OWNER/REPO`, and
   `code-mower lanes status --repo OWNER/REPO`
@@ -29,7 +29,7 @@ not know the original reference repos.
   [#952](https://github.com/codemower-ai/code-mower/issues/952) closed;
   `doctor --preflight` and `doctor --v05` remain compatibility presets for
   scripts.
-- The v1.6.0 supervised-pilot source includes Python 3.12+ install hardening,
+- The v1.6.1 supervised-pilot source includes Python 3.12+ install hardening,
   hosted-builder doctor postures, non-expiring token diagnostics, native
   redacted lane status, local Board, Board history, spend/verdict timelines,
   owner queue, optional metadata-only agent cards, Board doctor, Board reset,
@@ -143,8 +143,9 @@ Before tagging a public release, run these from a clean standalone checkout:
 
 First finalize the README opening release statement and the matching CHANGELOG
 entry, release notes, qualification contract and publication instructions in
-the reviewed final release preparation PR. For v1.6.0 that head must include
-#1063/#1109 and #1104/#1107. Recheck the completed hosted entry evidence before
+the reviewed final release preparation PR. For v1.6.1 that head must include
+#1119 and #1120, while retaining #1063/#1109 and #1104/#1107 as ancestors.
+Recheck the completed hosted entry evidence before
 building: PR #542 at `bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88`, GitHub
 deployment `6581697672`, Ready production deployment
 `dpl_HxhK4CHrYPkCCzjxS9rGjSuBG8C8`, and the exact accepting capability and

@@ -22,16 +22,16 @@ dry-run-first.
 
 ## Current Source And Published Baseline
 
-This source defines Code Mower `v1.6.0`, with package spec
-`code-mower==1.6.0`. Confirm the release tag on GitHub Releases and the package
+This source defines Code Mower `v1.6.1`, with package spec
+`code-mower==1.6.1`. Confirm the release tag on GitHub Releases and the package
 version on the selected index before using an index install command; source
 version and publication state are separate facts. The latest published baseline
-remains `v1.5.2` until the entry gates and qualification contract for #1105 are
+remains `v1.6.0` until the qualification contract for #1121 is
 complete. See the
-[v1.6.0 release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v160-release-notes.md),
-[qualification contract](https://github.com/codemower-ai/code-mower/blob/main/docs/v160-qualification.md),
-and [candidate runbook](v160-release-runbook.md). The GitHub Release and #1105
-will carry observed source SHA, artifact digests, canary, soak, publication,
+[v1.6.1 release notes](https://github.com/codemower-ai/code-mower/blob/main/docs/v161-release-notes.md),
+[qualification contract](https://github.com/codemower-ai/code-mower/blob/main/docs/v161-qualification.md),
+and [candidate runbook](v161-release-runbook.md). The GitHub Release and #1121
+will carry observed source SHA, artifact digests, adoption, soak, publication,
 and reinstall evidence after those observations exist.
 Historical v1.4.x artifacts and qualification records remain unchanged.
 
@@ -135,7 +135,7 @@ future hosted-service work.
 - Graphify's bounded provider foundation shipped in v1.4.0; its complete
   qualified integration, scorecard and query behavior shipped in v1.4.1. It
   remains optional and has no default dependency.
-- Slack in v1.6.0 retains one private workspace with explicit member, repository
+- Slack in v1.6.1 retains one private workspace with explicit member, repository
   and private-channel mappings plus private start, status, answer and
   confirmed-cancel interactions. Metadata-only lifecycle summaries remain
   disabled until the hosted service advertises the exact accepted contract.
@@ -149,38 +149,28 @@ future hosted-service work.
 - Broad unattended rollout and uncalibrated merge gates are outside the current
   product posture.
 
-## Current Release And v1.6.0
+## Current Release And v1.6.1
 
-`v1.5.2` is released and remains the current supported package. The `v1.6.0`
-source line now contains the completed doctor taxonomy, atomic Board replacement,
-identity-verified Board inventory and version guidance, neutral `unmanaged`
-state for ordinary pull requests with no Code Mower provenance, share-safe
-adoption diagnostics, cross-repository cost isolation, and the closed
-metadata-only control-surface summary contract. Visible malformed Code Mower
-claims remain actionable and fail-closed. The optional client
-emitter remains fail-closed unless the hosted service advertises the exact
-accepted contract identity.
+`v1.6.0` is released and remains the current supported package. It shipped the
+doctor taxonomy, atomic Board replacement, identity-verified Board inventory,
+share-safe adoption diagnostics, cross-repository cost isolation, and the
+closed metadata-only control-surface summary contract.
 
-The [v1.6.0 milestone](https://github.com/codemower-ai/code-mower/milestone/2),
-[epic #1066](https://github.com/codemower-ai/code-mower/issues/1066), and
-[release issue #1105](https://github.com/codemower-ai/code-mower/issues/1105)
-are the live trackers. All immutable-candidate entry gates are complete. Board
-clarity #1063 merged through PR #1109, and audit-history hardening #1104 merged
-through PR #1107. Hosted PR #542 merged at
-`bcddaa25c633f2dcf8fa2077d6ecb8004c1d8f88`; production deployment
-`6581697672` succeeded in two steps; production deployment
-`dpl_HxhK4CHrYPkCCzjxS9rGjSuBG8C8` is Ready; authenticated health advertises the
-exact accepting contract; the migration ledger is 79/79; and one sanitized
-probe was accepted exactly once and isolated to `jeff-internal`. Public evidence
-is recorded in
-[#978 comment 5770184083](https://github.com/codemower-ai/code-mower/issues/978#issuecomment-5770184083).
+The focused `v1.6.1` source line adds two operational reliability fixes. PR
+#1119 makes runner diagnosis use the private service environment, isolates
+revoked Claude setup-token overrides during bounce probes, and requires an
+explicit `code-mower:auto-merge` label before unattended merge. PR #1120 avoids
+same-second macOS process-timestamp false positives. The gate still revalidates
+the exact head and authorization immediately before requesting merge.
 
-After the release PR merges, #1105 serializes the one immutable build, bounded
-private Slack canary, local-versus-hosted reconciliation, 24-hour soak, two
-independent installation passes, exact-head release audits, publication, and
-canonical reinstall. #978 remains open until the retained candidate completes
-the canary and local-versus-hosted aggregate reconciliation. None of those
-post-merge observations is claimed by this source preparation.
+The [v1.6.1 milestone](https://github.com/codemower-ai/code-mower/milestone/3)
+and [release issue #1121](https://github.com/codemower-ai/code-mower/issues/1121)
+are the live trackers. After the release PR merges, #1121 serializes one
+immutable build, a normal 24-hour soak, two independent installation or upgrade
+passes, exact-head release audits, publication, and canonical reinstall. The
+v1.6.0 hosted and Slack evidence is revalidated because this patch does not
+change those contracts; no new paid provider canary is required unless a
+regression appears.
 
 ## Near-Term Roadmap
 
