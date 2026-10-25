@@ -67,6 +67,7 @@ owner_surface:
   owner_decision_label: owner-decision
   owner_sitting_label: owner-sitting
   gate_override_label: "gate:override"
+  auto_merge_label: "code-mower:auto-merge"
   status_issue: TODO_STATUS_ISSUE
   weekly_cron: "0 14 * * 1"
   gate_health_cron: "*/15 * * * *"

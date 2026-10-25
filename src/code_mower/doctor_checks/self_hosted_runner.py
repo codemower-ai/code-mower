@@ -7,6 +7,7 @@ import os
 import plistlib
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -62,6 +63,29 @@ PS_LISTENER_RE = re.compile(
 
 RunFn = Callable[..., subprocess.CompletedProcess[str]]
 WhichFn = Callable[[str], str | None]
+
+
+def load_runner_environment(
+    path: Path,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Load one private service env file over a copy of the ambient environment."""
+
+    file_stat = path.lstat()
+    if path.is_symlink() or not stat.S_ISREG(file_stat.st_mode):
+        raise ValueError("runner env file must be a regular, non-symlink file")
+    if stat.S_IMODE(file_stat.st_mode) & 0o077:
+        raise ValueError("runner env file must not grant group or other permissions")
+
+    try:
+        from code_mower.provider_credentials import parse_env_file
+    except ImportError:  # pragma: no cover - extracted tools shim.
+        from tools.provider_credentials import parse_env_file
+
+    merged = dict(os.environ if environ is None else environ)
+    merged.update(parse_env_file(path))
+    return merged
 
 
 @dataclass(frozen=True)
@@ -202,12 +226,14 @@ def _check_codex_auth_probe(
     *,
     run: RunFn = subprocess.run,
     timeout_seconds: int = 60,
+    environ: Mapping[str, str] | None = None,
 ) -> DoctorCheck:
-    resolved_pair = resolved_local_cli_command(lane)
+    env = os.environ if environ is None else environ
+    resolved_pair = resolved_local_cli_command(lane, path=env.get("PATH"))
     if resolved_pair is None:
         return _missing_cli_probe(local_cli_command(lane), "codex", lane_id)
     command, resolved = resolved_pair
-    child_env, env_detail = local_cli_probe_env(lane)
+    child_env, env_detail = local_cli_probe_env(lane, environ=env)
     with tempfile.TemporaryDirectory(prefix="code-mower-codex-runner-probe-") as raw:
         output_path = Path(raw) / "last-message.txt"
         args = (
@@ -283,14 +309,16 @@ def _check_claude_auth_probe(
     *,
     run: RunFn = subprocess.run,
     http_timeout: int,
+    environ: Mapping[str, str] | None = None,
 ) -> DoctorCheck:
-    resolved_pair = resolved_local_cli_command(lane)
+    env = os.environ if environ is None else environ
+    resolved_pair = resolved_local_cli_command(lane, path=env.get("PATH"))
     if resolved_pair is None:
         return _missing_cli_probe(local_cli_command(lane), "claude", lane_id)
     command, resolved = resolved_pair
     probe_args = local_cli_probe_args(lane, command)
     timeout_seconds = local_cli_probe_timeout(lane, http_timeout)
-    child_env, env_detail = local_cli_probe_env(lane)
+    child_env, env_detail = local_cli_probe_env(lane, environ=env)
     try:
         completed = run(
             [resolved, *probe_args],
@@ -372,6 +400,7 @@ def check_runner_cli_auth(
     *,
     run: RunFn = subprocess.run,
     http_timeout: int,
+    environ: Mapping[str, str] | None = None,
 ) -> tuple[DoctorCheck, ...]:
     provider_lanes = _provider_lanes(lanes)
     checks: list[DoctorCheck] = []
@@ -389,7 +418,14 @@ def check_runner_cli_auth(
             continue
         lane_id, lane = lane_pair
         if provider == "codex":
-            checks.append(_check_codex_auth_probe(lane_id, lane, run=run))
+            checks.append(
+                _check_codex_auth_probe(
+                    lane_id,
+                    lane,
+                    run=run,
+                    environ=environ,
+                )
+            )
         else:
             checks.append(
                 _check_claude_auth_probe(
@@ -397,6 +433,7 @@ def check_runner_cli_auth(
                     lane,
                     run=run,
                     http_timeout=http_timeout,
+                    environ=environ,
                 )
             )
     return tuple(checks)
@@ -937,17 +974,24 @@ def check_self_hosted_runner(
     provider_templates_root: Path,
     http_timeout: int,
     actionlint_bin: str = "actionlint",
+    environ: Mapping[str, str] | None = None,
 ) -> tuple[DoctorCheck, ...]:
+    runner_env = os.environ if environ is None else environ
     return (
         check_runner_launchagent(),
-        check_runner_required_env(),
-        *check_runner_cli_auth(lanes, http_timeout=http_timeout),
+        check_runner_required_env(environ=runner_env),
+        *check_runner_cli_auth(
+            lanes,
+            http_timeout=http_timeout,
+            environ=runner_env,
+        ),
         check_runner_workflow_labels(
             config=config,
             profile=profile,
             config_path=config_path,
             repo_root=repo_root,
             source_root=provider_templates_root,
+            environ=runner_env,
         ),
         check_runner_actionlint_available(actionlint_bin=actionlint_bin),
         check_runner_generated_workflows_actionlint(

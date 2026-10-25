@@ -22,9 +22,13 @@ def local_cli_command(lane: Mapping[str, Any]) -> str:
     return provider or "unknown"
 
 
-def resolved_local_cli_command(lane: Mapping[str, Any]) -> tuple[str, str] | None:
+def resolved_local_cli_command(
+    lane: Mapping[str, Any],
+    *,
+    path: str | None = None,
+) -> tuple[str, str] | None:
     for command in candidate_local_cli_commands(lane):
-        resolved = shutil.which(command)
+        resolved = shutil.which(command) if path is None else shutil.which(command, path=path)
         if resolved:
             return command, resolved
     return None

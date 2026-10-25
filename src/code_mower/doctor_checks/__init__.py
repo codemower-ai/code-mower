@@ -112,6 +112,7 @@ from .self_hosted_runner import (
     check_runner_required_env,
     check_runner_workflow_labels,
     check_self_hosted_runner,
+    load_runner_environment,
 )
 from .share_safe import (
     LOCAL_PATH_REDACTION,
@@ -177,6 +178,7 @@ __all__ = [
     "check_runner_required_env",
     "check_runner_workflow_labels",
     "check_self_hosted_runner",
+    "load_runner_environment",
     "check_supervised_pilot",
     "check_supervised_pilot_board_visibility",
     "check_supervised_pilot_mode",

@@ -30,6 +30,7 @@ env:
   CODE_MOWER_GATE_CONTEXT: code-mower/gate
   CODE_MOWER_CONTEXT_REQUIRED: "false"
   CODE_MOWER_GATE_ENABLE_AUTO_MERGE: "true"
+  CODE_MOWER_GATE_AUTO_MERGE_LABEL: "code-mower:auto-merge"
   CODE_MOWER_OWNER_LABEL: "needs-owner"
   CODE_MOWER_OWNER_SITTING_LABEL: "owner-sitting"
   CODE_MOWER_OWNER_LOGIN: ""
@@ -714,6 +715,34 @@ jobs:
           # merge-now share a single call. --match-head-commit refuses a moved
           # head instead of merging unaudited commits.
           # CODE_MOWER_GATE_AUTOMERGE_BEGIN
+          automerge_labels_file="$(mktemp)"
+          if ! gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels?per_page=100" \
+            > "${automerge_labels_file}"; then
+            rm -f "${automerge_labels_file}"
+            echo "::notice::Code Mower gate is green, but current auto-merge authorization could not be read."
+            exit 0
+          fi
+          if ! python3 - "${automerge_labels_file}" "${CODE_MOWER_GATE_AUTO_MERGE_LABEL}" <<'PY'
+          import json
+          import sys
+
+          pages = json.load(open(sys.argv[1], encoding="utf-8"))
+          labels = (
+              [item for page in pages for item in page]
+              if pages and isinstance(pages[0], list)
+              else pages
+          )
+          expected = sys.argv[2]
+          raise SystemExit(0 if any(item.get("name") == expected for item in labels) else 1)
+          PY
+          then
+            rm -f "${automerge_labels_file}"
+            echo "::notice::Code Mower gate is green. Auto-merge remains off until label ${CODE_MOWER_GATE_AUTO_MERGE_LABEL} is added."
+            exit 0
+          fi
+          rm -f "${automerge_labels_file}"
+
           automerge_token="${CODE_MOWER_GATE_AUTOMERGE_TOKEN:-${GH_TOKEN:-}}"
           automerge_attempt=1
           automerge_max_attempts="${CODE_MOWER_GATE_AUTOMERGE_MAX_ATTEMPTS:-5}"

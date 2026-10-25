@@ -55,6 +55,7 @@ _apply_first_run_defaults = _doctor_checks.apply_first_run_defaults
 detect_repo_slug = _doctor_checks.detect_repo_slug
 normalize_repo_slug = _doctor_checks.normalize_repo_slug
 check_adoption_campaign_readiness = _doctor_checks.check_adoption_campaign_readiness
+load_runner_environment = _doctor_checks.load_runner_environment
 
 
 def board_startup_grace() -> Any:
@@ -318,6 +319,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="check self-hosted macOS local audit runner readiness",
     )
+    parser.add_argument(
+        "--runner-env-file",
+        type=Path,
+        default=None,
+        help=(
+            "probe --runner with the exact private service .env file; the file "
+            "must be a regular, non-symlink file with no group/other permissions"
+        ),
+    )
     parser.add_argument("--http-timeout", type=int, default=5)
     parser.add_argument(
         "--actions-cost-sample",
@@ -389,6 +399,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+
+    runner_environ = None
+    if args.runner_env_file is not None:
+        if not args.runner:
+            parser.error("--runner-env-file requires --runner")
+        try:
+            runner_environ = load_runner_environment(args.runner_env_file)
+        except (OSError, ValueError) as exc:
+            parser.error(f"invalid --runner-env-file: {exc}")
 
     if args.supervised_pilot or args.manual_pilot or args.promoted_pilot:
         args.adoption = True
@@ -485,6 +504,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             # Board, so this run opts into the bounded startup grace. Library
             # callers keep the single observation.
             board_startup_grace=board_startup_grace(),
+            runner_environ=runner_environ,
             **({'context_online': True} if args.context_online else {}),
             **({'context_state_dir': args.context_state_dir} if args.context_state_dir is not None else {}),
         )

@@ -15,21 +15,21 @@ from typing import Any, Mapping, Sequence
 if __package__ in {None, "", "tools"}:
     try:
         from tools.claude_cli_environment import (
-            CLAUDE_AUTH_OVERRIDE_ENV,
+            CLAUDE_BOUNCE_AUTH_OVERRIDE_ENV,
             clean_claude_cli_env,
             render_claude_env_unset_snippet,
         )
         from tools.doctor_checks.provider_probe import evaluate_json_probe
     except ImportError:  # pragma: no cover - direct script execution fallback
         from claude_cli_environment import (  # type: ignore
-            CLAUDE_AUTH_OVERRIDE_ENV,
+            CLAUDE_BOUNCE_AUTH_OVERRIDE_ENV,
             clean_claude_cli_env,
             render_claude_env_unset_snippet,
         )
         from doctor_checks.provider_probe import evaluate_json_probe  # type: ignore
 else:  # pragma: no cover - exercised after package extraction.
     from .claude_cli_environment import (
-        CLAUDE_AUTH_OVERRIDE_ENV,
+        CLAUDE_BOUNCE_AUTH_OVERRIDE_ENV,
         clean_claude_cli_env,
         render_claude_env_unset_snippet,
     )
@@ -161,8 +161,8 @@ def bounce_claude_cli(
 
     clean_env, removed = clean_claude_cli_env(
         env,
-        scrub_auth_overrides=True,
-        extra_unset=extra_unset,
+        scrub_auth_overrides=False,
+        extra_unset=(*CLAUDE_BOUNCE_AUTH_OVERRIDE_ENV, *extra_unset),
     )
     completed, exception = _run_probe(
         command_path=command_path,
@@ -214,7 +214,7 @@ def bounce_claude_cli(
         "command": command,
         "command_path": command_path,
         "probe_args": list(probe_args),
-        "scrubbed_env_names": list(CLAUDE_AUTH_OVERRIDE_ENV),
+        "scrubbed_env_names": list(CLAUDE_BOUNCE_AUTH_OVERRIDE_ENV),
         "extra_unset": list(extra_unset),
         "probes": probes,
         "recommendation": recommendation,
@@ -287,7 +287,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if args.write_env is not None:
         args.write_env.parent.mkdir(parents=True, exist_ok=True)
-        args.write_env.write_text(render_claude_env_unset_snippet(), encoding="utf-8")
+        args.write_env.write_text(
+            render_claude_env_unset_snippet(names=CLAUDE_BOUNCE_AUTH_OVERRIDE_ENV),
+            encoding="utf-8",
+        )
         report["written_env_file"] = str(args.write_env)
 
     if args.json:

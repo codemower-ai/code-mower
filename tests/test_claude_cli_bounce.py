@@ -28,13 +28,21 @@ class ClaudeCliEnvironmentTests(unittest.TestCase):
                 "ANTHROPIC_AUTH_TOKEN": "token",
                 "CLAUDE_API_KEY": "claude",
                 "CLAUDE_CONFIG_DIR": "/tmp/claude",
+                "CLAUDE_CODE_OAUTH_TOKEN": "durable-service-token",
                 "GITHUB_TOKEN": "gh",
                 "KEEP_ME": "yes",
             },
             unset_github_tokens=True,
         )
 
-        self.assertEqual(env, {"PATH": "/usr/bin", "KEEP_ME": "yes"})
+        self.assertEqual(
+            env,
+            {
+                "PATH": "/usr/bin",
+                "CLAUDE_CODE_OAUTH_TOKEN": "durable-service-token",
+                "KEEP_ME": "yes",
+            },
+        )
         self.assertEqual(
             removed,
             (
@@ -114,7 +122,8 @@ class ClaudeCliBounceTests(unittest.TestCase):
             report = claude_cli_bounce.bounce_claude_cli(
                 base_env={
                     "PATH": "/usr/bin",
-                    "ANTHROPIC_API_KEY": "stale",
+                    "CLAUDE_CODE_OAUTH_TOKEN": "stale",
+                    "CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT": "1893456000000",
                 },
             )
 
@@ -128,6 +137,10 @@ class ClaudeCliBounceTests(unittest.TestCase):
         report_json = json.dumps(report)
         self.assertNotIn("Invalid authentication credentials", report_json)
         self.assertNotIn("stale", report_json)
+        self.assertEqual(
+            report["probes"][1]["removed_env"],
+            ["CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT"],
+        )
 
     def test_cli_writes_env_snippet(self) -> None:
         with tempfile.TemporaryDirectory(prefix="code-mower-claude-bounce-test-") as tmp:
@@ -150,6 +163,7 @@ class ClaudeCliBounceTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertIn("unset ANTHROPIC_API_KEY", out_file.read_text())
+            self.assertIn("unset CLAUDE_CODE_OAUTH_TOKEN", out_file.read_text())
 
 
 if __name__ == "__main__":

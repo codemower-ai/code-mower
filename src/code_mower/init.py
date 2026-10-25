@@ -281,6 +281,7 @@ OWNER_SURFACE_DEFAULTS = {
     "owner_decision_label": "owner-decision",
     "owner_sitting_label": "owner-sitting",
     "gate_override_label": "gate:override",
+    "auto_merge_label": "code-mower:auto-merge",
     "status_issue": "TODO_STATUS_ISSUE",
     "weekly_cron": "0 14 * * 1",
     "gate_health_cron": "*/15 * * * *",
@@ -1535,6 +1536,7 @@ def _gate_workflow_entry(
     owner_sitting_label: str = "owner-sitting",
     owner_login: str = "",
     gate_override_label: str = "gate:override",
+    auto_merge_label: str = "code-mower:auto-merge",
     decision_authorities: str = "",
 ) -> dict[str, str]:
     from .context_contract import normalize_policy
@@ -1558,6 +1560,7 @@ def _gate_workflow_entry(
         "owner_sitting_label": owner_sitting_label,
         "owner_login": owner_login,
         "gate_override_label": gate_override_label,
+        "auto_merge_label": auto_merge_label,
         "decision_authorities": decision_authorities,
         "author_exclusion_json": author_exclusion_json,
     }
@@ -1910,6 +1913,9 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
     gate_override_label = entry.get("gate_override_label", "gate:override")
     if gate_override_label is None:
         gate_override_label = "gate:override"
+    auto_merge_label = entry.get("auto_merge_label", "code-mower:auto-merge")
+    if auto_merge_label is None:
+        auto_merge_label = "code-mower:auto-merge"
     replacements = {
         "__ADAPTER__": str(entry.get("adapter") or ""),
         "__AUTHOR_EXCLUSION_JSON__": _yaml_scalar(
@@ -1974,6 +1980,7 @@ def _render_workflow_template(text: str, entry: Mapping[str, Any]) -> str:
         "__GATE_LANES_JSON__": _yaml_scalar(entry.get("gate_lanes_json") or "[]"),
         "__CONTEXT_REQUIRED__": _yaml_scalar(entry.get("context_required") or "false"),
         "__GATE_OVERRIDE_LABEL_JSON__": _yaml_scalar(str(gate_override_label)),
+        "__AUTO_MERGE_LABEL_JSON__": _yaml_scalar(str(auto_merge_label)),
         "__DECISION_AUTHORITIES__": _yaml_scalar(
             str(entry.get("decision_authorities") or "")
         ),
@@ -2813,6 +2820,7 @@ def render_init_plan(
         owner_surface["owner_decision_label"],
         owner_surface["owner_sitting_label"],
         owner_surface["gate_override_label"],
+        owner_surface["auto_merge_label"],
     ):
         if label:
             labels.append(label)
@@ -2961,6 +2969,7 @@ def render_init_plan(
                 owner_sitting_label=owner_surface["owner_sitting_label"],
                 owner_login=owner_surface["owner_login"],
                 gate_override_label=owner_surface["gate_override_label"],
+                auto_merge_label=owner_surface["auto_merge_label"],
                 decision_authorities=decision_authorities,
             )
         )
