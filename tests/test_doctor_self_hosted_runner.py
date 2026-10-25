@@ -342,6 +342,27 @@ class SelfHostedRunnerDoctorTests(unittest.TestCase):
         self.assertEqual(check.status, "fail")
         self.assertEqual(check.detail["stale_listener_pids"], [123])
 
+    def test_runner_listener_env_allows_same_second_start_time_precision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runner_root = Path(tmp) / "actions-runner"
+            runner_root.mkdir()
+            env_path = runner_root / ".env"
+            env_path.write_text("USER=runner\n", encoding="utf-8")
+            env_mtime = datetime.now().replace(microsecond=385776)
+            os.utime(env_path, (env_mtime.timestamp(), env_mtime.timestamp()))
+            process = RunnerListenerProcess(
+                pid=123,
+                start_time=env_mtime.replace(microsecond=0),
+                command=f"{runner_root}/bin/Runner.Listener run",
+            )
+
+            check = check_runner_listener_env_freshness(
+                environ={},
+                processes=(process,),
+            )
+
+        self.assertEqual(check.status, "pass")
+
     def test_runner_listener_env_compares_each_process_to_its_own_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
