@@ -715,7 +715,9 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
           # head instead of merging unaudited commits.
           # CODE_MOWER_GATE_AUTOMERGE_BEGIN
           automerge_labels_file="$(mktemp)"
-          if ! gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" > "${automerge_labels_file}"; then
+          if ! gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels?per_page=100" \
+            > "${automerge_labels_file}"; then
             rm -f "${automerge_labels_file}"
             echo "::notice::Code Mower gate is green, but current auto-merge authorization could not be read."
             exit 0
@@ -724,7 +726,12 @@ __GATE_AUTHOR_ENV_ASSIGNMENTS__
           import json
           import sys
 
-          labels = json.load(open(sys.argv[1], encoding="utf-8"))
+          pages = json.load(open(sys.argv[1], encoding="utf-8"))
+          labels = (
+              [item for page in pages for item in page]
+              if pages and isinstance(pages[0], list)
+              else pages
+          )
           expected = sys.argv[2]
           raise SystemExit(0 if any(item.get("name") == expected for item in labels) else 1)
           PY

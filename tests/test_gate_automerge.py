@@ -162,6 +162,11 @@ class GateAutomergeTemplateTests(unittest.TestCase):
             'automerge_token="${CODE_MOWER_GATE_AUTOMERGE_TOKEN:-${GH_TOKEN:-}}"', block
         )
 
+    def test_authorization_label_lookup_reads_every_page(self) -> None:
+        block = _automerge_block(TEMPLATE)
+        self.assertIn("gh api --paginate --slurp", block)
+        self.assertIn("labels?per_page=100", block)
+
 
 class GateAutomergeBehaviorTests(unittest.TestCase):
     def test_green_gate_without_opt_in_label_does_not_request_merge(self) -> None:
